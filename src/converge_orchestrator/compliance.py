@@ -4,12 +4,14 @@ from .models import (
     ComplianceEntry,
     ComplianceSnapshot,
     Contract,
+    Requirement,
     RequirementStatus,
+    RequirementVerification,
 )
 
 
 class ComplianceEngine:
-    """Evidence-aware compliance state; verifier plugins can replace provisional evidence later."""
+    """Evidence-aware compliance state with deterministic regression comparison."""
 
     @staticmethod
     def initial(contract: Contract) -> ComplianceSnapshot:
@@ -24,6 +26,37 @@ class ComplianceEngine:
         )
 
     @staticmethod
+    def apply_verifications(
+        snapshot: ComplianceSnapshot,
+        results: list[RequirementVerification],
+    ) -> ComplianceSnapshot:
+        updated = snapshot.model_copy(deep=True)
+        for result in results:
+            entry = updated.entries.get(result.requirement_id)
+            if entry is None or result.status == RequirementStatus.UNVERIFIED:
+                continue
+            entry.status = result.status
+            entry.evidence = list(dict.fromkeys([*entry.evidence, *result.evidence]))
+        return updated
+
+    @staticmethod
+    def compare_mandatory_regressions(
+        baseline: ComplianceSnapshot,
+        candidate: ComplianceSnapshot,
+        requirements: list[Requirement],
+    ) -> int:
+        mandatory_ids = {item.id for item in requirements if item.severity == "mandatory"}
+        regressions = 0
+        for requirement_id in mandatory_ids:
+            before = baseline.entries.get(requirement_id)
+            after = candidate.entries.get(requirement_id)
+            if before is None or after is None:
+                continue
+            if before.status == RequirementStatus.PASS and after.status != RequirementStatus.PASS:
+                regressions += 1
+        return regressions
+
+    @staticmethod
     def mark_local_pass(
         snapshot: ComplianceSnapshot,
         requirement_ids: list[str],
@@ -34,8 +67,9 @@ class ComplianceEngine:
             entry = updated.entries.get(requirement_id)
             if entry is None:
                 continue
-            entry.status = RequirementStatus.PARTIAL
-            entry.evidence.extend(evidence)
+            if entry.status != RequirementStatus.PASS:
+                entry.status = RequirementStatus.PARTIAL
+            entry.evidence = list(dict.fromkeys([*entry.evidence, *evidence]))
         return updated
 
     @staticmethod
@@ -50,5 +84,5 @@ class ComplianceEngine:
             if entry is None:
                 continue
             entry.status = RequirementStatus.PASS
-            entry.evidence.extend(evidence)
+            entry.evidence = list(dict.fromkeys([*entry.evidence, *evidence]))
         return updated
