@@ -150,7 +150,10 @@ def create_app(registry_path: Path | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=409, detail="Project has not been bootstrapped") from exc
+            raise HTTPException(
+                status_code=409,
+                detail="Project has not been bootstrapped",
+            ) from exc
 
     @app.get("/tasks/{task_id}/evidence")
     def task_evidence(task_id: str) -> dict[str, Any]:
