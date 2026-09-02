@@ -79,6 +79,11 @@ def _convergence_details(
         and candidate_status.get(requirement_id) == RequirementStatus.PASS.value
     ]
     target_progress_ok = not targeted or bool(improved)
+    evidence = {
+        result.requirement_id: result.evidence
+        for result in candidate_results
+        if result.evidence
+    }
     details = {
         "mode": "deterministic_requirement_verifiers",
         "mandatory_regressions": regressions,
@@ -87,9 +92,7 @@ def _convergence_details(
         "target_progress_required": bool(targeted),
         "baseline": baseline_status,
         "candidate": candidate_status,
-        "evidence": {
-            result.requirement_id: result.evidence for result in candidate_results if result.evidence
-        },
+        "evidence": evidence,
     }
     return regressions == 0 and target_progress_ok, details
 
