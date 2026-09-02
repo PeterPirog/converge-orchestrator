@@ -61,6 +61,7 @@ class ProjectConfig(BaseModel):
     github_binary: str = "gh"
     agents: dict[str, AgentConfig]
     quality_gates: list[QualityGate] = Field(default_factory=list)
+    requirement_verifiers: dict[str, list[QualityGate]] = Field(default_factory=dict)
     max_repair_attempts: int = 3
     max_replans: int = 2
     max_iterations: int = 50
@@ -96,6 +97,13 @@ class GateResult(BaseModel):
     required: bool
     returncode: int
     output: str
+
+
+class RequirementVerification(BaseModel):
+    requirement_id: str
+    status: RequirementStatus
+    evidence: list[str] = Field(default_factory=list)
+    gates: list[GateResult] = Field(default_factory=list)
 
 
 class TaskEnvelope(BaseModel):
@@ -157,7 +165,9 @@ class WorkflowState(TypedDict, total=False):
     thread_id: str
     requirements_hash: str
     requirements: list[dict[str, Any]]
+    baseline: dict[str, Any]
     compliance: dict[str, Any]
+    requirement_verifications: list[dict[str, Any]]
     iteration: int
     task: dict[str, Any] | None
     worktree: str | None

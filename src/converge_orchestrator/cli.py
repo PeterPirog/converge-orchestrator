@@ -24,11 +24,18 @@ def doctor(config: ConfigOption) -> None:
     """Validate paths and show the immutable specification fingerprint."""
     cfg = load_config(config)
     contract = compile_contract(cfg.requirements_path)
+    requirement_ids = {item.id for item in contract.requirements}
+    unknown_verifiers = set(cfg.requirement_verifiers) - requirement_ids
+    if unknown_verifiers:
+        raise typer.BadParameter(
+            f"requirement_verifiers reference unknown IDs: {sorted(unknown_verifiers)}"
+        )
     console.print(f"repo: {cfg.repo_path}")
     console.print(f"requirements: {cfg.requirements_path}")
     console.print(f"requirements read-only: {is_read_only(cfg.requirements_path)}")
     console.print(f"sha256: {sha256_file(cfg.requirements_path)}")
     console.print(f"compiled requirements: {len(contract.requirements)}")
+    console.print(f"deterministic requirement verifiers: {len(cfg.requirement_verifiers)}")
     console.print(f"github: {cfg.github_repo or 'disabled'}")
 
 
