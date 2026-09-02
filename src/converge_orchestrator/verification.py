@@ -56,7 +56,8 @@ def run_requirement_verifiers(
     known_ids = {item.id for item in requirements}
     unknown = set(config.requirement_verifiers) - known_ids
     if unknown:
-        raise ValueError(f"Verifier configuration references unknown requirements: {sorted(unknown)}")
+        message = f"Verifier configuration references unknown requirements: {sorted(unknown)}"
+        raise ValueError(message)
 
     for requirement in requirements:
         rules = config.requirement_verifiers.get(requirement.id, [])
