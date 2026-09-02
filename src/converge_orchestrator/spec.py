@@ -3,9 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 from pathlib import Path
 
-from .models import Requirement
+from .models import Contract, ContractSource, Requirement
+
+
+_NORMATIVE = re.compile(
+    r"\b(must|shall|required|should|cannot|must not|nie może|musi|należy|powinien|wymag)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_ID = re.compile(r"\b([A-Z][A-Z0-9_-]{1,20}-\d{1,6})\b")
+_RECOMMENDED = re.compile(r"\b(should|powinien|powinna|powinno)\b", re.IGNORECASE)
 
 
 def sha256_file(path: Path) -> str:
@@ -16,15 +25,24 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def compile_contract(path: Path) -> list[Requirement]:
-    """Compile Markdown into stable, traceable requirement records without semantic rewriting."""
+def is_read_only(path: Path) -> bool:
+    mode = path.stat().st_mode
+    write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    return mode & write_bits == 0
+
+
+def _stable_requirement_id(statement: str, heading: str) -> str:
+    explicit = _EXPLICIT_ID.search(statement)
+    if explicit:
+        return explicit.group(1)
+    material = f"{heading}\n{statement}".encode()
+    return f"REQ-{hashlib.sha256(material).hexdigest()[:10].upper()}"
+
+
+def compile_contract(path: Path) -> Contract:
+    """Compile Markdown into traceable records without replacing the source text."""
     requirements: list[Requirement] = []
     heading = "root"
-    counter = 1
-    normative = re.compile(
-        r"\b(must|shall|required|should|cannot|must not|nie może|musi|należy|powinien|wymag)\b",
-        re.IGNORECASE,
-    )
     lines = path.read_text(encoding="utf-8").splitlines()
     for line_no, raw in enumerate(lines, start=1):
         text = raw.strip()
@@ -32,19 +50,39 @@ def compile_contract(path: Path) -> list[Requirement]:
             heading = text.lstrip("#").strip() or heading
             continue
         candidate = text.lstrip("-*0123456789. ").strip()
-        if not candidate or len(candidate) < 12:
+        if not candidate or len(candidate) < 12 or not _NORMATIVE.search(candidate):
             continue
-        if normative.search(candidate):
-            requirements.append(Requirement(id=f"REQ-{counter:04d}", statement=candidate, source=f"{path.name}:L{line_no} [{heading}]"))
-            counter += 1
+        severity = "recommended" if _RECOMMENDED.search(candidate) else "mandatory"
+        requirements.append(
+            Requirement(
+                id=_stable_requirement_id(candidate, heading),
+                statement=candidate,
+                source=f"{path.name}:L{line_no} [{heading}]",
+                severity=severity,
+            )
+        )
     if not requirements:
         for line_no, raw in enumerate(lines, start=1):
             candidate = raw.strip().lstrip("-*0123456789. ").strip()
-            if len(candidate) >= 24 and not candidate.startswith("#"):
-                requirements.append(Requirement(id=f"REQ-{counter:04d}", statement=candidate, source=f"{path.name}:L{line_no}"))
-                counter += 1
-    return requirements
+            if len(candidate) < 24 or candidate.startswith("#"):
+                continue
+            requirements.append(
+                Requirement(
+                    id=_stable_requirement_id(candidate, heading),
+                    statement=candidate,
+                    source=f"{path.name}:L{line_no}",
+                )
+            )
+    return Contract(
+        source=ContractSource(path=str(path.resolve()), sha256=sha256_file(path)),
+        requirements=requirements,
+    )
 
 
-def write_contract(path: Path, requirements: list[Requirement]) -> None:
-    path.write_text(json.dumps([r.model_dump(mode="json") for r in requirements], ensure_ascii=False, indent=2), encoding="utf-8")
+def write_contract(path: Path, contract: Contract) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = contract.model_dump(mode="json")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
