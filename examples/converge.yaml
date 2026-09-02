@@ -1,0 +1,30 @@
+repo_path: /absolute/path/to/project/repository
+requirements_path: /absolute/path/to/project/architecture.md
+github_repo: owner/repository
+base_branch: main
+# opencode_attach_url: http://127.0.0.1:4096
+opencode_binary: opencode
+agents:
+  planner:
+    agent: converge-planner
+    model: null
+    timeout_seconds: 1200
+  builder:
+    agent: converge-builder
+    model: null
+    timeout_seconds: 2400
+  reviewer:
+    agent: converge-reviewer
+    model: null
+    timeout_seconds: 1200
+quality_gates:
+  - name: tests
+    command: pytest -q
+    required: true
+  - name: lint
+    command: ruff check .
+    required: true
+max_repair_attempts: 3
+max_replans: 2
+max_iterations: 50
+auto_merge: false
