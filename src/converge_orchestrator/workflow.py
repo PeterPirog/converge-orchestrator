@@ -71,6 +71,25 @@ def _write_compliance(state: WorkflowState, compliance: ComplianceSnapshot) -> N
     temporary.replace(path)
 
 
+def _load_compliance(cfg: Any, contract: Any) -> ComplianceSnapshot:
+    baseline = ComplianceEngine.initial(contract)
+    path = cfg.state_dir / "compliance.json"
+    if not path.is_file():
+        return baseline
+    try:
+        persisted = ComplianceSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise RuntimeError("Persisted compliance state is invalid") from exc
+    if set(persisted.entries) - set(baseline.entries):
+        raise RuntimeError(
+            "Persisted compliance does not match the immutable requirements contract"
+        )
+    for requirement_id, entry in persisted.entries.items():
+        baseline.entries[requirement_id] = entry
+    baseline.mandatory_regressions = persisted.mandatory_regressions
+    return baseline
+
+
 def bootstrap(state: WorkflowState) -> WorkflowState:
     cfg = load_config(state["config_path"])
     if not cfg.repo_path.exists() or not (cfg.repo_path / ".git").exists():
@@ -89,7 +108,7 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
     hash_path.write_text(expected, encoding="utf-8")
     contract = compile_contract(cfg.requirements_path)
     write_contract(cfg.state_dir / "contract.json", contract)
-    compliance = ComplianceEngine.initial(contract)
+    compliance = _load_compliance(cfg, contract)
     run_id = state.get("run_id") or uuid4().hex
     store = EvidenceStore(cfg.state_dir / "evidence")
     store.append_event(
@@ -413,7 +432,10 @@ def _human_kind(state: WorkflowState) -> str:
 
 def human_gate(state: WorkflowState) -> WorkflowState:
     kind = _human_kind(state)
-    allowed = ["approve", "edit", "reject"] if kind == "risk_policy" else ["retry", "edit", "reject"]
+    if kind == "risk_policy":
+        allowed = ["approve", "edit", "reject"]
+    else:
+        allowed = ["retry", "edit", "reject"]
     decision = interrupt(
         {
             "kind": kind,
@@ -433,7 +455,9 @@ def human_gate(state: WorkflowState) -> WorkflowState:
     if action == "approve":
         if kind != "risk_policy":
             raise ValueError("Human approval cannot override deterministic gate or CI failures")
-        approved = sorted(set(state.get("approved_risk_flags", [])) | set(state.get("risk_flags", [])))
+        approved = sorted(
+            set(state.get("approved_risk_flags", [])) | set(state.get("risk_flags", []))
+        )
         return {
             **state,
             "approved_risk_flags": approved,
