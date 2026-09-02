@@ -24,15 +24,25 @@ def _command_key(gate: QualityGate) -> tuple[str, ...]:
     return command
 
 
+def _gate_kind(name: str) -> str | None:
+    lowered = name.lower()
+    for kind in ("typecheck", "lint", "test", "build"):
+        if kind in lowered:
+            return kind
+    return None
+
+
 def effective_quality_gates(config: ProjectConfig, cwd: Path) -> list[QualityGate]:
-    """Return explicit policy plus conservative stack discovery without exact duplicates."""
+    """Return explicit policy plus conservative discovery; explicit categories win."""
     gates = list(config.quality_gates)
     if not config.auto_discover_quality:
         return gates
     known_commands = {_command_key(gate) for gate in gates}
+    explicit_kinds = {_gate_kind(gate.name) for gate in gates}
+    explicit_kinds.discard(None)
     for discovered in inspect_repository(cwd).quality_gates:
         command_key = _command_key(discovered)
-        if command_key in known_commands:
+        if command_key in known_commands or _gate_kind(discovered.name) in explicit_kinds:
             continue
         gates.append(discovered)
         known_commands.add(command_key)
