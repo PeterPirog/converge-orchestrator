@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import stat
 from pathlib import Path
+from stat import S_IWGRP, S_IWOTH, S_IWUSR
 
 from .models import Contract, ContractSource, Requirement
 
@@ -27,7 +27,7 @@ def sha256_file(path: Path) -> str:
 
 def is_read_only(path: Path) -> bool:
     mode = path.stat().st_mode
-    write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    write_bits = S_IWUSR | S_IWGRP | S_IWOTH
     return mode & write_bits == 0
 
 
