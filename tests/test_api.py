@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -79,7 +80,22 @@ def test_api_bootstrap_compliance_evidence_and_pause(tmp_path: Path) -> None:
 
     response = client.get("/projects/payments/compliance")
     assert response.status_code == 200
-    assert "entries" in response.json()
+    compliance = response.json()
+    assert "entries" in compliance
+
+    compliance_path = state_dir / "compliance.json"
+    persisted = json.loads(compliance_path.read_text(encoding="utf-8"))
+    requirement_id = next(iter(persisted["entries"]))
+    persisted["entries"][requirement_id]["status"] = "pass"
+    persisted["entries"][requirement_id]["evidence"] = ["fixture:verified"]
+    compliance_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    response = client.post("/projects/payments/bootstrap")
+    assert response.status_code == 200
+    response = client.get("/projects/payments/compliance")
+    restored = response.json()["entries"][requirement_id]
+    assert restored["status"] == "pass"
+    assert restored["evidence"] == ["fixture:verified"]
 
     EvidenceStore(state_dir / "evidence").write_json(
         "run-evidence",
