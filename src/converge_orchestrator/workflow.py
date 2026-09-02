@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
@@ -10,6 +11,7 @@ from langgraph.types import interrupt
 
 from .compliance import ComplianceEngine
 from .config import load_config
+from .control import ControlSignals
 from .evidence import EvidenceStore
 from .git import (
     cleanup_worktree,
@@ -26,6 +28,7 @@ from .models import (
     ComplianceSnapshot,
     GateResult,
     Requirement,
+    RequirementStatus,
     ReviewResult,
     TaskEnvelope,
     WorkflowState,
@@ -37,7 +40,7 @@ from .quality import required_gates_pass, run_quality_gates, run_scope_gate
 from .spec import compile_contract, is_read_only, sha256_file, write_contract
 
 
-def _json_object(text: str) -> dict:
+def _json_object(text: str) -> dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -55,6 +58,17 @@ def _evidence(state: WorkflowState) -> EvidenceStore:
 def _task_id(state: WorkflowState) -> str:
     task = state.get("task")
     return str(task.get("id")) if task else "run"
+
+
+def _write_compliance(state: WorkflowState, compliance: ComplianceSnapshot) -> None:
+    cfg = load_config(state["config_path"])
+    path = cfg.state_dir / "compliance.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(
+        compliance.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 def bootstrap(state: WorkflowState) -> WorkflowState:
@@ -83,7 +97,7 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
         "bootstrap",
         {"requirements_sha256": expected, "requirements": len(contract.requirements)},
     )
-    return {
+    next_state: WorkflowState = {
         **state,
         "run_id": run_id,
         "requirements_hash": expected,
@@ -93,8 +107,11 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
         "repair_attempts": 0,
         "replan_attempts": 0,
         "risk_flags": [],
+        "approved_risk_flags": [],
         "status": "bootstrapped",
     }
+    _write_compliance(next_state, compliance)
+    return next_state
 
 
 def guard_spec(state: WorkflowState) -> WorkflowState:
@@ -126,6 +143,58 @@ def spec_stop(state: WorkflowState) -> WorkflowState:
     }
 
 
+def _safe_point(state: WorkflowState, name: str) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    signals = ControlSignals(cfg.state_dir)
+    if not signals.pause_requested(state["run_id"]):
+        return state
+    decision = interrupt(
+        {
+            "kind": "controlled_pause",
+            "run_id": state["run_id"],
+            "safe_point": name,
+            "task": state.get("task"),
+            "status": state.get("status"),
+            "allowed": ["resume", "stop"],
+        }
+    )
+    action = decision.get("action") if isinstance(decision, dict) else decision
+    signals.clear_pause(state["run_id"])
+    if action == "stop":
+        return {**state, "status": "stopped", "message": "Stopped at controlled pause"}
+    if action != "resume":
+        raise ValueError(f"Unsupported pause decision: {action}")
+    return {**state, "status": f"resumed_at_{name}"}
+
+
+def pause_before_plan(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_plan")
+
+
+def pause_before_build(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_build")
+
+
+def pause_before_repair(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_repair")
+
+
+def pause_before_integrate(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_integrate")
+
+
+def pause_before_pr(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_pr")
+
+
+def pause_before_merge(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_merge")
+
+
+def route_after_pause(state: WorkflowState) -> str:
+    return "end" if state.get("status") == "stopped" else "continue"
+
+
 def plan(state: WorkflowState) -> WorkflowState:
     cfg = load_config(state["config_path"])
     update_base(cfg.repo_path, cfg.base_branch)
@@ -138,11 +207,16 @@ def plan(state: WorkflowState) -> WorkflowState:
     if not result.ok:
         raise RuntimeError(f"Planner failed: {result.output}")
     task = TaskEnvelope.model_validate(_json_object(result.output))
-    next_state = {
+    known_ids = {item.id for item in requirements}
+    unknown_ids = set(task.requirement_ids) - known_ids
+    if unknown_ids:
+        raise ValueError(f"Planner returned unknown requirement IDs: {sorted(unknown_ids)}")
+    next_state: WorkflowState = {
         **state,
         "task": task.model_dump(mode="json"),
         "iteration": state["iteration"] + 1,
         "risk_flags": task.risk_flags,
+        "approved_risk_flags": [],
         "status": "planned",
     }
     store = _evidence(next_state)
@@ -234,19 +308,26 @@ def review(state: WorkflowState) -> WorkflowState:
     }
 
 
-def route_after_review(state: WorkflowState) -> str:
+def _integration_decision(state: WorkflowState):
     cfg = load_config(state["config_path"])
     gates = [GateResult.model_validate(item) for item in state.get("quality_results", [])]
     review_result = ReviewResult.model_validate(state["review_result"])
     compliance = ComplianceSnapshot.model_validate(state["compliance"])
-    decision = can_integrate(
+    approved = set(state.get("approved_risk_flags", []))
+    active_risks = [flag for flag in state.get("risk_flags", []) if flag not in approved]
+    return can_integrate(
         expected_spec_hash=state["requirements_hash"],
         current_spec_hash=sha256_file(cfg.requirements_path),
         gates=gates,
         review=review_result,
         compliance=compliance,
-        risk_flags=state.get("risk_flags", []),
+        risk_flags=active_risks,
     )
+
+
+def route_after_review(state: WorkflowState) -> str:
+    cfg = load_config(state["config_path"])
+    decision = _integration_decision(state)
     if decision.kind == DecisionKind.ALLOW:
         return "integrate"
     if decision.reason == "SPEC_CHANGED":
@@ -280,7 +361,7 @@ def repair(state: WorkflowState) -> WorkflowState:
     }
 
 
-def replan(state: WorkflowState) -> WorkflowState:
+def _discard_current_workspace(state: WorkflowState) -> None:
     cfg = load_config(state["config_path"])
     branch = state.get("branch")
     worktree = state.get("worktree")
@@ -290,6 +371,10 @@ def replan(state: WorkflowState) -> WorkflowState:
         delete_remote_branch(cfg.repo_path, branch)
     if branch and worktree:
         cleanup_worktree(cfg.repo_path, Path(worktree), branch)
+
+
+def replan(state: WorkflowState) -> WorkflowState:
+    _discard_current_workspace(state)
     store = _evidence(state)
     store.append_event(
         state["run_id"],
@@ -308,33 +393,100 @@ def replan(state: WorkflowState) -> WorkflowState:
         "ci": None,
         "repair_attempts": 0,
         "replan_attempts": state.get("replan_attempts", 0) + 1,
+        "risk_flags": [],
+        "approved_risk_flags": [],
         "status": "replanning",
     }
 
 
+def _human_kind(state: WorkflowState) -> str:
+    if state.get("status") in {"ci_fail", "ci_timeout"}:
+        return "ci_failure_budget"
+    if state.get("status") == "iteration_budget_exhausted":
+        return "iteration_budget"
+    if state.get("review_result"):
+        decision = _integration_decision(state)
+        if decision.kind == DecisionKind.INTERRUPT:
+            return "risk_policy"
+    return "repair_replan_budget"
+
+
 def human_gate(state: WorkflowState) -> WorkflowState:
+    kind = _human_kind(state)
+    allowed = ["approve", "edit", "reject"] if kind == "risk_policy" else ["retry", "edit", "reject"]
     decision = interrupt(
         {
-            "reason": "Autonomous repair/replan budget or risk policy requires intervention",
+            "kind": kind,
+            "reason": "Autonomous policy requires human intervention",
             "task": state.get("task"),
             "quality": state.get("quality_results"),
             "review": state.get("review_result"),
+            "ci": state.get("ci"),
             "risk_flags": state.get("risk_flags"),
-            "allowed": ["retry", "stop"],
+            "allowed": allowed,
         }
     )
-    if decision == "retry":
+    payload = decision if isinstance(decision, dict) else {"action": decision}
+    action = payload.get("action")
+    if action in {"reject", "stop"}:
+        return {**state, "status": "stopped", "message": "Stopped by human operator"}
+    if action == "approve":
+        if kind != "risk_policy":
+            raise ValueError("Human approval cannot override deterministic gate or CI failures")
+        approved = sorted(set(state.get("approved_risk_flags", [])) | set(state.get("risk_flags", [])))
+        return {
+            **state,
+            "approved_risk_flags": approved,
+            "status": "human_retry_review",
+        }
+    if action == "retry":
+        if kind == "iteration_budget":
+            return {**state, "iteration": 0, "status": "human_retry_plan"}
         return {
             **state,
             "repair_attempts": 0,
             "replan_attempts": 0,
-            "status": "human_retry",
+            "status": "human_retry_ci" if kind == "ci_failure_budget" else "human_retry_review",
         }
-    return {**state, "status": "stopped", "message": "Stopped by human operator"}
+    if action == "edit":
+        raw_task = payload.get("task")
+        if not raw_task:
+            raise ValueError("edit decision requires a replacement task envelope")
+        task = TaskEnvelope.model_validate(raw_task)
+        known_ids = {item["id"] for item in state["requirements"]}
+        if set(task.requirement_ids) - known_ids:
+            raise ValueError("edited task contains unknown requirement IDs")
+        _discard_current_workspace(state)
+        return {
+            **state,
+            "task": task.model_dump(mode="json"),
+            "worktree": None,
+            "branch": None,
+            "quality_results": [],
+            "review_result": None,
+            "commit_sha": None,
+            "pr": None,
+            "ci": None,
+            "repair_attempts": 0,
+            "replan_attempts": 0,
+            "risk_flags": task.risk_flags,
+            "approved_risk_flags": [],
+            "status": "human_edit",
+        }
+    raise ValueError(f"Unsupported human decision: {action}")
 
 
 def route_after_human(state: WorkflowState) -> str:
-    return "plan" if state["status"] == "human_retry" else "end"
+    status = state.get("status")
+    if status == "human_retry_ci":
+        return "repair"
+    if status == "human_edit":
+        return "prepare"
+    if status == "human_retry_plan":
+        return "plan"
+    if status == "human_retry_review":
+        return "review"
+    return "end"
 
 
 def integrate(state: WorkflowState) -> WorkflowState:
@@ -360,13 +512,15 @@ def integrate(state: WorkflowState) -> WorkflowState:
             task.requirement_ids,
             [f"local-gates:{state['run_id']}:{task.id}", "independent-review:pass"],
         )
-    return {
+    next_state: WorkflowState = {
         **state,
         "commit_sha": commit,
         "compliance": compliance.model_dump(mode="json"),
         "status": "pushed" if commit else "no_changes",
         "message": commit or "No changes produced",
     }
+    _write_compliance(next_state, compliance)
+    return next_state
 
 
 def route_after_integrate(state: WorkflowState) -> str:
@@ -467,12 +621,65 @@ def merge_pr(state: WorkflowState) -> WorkflowState:
             Path(state["worktree"]),
             state["branch"],
         )
-    return {
+    next_state: WorkflowState = {
         **state,
         "compliance": compliance.model_dump(mode="json"),
         "status": "merged",
         "message": merged_sha,
     }
+    _write_compliance(next_state, compliance)
+    return next_state
+
+
+def _mandatory_converged(state: WorkflowState) -> bool:
+    requirements = {item["id"]: item for item in state["requirements"]}
+    compliance = ComplianceSnapshot.model_validate(state["compliance"])
+    mandatory_ids = {
+        requirement_id
+        for requirement_id, item in requirements.items()
+        if item.get("severity", "mandatory") == "mandatory"
+    }
+    if not mandatory_ids:
+        return True
+    return all(
+        compliance.entries.get(requirement_id) is not None
+        and compliance.entries[requirement_id].status == RequirementStatus.PASS
+        for requirement_id in mandatory_ids
+    )
+
+
+def refresh_from_main(state: WorkflowState) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    update_base(cfg.repo_path, cfg.base_branch)
+    status = "ready_next_iteration"
+    if _mandatory_converged(state):
+        status = "converged"
+    elif state.get("iteration", 0) >= cfg.max_iterations:
+        status = "iteration_budget_exhausted"
+    return {
+        **state,
+        "task": None,
+        "worktree": None,
+        "branch": None,
+        "quality_results": [],
+        "review_result": None,
+        "commit_sha": None,
+        "pr": None,
+        "ci": None,
+        "repair_attempts": 0,
+        "replan_attempts": 0,
+        "risk_flags": [],
+        "approved_risk_flags": [],
+        "status": status,
+    }
+
+
+def route_after_refresh(state: WorkflowState) -> str:
+    if state.get("status") == "ready_next_iteration":
+        return "continue"
+    if state.get("status") == "iteration_budget_exhausted":
+        return "human"
+    return "end"
 
 
 def build_graph(checkpointer=None):
@@ -482,6 +689,12 @@ def build_graph(checkpointer=None):
         ("guard_plan", guard_spec),
         ("guard_quality", guard_spec),
         ("spec_stop", spec_stop),
+        ("pause_plan", pause_before_plan),
+        ("pause_build", pause_before_build),
+        ("pause_repair", pause_before_repair),
+        ("pause_integrate", pause_before_integrate),
+        ("pause_pr", pause_before_pr),
+        ("pause_merge", pause_before_merge),
         ("plan", plan),
         ("prepare_worktree", prepare_worktree),
         ("build", build),
@@ -494,6 +707,7 @@ def build_graph(checkpointer=None):
         ("pr", create_pr),
         ("ci", ci_gate),
         ("merge", merge_pr),
+        ("refresh", refresh_from_main),
     ]
     for name, node in nodes:
         graph.add_node(name, node)
@@ -502,10 +716,20 @@ def build_graph(checkpointer=None):
     graph.add_conditional_edges(
         "guard_plan",
         route_after_guard,
+        {"continue": "pause_plan", "end": END},
+    )
+    graph.add_conditional_edges(
+        "pause_plan",
+        route_after_pause,
         {"continue": "plan", "end": END},
     )
     graph.add_edge("plan", "prepare_worktree")
-    graph.add_edge("prepare_worktree", "build")
+    graph.add_edge("prepare_worktree", "pause_build")
+    graph.add_conditional_edges(
+        "pause_build",
+        route_after_pause,
+        {"continue": "build", "end": END},
+    )
     graph.add_edge("build", "guard_quality")
     graph.add_conditional_edges(
         "guard_quality",
@@ -517,37 +741,68 @@ def build_graph(checkpointer=None):
         "review",
         route_after_review,
         {
-            "integrate": "integrate",
-            "repair": "repair",
+            "integrate": "pause_integrate",
+            "repair": "pause_repair",
             "replan": "replan",
             "human": "human",
             "spec_stop": "spec_stop",
         },
     )
     graph.add_edge("spec_stop", END)
+    graph.add_conditional_edges(
+        "pause_repair",
+        route_after_pause,
+        {"continue": "repair", "end": END},
+    )
     graph.add_edge("repair", "guard_quality")
     graph.add_edge("replan", "guard_plan")
     graph.add_conditional_edges(
         "human",
         route_after_human,
-        {"plan": "guard_plan", "end": END},
+        {
+            "repair": "pause_repair",
+            "prepare": "prepare_worktree",
+            "plan": "guard_plan",
+            "review": "guard_quality",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "pause_integrate",
+        route_after_pause,
+        {"continue": "integrate", "end": END},
     )
     graph.add_conditional_edges(
         "integrate",
         route_after_integrate,
-        {"pr": "pr", "end": END},
+        {"pr": "pause_pr", "end": END},
+    )
+    graph.add_conditional_edges(
+        "pause_pr",
+        route_after_pause,
+        {"continue": "pr", "end": END},
     )
     graph.add_edge("pr", "ci")
     graph.add_conditional_edges(
         "ci",
         route_after_ci,
         {
-            "merge": "merge",
-            "repair": "repair",
+            "merge": "pause_merge",
+            "repair": "pause_repair",
             "replan": "replan",
             "human": "human",
             "end": END,
         },
     )
-    graph.add_edge("merge", END)
+    graph.add_conditional_edges(
+        "pause_merge",
+        route_after_pause,
+        {"continue": "merge", "end": END},
+    )
+    graph.add_edge("merge", "refresh")
+    graph.add_conditional_edges(
+        "refresh",
+        route_after_refresh,
+        {"continue": "guard_plan", "human": "human", "end": END},
+    )
     return graph.compile(checkpointer=checkpointer)
