@@ -37,12 +37,15 @@ def run(
     config: ConfigOption,
     thread_id: ThreadOption = "default",
 ) -> None:
-    """Run one autonomous convergence iteration."""
+    """Run the autonomous convergence loop until a terminal state or interrupt."""
     cfg = load_config(config)
     db = sqlite3.connect(cfg.state_dir / "langgraph.sqlite", check_same_thread=False)
     graph = build_graph(checkpointer=SqliteSaver(db))
     graph_config = {"configurable": {"thread_id": thread_id}}
-    result = graph.invoke({"config_path": str(config.resolve())}, config=graph_config)
+    result = graph.invoke(
+        {"config_path": str(config.resolve()), "thread_id": thread_id},
+        config=graph_config,
+    )
     console.print_json(data=result)
 
 
