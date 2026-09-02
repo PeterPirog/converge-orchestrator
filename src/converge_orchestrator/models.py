@@ -153,6 +153,7 @@ class ComplianceSnapshot(BaseModel):
 class WorkflowState(TypedDict, total=False):
     config_path: str
     run_id: str
+    thread_id: str
     requirements_hash: str
     requirements: list[dict[str, Any]]
     compliance: dict[str, Any]
