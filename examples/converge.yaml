@@ -40,6 +40,17 @@ quality_gates:
     command: [ruff, check, .]
     required: true
 
+# Optional deterministic evidence bound to concrete requirement IDs.
+# Existing baseline failures are tolerated while a task is being repaired, but a previously
+# passing mandatory verifier may never regress. If the active task targets a configured verifier,
+# at least one targeted verifier must improve from non-PASS to PASS before integration.
+requirement_verifiers:
+  ARCH-017:
+    - name: architecture-boundary
+      command: [pytest, -q, tests/architecture/test_payment_boundary.py]
+      required: true
+      timeout_seconds: 600
+
 max_repair_attempts: 3
 max_replans: 2
 max_iterations: 50
