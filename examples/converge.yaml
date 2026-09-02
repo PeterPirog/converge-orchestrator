@@ -32,6 +32,11 @@ agents:
     model: null
     timeout_seconds: 1200
 
+# Conservative stack discovery recognizes Python/Node/Go/Rust manifests and only selects
+# commands supported by repository metadata. Set false for fully explicit policy.
+auto_discover_quality: true
+
+# Explicit categories override auto-discovered gates of the same kind.
 quality_gates:
   - name: tests
     command: [pytest, -q]
