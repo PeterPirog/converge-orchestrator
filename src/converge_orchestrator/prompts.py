@@ -7,18 +7,34 @@ from .models import Requirement, TaskEnvelope
 
 
 def contract_excerpt(requirements: list[Requirement], limit: int = 80) -> str:
-    return "\n".join(f"{r.id} | {r.source} | {r.statement}" for r in requirements[:limit])
+    return "\n".join(
+        f"{requirement.id} | {requirement.source} | {requirement.statement}"
+        for requirement in requirements[:limit]
+    )
 
 
 def planner_prompt(requirements: list[Requirement], iteration: int) -> str:
+    schema = {
+        "id": "ARCH-017-0038",
+        "requirement_ids": ["ARCH-017"],
+        "title": "Bounded task title",
+        "objective": "One measurable objective",
+        "constraints": ["Do not change public API"],
+        "allowed_paths": ["src/**", "tests/**"],
+        "acceptance": ["Relevant test passes"],
+        "max_diff_lines": 400,
+        "risk": "medium",
+        "risk_flags": [],
+    }
     return f"""You are the planning agent in an autonomous software convergence system.
 The architecture requirements are immutable. Never propose changing them.
 Select ONE smallest high-value change that moves the repository toward compliance.
-Inspect the repository before deciding. Avoid broad rewrites.
-Return ONLY JSON with keys: id, requirement_ids, title, objective, acceptance, risk.
+Inspect the repository before deciding. Avoid broad rewrites and unrelated modernization.
+Return ONLY JSON matching this shape: {json.dumps(schema)}
 Iteration: {iteration}
 
-REQUIREMENTS:\n{contract_excerpt(requirements)}
+REQUIREMENTS:
+{contract_excerpt(requirements)}
 """
 
 
@@ -26,23 +42,55 @@ def builder_prompt(task: TaskEnvelope, requirements_path: Path) -> str:
     return f"""Implement the task below in this isolated git worktree.
 The architecture specification at {requirements_path} is READ ONLY and authoritative.
 Do not modify it. Inspect existing code first. Make the smallest coherent change.
-Add or update meaningful tests. Do not push, merge, or modify the base branch.
+Stay inside allowed_paths. Add or update meaningful tests for changed behavior.
+Do not push, merge, or modify the base branch.
 
-TASK:\n{task.model_dump_json(indent=2)}
+TASK:
+{task.model_dump_json(indent=2)}
 """
 
 
-def reviewer_prompt(task: TaskEnvelope, diff_text: str, requirements: list[Requirement]) -> str:
+def reviewer_prompt(
+    task: TaskEnvelope,
+    diff_text: str,
+    requirements: list[Requirement],
+) -> str:
+    schema = {
+        "verdict": "pass|reject",
+        "findings": [
+            {
+                "severity": "blocker|major|minor|note",
+                "requirement_id": "ARCH-017",
+                "file": "src/example.py",
+                "line": 12,
+                "reason": "Concrete finding",
+                "required_fix": "Required correction",
+            }
+        ],
+        "confidence": 0.9,
+    }
     return f"""Act as an independent architecture and code reviewer. Do not edit files.
-Review against immutable requirements and acceptance criteria. Reject drift, unnecessary scope,
-weak tests, security regressions, and hidden behavioral changes.
-Return ONLY JSON: {{\"verdict\":\"approve|reject\",\"findings\":[{{\"severity\":\"major|minor\",\"reason\":\"...\",\"required_fix\":\"...\"}}]}}.
-TASK:\n{task.model_dump_json(indent=2)}\nREQUIREMENTS:\n{contract_excerpt(requirements)}\nDIFF:\n{diff_text[-30000:]}
+Review against immutable requirements and acceptance criteria. Do not trust the Builder's
+narrative as evidence. Reject architectural drift, unnecessary scope, weak tests, security
+regressions, hidden behavior changes, and violations of the Task Envelope.
+Return ONLY JSON matching this shape: {json.dumps(schema)}
+
+TASK:
+{task.model_dump_json(indent=2)}
+REQUIREMENTS:
+{contract_excerpt(requirements)}
+DIFF:
+{diff_text[-30000:]}
 """
 
 
 def repair_prompt(task: TaskEnvelope, quality: list[dict], review: dict | None) -> str:
-    return f"""Repair the current implementation without expanding scope. Keep requirements unchanged.
-Fix all required quality-gate or review failures, then rerun relevant tests. Do not push or merge.
-TASK: {task.model_dump_json(indent=2)}\nQUALITY: {json.dumps(quality, ensure_ascii=False)}\nREVIEW: {json.dumps(review, ensure_ascii=False)}
+    quality_json = json.dumps(quality, ensure_ascii=False)
+    review_json = json.dumps(review, ensure_ascii=False)
+    return f"""Repair the current implementation without expanding scope.
+Keep requirements unchanged. Fix all required quality-gate or review failures and rerun
+relevant tests. Stay inside the original Task Envelope. Do not push or merge.
+TASK: {task.model_dump_json(indent=2)}
+QUALITY: {quality_json}
+REVIEW: {review_json}
 """
