@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import re
+from hashlib import sha256
+from json import dumps
 from pathlib import Path
+from re import IGNORECASE, compile as compile_regex
 from stat import S_IWGRP, S_IWOTH, S_IWUSR
 
 from .models import Contract, ContractSource, Requirement
 
 
-_NORMATIVE = re.compile(
+_NORMATIVE = compile_regex(
     r"\b(must|shall|required|should|cannot|must not|nie może|musi|należy|powinien|wymag)\b",
-    re.IGNORECASE,
+    IGNORECASE,
 )
-_EXPLICIT_ID = re.compile(r"\b([A-Z][A-Z0-9_-]{1,20}-\d{1,6})\b")
-_RECOMMENDED = re.compile(r"\b(should|powinien|powinna|powinno)\b", re.IGNORECASE)
+_EXPLICIT_ID = compile_regex(r"\b([A-Z][A-Z0-9_-]{1,20}-\d{1,6})\b")
+_RECOMMENDED = compile_regex(r"\b(should|powinien|powinna|powinno)\b", IGNORECASE)
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
+    digest = sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -36,7 +36,7 @@ def _stable_requirement_id(statement: str, heading: str) -> str:
     if explicit:
         return explicit.group(1)
     material = f"{heading}\n{statement}".encode()
-    return f"REQ-{hashlib.sha256(material).hexdigest()[:10].upper()}"
+    return f"REQ-{sha256(material).hexdigest()[:10].upper()}"
 
 
 def compile_contract(path: Path) -> Contract:
@@ -83,6 +83,6 @@ def write_contract(path: Path, contract: Contract) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = contract.model_dump(mode="json")
     path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
