@@ -9,7 +9,6 @@ from stat import S_IWGRP, S_IWOTH, S_IWUSR
 
 from .models import Contract, ContractSource, Requirement
 
-
 _NORMATIVE = compile_regex(
     r"\b(must|shall|required|should|cannot|must not|nie może|musi|należy|powinien|wymag)\b",
     IGNORECASE,
