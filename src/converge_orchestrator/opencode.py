@@ -17,4 +17,9 @@ class OpenCodeAdapter:
             cmd += ["--attach", self.config.opencode_attach_url]
         cmd += ["--dir", str(cwd), prompt]
         result = run(cmd, cwd=cwd, timeout=agent_cfg.timeout_seconds)
-        return AgentResult(role=role, ok=result.returncode == 0, output=result.stdout, returncode=result.returncode)
+        return AgentResult(
+            role=role,
+            ok=result.returncode == 0,
+            output=result.stdout,
+            returncode=result.returncode,
+        )
