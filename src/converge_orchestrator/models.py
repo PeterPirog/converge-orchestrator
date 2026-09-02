@@ -151,6 +151,7 @@ class ComplianceSnapshot(BaseModel):
 
 
 class WorkflowState(TypedDict, total=False):
+    project_id: str
     config_path: str
     run_id: str
     thread_id: str
@@ -169,5 +170,6 @@ class WorkflowState(TypedDict, total=False):
     pr: dict[str, Any] | None
     ci: dict[str, Any] | None
     risk_flags: list[str]
+    approved_risk_flags: list[str]
     status: str
     message: str
