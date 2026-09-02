@@ -20,6 +20,9 @@ The repository implements the local/GitHub convergence core plus the first durab
 - one writer per isolated Git worktree;
 - Task Envelope with path allowlist, diff budget and risk flags;
 - deterministic configured gates plus an orchestrator-owned diff-scope gate;
+- optional deterministic verifiers bound to concrete requirement IDs;
+- monotonic-convergence check: a previously passing mandatory verifier may not regress;
+- configured target verifier must improve from non-PASS to PASS before integration;
 - bounded repair and replan loops;
 - risk approval that cannot waive failed deterministic gates, review or CI;
 - independent structured review;
@@ -60,6 +63,27 @@ The requirements file is expected to be OS-level read-only by default:
 chmod 444 /path/to/architecture.md
 ```
 
+### Requirement-specific deterministic evidence
+
+Projects can bind deterministic commands to requirement IDs without modifying the immutable Markdown:
+
+```yaml
+requirement_verifiers:
+  ARCH-017:
+    - name: architecture-boundary
+      command: [pytest, -q, tests/architecture/test_payment_boundary.py]
+      required: true
+```
+
+During the task gate Converge runs those verifiers twice: against the clean canonical base repository
+and against the candidate worktree. Existing baseline failures are not treated as newly introduced
+regressions, which allows incremental convergence. However, a mandatory requirement that was `PASS`
+in the baseline may not become non-PASS. When the active Task Envelope targets a requirement with a
+configured verifier, at least one targeted verifier must improve from non-PASS to `PASS`.
+
+Requirements without a deterministic verifier remain eligible for the independent semantic-review
+path; the orchestrator does not invent a test command merely because a requirement exists.
+
 ## Validate setup
 
 ```bash
@@ -84,7 +108,7 @@ bootstrap
  -> controlled pause boundary
  -> OpenCode Builder implements + tests
  -> verify spec hash again
- -> deterministic diff-scope + project quality gates
+ -> diff scope + monotonic requirement verification + project quality gates
  -> independent OpenCode Reviewer
     -> failure: bounded repair / fresh replan / HITL
     -> risk interrupt: explicit human decision without waiving deterministic failures
@@ -152,6 +176,9 @@ State is outside the target repository by default:
 └── worktrees/
 ```
 
+Requirement verifier baseline/candidate states and their exit-code evidence are embedded in the
+required `diff_scope` gate stored in `quality.json`, so an integration decision remains auditable.
+
 The API-level project/run registry is a separate SQLite database. This keeps operator state independent
 from OpenWebUI/chat history while LangGraph checkpoints remain the source of truth for resumable
 workflow execution.
@@ -176,10 +203,11 @@ pytest --cov=converge_orchestrator
 
 ## Explicit limitations
 
-Converge does not yet claim full architectural compliance. The current compliance state uses
-conservative provisional evidence; requirement-specific verifier plugins and mandatory-regression
-comparison are the next major safety layer. Production PostgreSQL, stack-aware quality discovery,
-parallel read-only reviewers, container sandboxing and the OpenWebUI bridge remain roadmap items.
+Converge still does not claim universal architectural compliance. Deterministic requirement verifiers
+are now supported and mandatory PASS-to-non-PASS regressions are blocked when such verifiers exist,
+but semantic requirements without machine-checkable evidence still depend on independent review.
+Stack-aware quality discovery, richer semi-deterministic AST policies, parallel read-only reviewers,
+container sandboxing, the OpenWebUI bridge and production PostgreSQL remain roadmap items.
 
 The control-plane API is intentionally backend-first: OpenWebUI will consume it after the API domain
 model stabilizes rather than dictating workflow state through chat history.
