@@ -17,11 +17,12 @@ def _config(tmp_path: Path, baseline: Path) -> ProjectConfig:
         "# Rules\n\nARCH-001 must keep health marker.\nARCH-002 must keep API stable.\n",
         encoding="utf-8",
     )
-    command = [
-        sys.executable,
-        "-c",
-        "from pathlib import Path; raise SystemExit(0 if Path('health.txt').read_text().strip() == 'ok' else 1)",
-    ]
+    verifier_script = (
+        "from pathlib import Path; "
+        "value = Path('health.txt').read_text().strip(); "
+        "raise SystemExit(0 if value == 'ok' else 1)"
+    )
+    command = [sys.executable, "-c", verifier_script]
     return ProjectConfig(
         repo_path=baseline,
         requirements_path=requirements,
