@@ -3,7 +3,8 @@ from __future__ import annotations
 from hashlib import sha256
 from json import dumps
 from pathlib import Path
-from re import IGNORECASE, compile as compile_regex
+from re import IGNORECASE
+from re import compile as compile_regex
 from stat import S_IWGRP, S_IWOTH, S_IWUSR
 
 from .models import Contract, ContractSource, Requirement
