@@ -68,7 +68,8 @@ class ScheduledRunController(RunController):
         if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
             self.registry.update_run(run_id, status="waiting_ci", node="ci_wait")
             result["status"] = "waiting_ci"
-            self._schedule_ci_wait(run_id, str(interrupt_payload["wake_at"]))
+            if not result.get("worker_alive"):
+                self._schedule_ci_wait(run_id, str(interrupt_payload["wake_at"]))
         return result
 
     def _execute(self, run_id: str, input_value: Any) -> None:
