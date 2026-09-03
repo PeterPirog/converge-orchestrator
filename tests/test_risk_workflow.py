@@ -50,7 +50,9 @@ def _store():
     )
 
 
-def test_secret_material_suppresses_external_review_and_raw_diff_evidence(tmp_path: Path) -> None:
+def test_secret_material_suppresses_external_review_and_raw_diff_evidence(
+    tmp_path: Path,
+) -> None:
     cfg = _config(tmp_path)
     state = _state(tmp_path)
     store = _store()
@@ -83,6 +85,35 @@ def test_secret_material_suppresses_external_review_and_raw_diff_evidence(tmp_pa
     assert result["status"] == "risk_blocked"
     assert result["risk_flags"] == ["secret_material_detected"]
     assert result["review_result"]["verdict"] == "reject"
+
+
+def test_planner_cannot_declare_deterministic_hard_block(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = _state(tmp_path)
+    state["task"]["risk_flags"] = ["secret_material_detected"]
+    store = _store()
+    reviewer = types.SimpleNamespace(ok=True, output=json.dumps({"verdict": "pass"}))
+
+    with (
+        patch("converge_orchestrator.workflow.load_config", return_value=cfg),
+        patch("converge_orchestrator.workflow._requirements", return_value=[]),
+        patch("converge_orchestrator.workflow.diff", return_value="safe patch"),
+        patch(
+            "converge_orchestrator.workflow.classify_repository_risk",
+            return_value=RiskReport(),
+        ),
+        patch("converge_orchestrator.workflow._evidence", return_value=store),
+        patch(
+            "converge_orchestrator.workflow.OpenCodeAdapter.invoke",
+            return_value=reviewer,
+        ) as invoke,
+    ):
+        result = review(state)
+
+    invoke.assert_called_once()
+    assert result["status"] == "reviewed"
+    assert result["risk_flags"] == []
+    assert result["review_result"]["verdict"] == "pass"
 
 
 def test_risk_approval_is_invalidated_when_candidate_diff_changes(tmp_path: Path) -> None:
