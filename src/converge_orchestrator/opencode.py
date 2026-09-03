@@ -70,7 +70,11 @@ def _aggregate_reviews(
     roles: list[str],
     results: dict[str, ReviewResult],
 ) -> ReviewResult:
-    verdict = "reject" if any(results[role].verdict == "reject" for role in roles) else "pass"
+    verdict = (
+        "reject"
+        if any(results[role].verdict == "reject" for role in roles)
+        else "pass"
+    )
     findings = [finding for role in roles for finding in results[role].findings]
     confidences = [
         results[role].confidence
@@ -181,16 +185,18 @@ class OpenCodeAdapter:
             for role in roles:
                 try:
                     raw_results[role] = futures[role].result()
-                except Exception as exc:  # subprocess timeout/runtime faults become review rejection
+                except Exception as exc:
+                    # Timeout/runtime faults are evidence of a failed review, not a silent skip.
                     failures[role] = exc
 
         reviews: dict[str, ReviewResult] = {}
         for role in roles:
             if role in failures:
-                reviews[role] = _failed_review(
-                    role,
-                    f"{role} execution raised {type(failures[role]).__name__}: {failures[role]}",
+                failure = failures[role]
+                reason = (
+                    f"{role} execution raised {type(failure).__name__}: {failure}"
                 )
+                reviews[role] = _failed_review(role, reason)
             else:
                 reviews[role] = _normalize_review(role, raw_results[role])
 
