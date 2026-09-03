@@ -89,14 +89,39 @@ def crash(registry_path: Path, config_path: Path) -> int:
 def recover(registry_path: Path) -> int:
     controller = _controller(registry_path)
     deadline = time.monotonic() + 15
+    last_record: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        record = controller.registry.runs_for_project("chaos")[0]
-        if record["finished_at"]:
-            if record["status"] != "completed":
-                raise RuntimeError(f"recovered run failed: {record}")
+        last_record = controller.registry.runs_for_project("chaos")[0]
+        if last_record["finished_at"]:
+            if last_record["status"] != "completed":
+                raise RuntimeError(f"recovered run failed: {last_record}")
             return 0
         time.sleep(0.05)
-    raise RuntimeError("recovered run did not reach a terminal checkpoint")
+
+    snapshot: dict[str, Any] | None = None
+    if last_record is not None:
+        snapshot = controller._snapshot(last_record)
+    timer = controller._timers.get(last_record["id"] if last_record else "")
+    diagnostics = {
+        "record": last_record,
+        "snapshot": snapshot,
+        "timer_present": timer is not None,
+        "timer_alive": bool(timer and timer.is_alive()),
+        "timer_generation": (
+            controller._timer_generations.get(last_record["id"])
+            if last_record is not None
+            else None
+        ),
+        "worker_alive": bool(
+            last_record
+            and controller._workers.get(last_record["id"])
+            and controller._workers[last_record["id"]].is_alive()
+        ),
+    }
+    raise RuntimeError(
+        "recovered run did not reach a terminal checkpoint; "
+        f"diagnostics={diagnostics!r}"
+    )
 
 
 def main() -> int:
