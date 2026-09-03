@@ -5,13 +5,16 @@ bounded, auditable iterations. LangGraph owns control flow and durable checkpoin
 the repository-aware coding runtime; deterministic tools and GitHub CI provide evidence. An LLM never
 acts as the policy engine.
 
+See [CONVERGENCE_AUDIT.md](CONVERGENCE_AUDIT.md) for the living gap analysis against the reference
+autonomous-agent design.
+
 ## Trust hierarchy
 
 1. **Architecture Markdown** — immutable source of truth, outside the target repository.
 2. **Policy, requirement verifiers and quality gates** — deterministic rules; an LLM cannot waive a
    required failure.
 3. **Current Git state and CI evidence** — re-read from tools instead of long chat history.
-4. **Independent review** — semantic evidence for requirements not fully machine-verifiable.
+4. **Independent review fan-out** — semantic evidence for requirements not fully machine-verifiable.
 5. **Builder/Planner output** — useful interpretation, always subject to schema validation and policy.
 
 The SHA-256 of the specification is pinned at bootstrap and checked again at repository modification
@@ -29,7 +32,7 @@ opencode  -> stable CLI/server mode, generated config path, MCP
 models    -> gateway plus reusable model profiles
 agents    -> role -> OpenCode agent + model profile + bounded runtime limits
 quality   -> discovery, deterministic gates, requirement verifiers
-workflow  -> repair/replan/iteration/diff budgets
+workflow  -> repair/replan/iteration/diff budgets + required review lanes
 ```
 
 The runtime normalizes that document into `ProjectConfig`. Older flat configuration remains accepted
@@ -45,6 +48,7 @@ converge.yaml
     |      |
     |      +--> LangGraph/runtime policy
     |      +--> quality/verifier policy
+    |      +--> review fan-out policy
     |      +--> GitHub policy
     |
     +--> opencode.generated.json
@@ -73,31 +77,56 @@ provider-specific request overlays. Agent roles select profiles and add bounded 
 such as timeout and step budget. This allows the same orchestration graph to use different model
 portfolios for different projects.
 
-OpenWebUI is currently a **model gateway** integration. A future OpenWebUI operator dashboard is a
-separate control-plane concern and must not become durable workflow state.
+OpenWebUI is currently a **model gateway** integration. The intended operator integration is a supported
+OpenWebUI Function/Pipe calling the existing FastAPI control plane. Durable workflow state must not live
+in chat history or in a UI plugin process. Legacy OpenWebUI Pipelines are intentionally not a new
+deployment target.
 
 ## Model diversity invariant
 
 Model selection is part of quality engineering, not policy authority. The reference quality-first
-routing intentionally uses different model families for generation and review:
+routing intentionally separates generation and review responsibilities:
 
 ```text
-Planner   -> deepseek-v4-pro:cloud
-Builder   -> kimi-k2.7-code:cloud
-Reviewer  -> glm-5.3-flash:cloud
+Planner                -> deepseek-v4-pro:cloud
+Builder                -> kimi-k2.7-code:cloud
+Correctness Reviewer   -> glm-5.3-flash:cloud
+Architecture Reviewer  -> deepseek-v4-pro:cloud (fresh review session)
+Security Reviewer      -> gpt-oss:120b
 ```
 
 The Builder is optimized for long-horizon coding. Planner is optimized for architecture/reasoning.
-Reviewer deliberately comes from another model family so review is less likely to reproduce the
-Builder's assumptions.
+Correctness and Security Reviewer deliberately come from other model families so review is less likely
+to reproduce the Builder's assumptions. Architecture Reviewer may share the Planner family but runs in
+a fresh read-only session with a different objective and never reviews its own implementation.
 
 This diversity is **not** sufficient evidence for merge. Model output remains below deterministic
-quality gates, requirement verifiers and CI in the trust hierarchy. If models are changed for another
-project, preserve the principle where practical: Builder and semantic Reviewer should not be the same
-model/family by default.
+quality gates, requirement verifiers and CI in the trust hierarchy.
 
-Future read-only review fan-out should add a second independent family (for example a security reviewer)
-rather than turning a single reviewer into a larger prompt.
+## Parallel Review Coordinator
+
+The orchestration graph still has one semantic `review` stage, but the OpenCode execution adapter can
+expand that stage into configured independent lanes:
+
+```text
+                    +--> correctness_reviewer
+quality + diff ---- +--> architecture_reviewer ----> deterministic aggregate
+                    +--> security_reviewer
+```
+
+Rules:
+
+- `workflow.review_roles` is an explicit ordered list of required review roles;
+- each role gets its own OpenCode invocation/session;
+- all review roles are read-only and cannot delegate nested tasks;
+- `max_parallel_reviews` bounds concurrency without changing semantics;
+- one `reject` makes the aggregate `reject`;
+- malformed reviewer JSON, model/process failure or timeout is converted into `reject`, never PASS;
+- findings are stamped with the reviewer lane that produced them;
+- legacy projects that omit `review_roles` continue to use a single `reviewer` role.
+
+This provides parallelism only where write conflicts are impossible. The one-writer-per-worktree rule
+remains unchanged.
 
 ## Execution topology
 
@@ -109,8 +138,8 @@ SpecGuard + Contract Compiler
 contract.json + durable compliance
         |
 LangGraph state machine + SQLite checkpoints
-  |              |              |
-planner        builder        reviewer     <-- stable OpenCode roles
+  |              |
+planner        builder       <-- stable OpenCode roles
                   |
              git worktree
                   |
@@ -118,7 +147,11 @@ planner        builder        reviewer     <-- stable OpenCode roles
                   |
        stack-aware quality adapter
                   |
-         independent review
+        parallel review fan-out
+       /          |           \
+correctness   architecture   security
+       \          |           /
+        deterministic aggregate
             /            \
       repair/replan    policy PASS
                            |
@@ -141,8 +174,10 @@ planner        builder        reviewer     <-- stable OpenCode roles
 
 - **Planner** is read-only and emits one bounded `TaskEnvelope`.
 - **Builder** is the sole writer in its worktree and may not push or merge.
-- **Reviewer** starts from a fresh read-only context and reviews requirement IDs, acceptance criteria,
-  deterministic gate results and the actual diff.
+- **Correctness Reviewer** is read-only and focuses on behavior, edge cases, tests and compatibility.
+- **Architecture Reviewer** is read-only and focuses on Source of Truth, boundaries, coupling and scope.
+- **Security Reviewer** is read-only and focuses on auth, secrets, injection, unsafe command/path
+  handling and trust boundaries.
 - **Integrator** is deterministic code. It performs commit/push/PR/merge only after policy permits it.
 
 The checked-in `.opencode/agents` definitions document reference roles, but actual local execution uses
@@ -151,7 +186,8 @@ OpenCode configuration. This prevents a repository-local `opencode.json`/`.openc
 Builder/Reviewer safety boundaries.
 
 Project YAML may select models and enable custom/MCP tools, but it cannot override protected role
-permissions such as edit, shell integration authority, external directories or task delegation.
+permissions such as edit, shell integration authority, external directories or task delegation. Review
+roles and OpenCode agent IDs must be unique.
 
 `opencode.auto_approve` can auto-approve operations OpenCode would normally classify as `ask`. Explicit
 `deny` rules remain denied. This is autonomy convenience, not an OS/container sandbox.
@@ -240,8 +276,9 @@ Every run owns `state_dir/evidence/<run-id>/`. Task artifacts include:
 <task-id>/ci.json
 ```
 
-`events.jsonl` is an append-only run event stream. Requirement baseline/candidate verifier state is
-embedded in quality evidence so the integration decision is auditable.
+`review.json` contains the aggregate verdict, an ordered lane-to-verdict map and lane-attributed
+findings. `events.jsonl` is an append-only run event stream. Requirement baseline/candidate verifier
+state is embedded in quality evidence so the integration decision is auditable.
 
 Large-scale deployments can move metadata to PostgreSQL/object storage without changing the agent I/O
 contract.
@@ -278,4 +315,5 @@ repeated inability to make deterministic progress.
 
 OpenCode permission rules are not a kernel security boundary. Strong autonomous operation still needs a
 sandbox profile with explicit filesystem/network/process limits, especially for untrusted repositories.
-That remains a dedicated roadmap item rather than being hidden behind model permissions.
+Context-budget/session-rotation policy and the OpenWebUI Function operator bridge are also remaining
+operational hardening milestones rather than reasons to weaken the current deterministic core.
