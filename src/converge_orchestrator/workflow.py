@@ -311,7 +311,8 @@ def review(state: WorkflowState) -> WorkflowState:
     fingerprint = hashlib.sha256(patch.encode("utf-8")).hexdigest()
     report = classify_repository_risk(cfg, worktree, task)
     risk_report = report.model_dump(mode="json")
-    risk_flags = sorted(set(task.risk_flags) | set(report.flags))
+    declared_risk_flags = set(task.risk_flags) - BLOCKING_RISK_FLAGS
+    risk_flags = sorted(declared_risk_flags | set(report.flags))
     same_candidate = state.get("risk_fingerprint") == fingerprint
     approved_risk_flags = (
         list(state.get("approved_risk_flags", [])) if same_candidate else []
@@ -330,7 +331,7 @@ def review(state: WorkflowState) -> WorkflowState:
         },
     )
 
-    blocking_flags = sorted(BLOCKING_RISK_FLAGS.intersection(risk_flags))
+    blocking_flags = sorted(BLOCKING_RISK_FLAGS.intersection(report.flags))
     if blocking_flags:
         review_result = ReviewResult(
             verdict="reject",
