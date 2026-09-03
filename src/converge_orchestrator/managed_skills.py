@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import AgentConfig, ProjectConfig
+from .models import ProjectConfig
 
 _MANAGED_SKILLS: dict[str, str] = {
     "requirements-compliance": """---
@@ -93,10 +93,8 @@ _DEFAULT_ROLE_SKILLS: dict[str, tuple[str, ...]] = {
 }
 
 
-def effective_role_skills(role: str, agent: AgentConfig) -> tuple[str, ...]:
-    """Return the explicit allowlist, or Converge's conservative built-in role defaults."""
-    if agent.skills is not None:
-        return tuple(agent.skills)
+def effective_role_skills(role: str) -> tuple[str, ...]:
+    """Return Converge's fixed trusted Skill allowlist for one runtime role."""
     return _DEFAULT_ROLE_SKILLS.get(role, ())
 
 
