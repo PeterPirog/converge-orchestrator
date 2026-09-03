@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import os
 import types
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from converge_orchestrator.graph import quality
 from converge_orchestrator.models import GateResult, ProjectConfig
-from converge_orchestrator.sandbox import ExecutionSandbox
+from converge_orchestrator.sandbox import ExecutionSandbox, SandboxPreflightError
 
 
 def _container_config(tmp_path: Path) -> ProjectConfig:
@@ -67,6 +68,7 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     assert "--cap-drop=ALL" in argv
     assert "no-new-privileges:true" in argv
     assert "--read-only" in argv
+    assert argv[argv.index("--entrypoint") + 1] == ""
     assert argv[argv.index("--network") + 1] == "converge-ai"
     mounts = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--mount"]
     assert any(str(cfg.repo_path) in mount and mount.endswith(",readonly") for mount in mounts)
@@ -114,6 +116,21 @@ def test_quality_network_is_separate_from_agent_network(tmp_path: Path) -> None:
 
     argv = run.call_args.args[0]
     assert argv[argv.index("--network") + 1] == "none"
+
+
+def test_agent_container_rejects_none_or_host_network_when_internal_is_required(
+    tmp_path: Path,
+) -> None:
+    cfg = _container_config(tmp_path)
+    for network in ("none", "host"):
+        cfg.sandbox.agent_network = network
+        with pytest.raises(SandboxPreflightError, match="named internal agent network"):
+            ExecutionSandbox(cfg).run(
+                ["opencode", "run"],
+                cwd=cfg.repo_path,
+                scope="agent",
+                writable_cwd=False,
+            )
 
 
 def test_active_graph_measures_scope_only_after_quality_commands(tmp_path: Path) -> None:
