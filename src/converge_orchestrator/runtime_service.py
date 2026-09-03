@@ -11,6 +11,7 @@ from langgraph.types import Command
 
 from .config import load_config
 from .graph_service import build_graph
+from .remote import RemoteValidationError, validate_origin_repository
 from .runtime import RunController
 
 _CONTENTION_RETRY_SECONDS = 5
@@ -31,6 +32,15 @@ class ScheduledRunController(RunController):
         self._timers: dict[str, threading.Timer] = {}
         self._timer_generations: dict[str, int] = {}
         self._restore_ci_waits()
+
+    def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
+        cfg = load_config(config_path)
+        if cfg.github_repo:
+            try:
+                validate_origin_repository(cfg.repo_path, cfg.github_repo)
+            except RemoteValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        return super().register_project(project_id, config_path)
 
     def start_run(self, project_id: str) -> dict[str, Any]:
         for existing in self.registry.runs_for_project(project_id):
