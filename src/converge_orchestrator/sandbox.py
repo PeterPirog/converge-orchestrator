@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import shlex
@@ -8,6 +9,7 @@ import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from .models import ProjectConfig
 from .shell import run_configured
@@ -62,6 +64,20 @@ def _inner_command(command: str | list[str], *, shell: bool) -> list[str]:
     return list(command) if isinstance(command, list) else shlex.split(command)
 
 
+def _is_loopback_url(url: str | None) -> bool:
+    if not url:
+        return False
+    hostname = urlparse(url).hostname
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 class SandboxPreflightError(RuntimeError):
     pass
 
@@ -83,6 +99,21 @@ class ExecutionSandbox:
                 "sandbox requires a named internal agent network when "
                 "require_internal_agent_network=true"
             )
+
+    def _validate_agent_runtime(self) -> None:
+        if self.config.opencode_attach_url:
+            raise SandboxPreflightError(
+                "opencode.attach_url is incompatible with container sandboxing because the "
+                "attached server would execute tools outside Converge's process boundary"
+            )
+        gateway = self.config.model_gateway
+        if gateway.kind != "existing":
+            runtime_url = self.config.sandbox.agent_gateway_base_url or gateway.base_url
+            if _is_loopback_url(runtime_url):
+                raise SandboxPreflightError(
+                    "sandboxed agents cannot use a loopback model gateway; configure "
+                    "sandbox.agent_gateway_base_url to an endpoint on the agent network"
+                )
 
     def _inspect_network(self, network: str) -> bool:
         policy = self.config.sandbox
@@ -119,6 +150,7 @@ class ExecutionSandbox:
         if policy.mode == "host":
             return
         self._validate_network_policy()
+        self._validate_agent_runtime()
         if shutil.which(policy.engine) is None:
             raise SandboxPreflightError(
                 f"sandbox engine executable not found on PATH: {policy.engine}"
@@ -170,6 +202,7 @@ class ExecutionSandbox:
             )
         self._validate_network_policy()
         if scope == "agent":
+            self._validate_agent_runtime()
             self._validate_internal_agent_network()
         return self._run_container(
             command,
