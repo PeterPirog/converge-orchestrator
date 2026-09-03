@@ -95,6 +95,7 @@ models:
   #
   # context_tokens are copied to stable OpenCode's provider.models.*.limit.context, so OpenCode can
   # manage compaction against the actual custom-gateway context window rather than an unknown limit.
+  # Converge also uses this value for its own fail-closed prompt budget before OpenCode is launched.
   #
   # If one of these IDs is unavailable in another OpenWebUI installation, run `converge models`
   # and replace only the affected profile. The LangGraph workflow does not need to change.
@@ -223,6 +224,13 @@ workflow:
   max_replans: 2
   max_iterations: 50
   max_diff_lines_hard: 1000
+
+  # Context safety. Authoritative requirements/task/diff are never truncated. The input budget is
+  # the smaller of this fraction of model context and (context - output reserve). Only explicitly
+  # advisory Scout/working-memory material may be compacted. Core overflow fails closed.
+  # Hard enforcement requires agents to use model profiles with context_tokens defined.
+  context_input_fraction: 0.70
+  context_output_reserve_tokens: 4096
 
   # Explicit independent review fan-out. Every lane is read-only. One reject blocks integration.
   # Older configs may omit review_roles and keep using a single `reviewer` agent.
