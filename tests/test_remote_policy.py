@@ -10,6 +10,8 @@ from converge_orchestrator.github import (
 )
 from converge_orchestrator.models import ProjectConfig
 
+_RULES_ENDPOINT = "repos/owner/repo/rules/branches/main?per_page=100"
+
 
 class StubGitHubAdapter(GitHubAdapter):
     def __init__(self, config: ProjectConfig, responses: dict[str, object]):
@@ -25,6 +27,18 @@ class StubGitHubAdapter(GitHubAdapter):
         if response is None:
             raise GitHubError(f"missing stub response: {endpoint}")
         assert isinstance(response, dict)
+        return response
+
+    def _api_paginated_list(  # type: ignore[no-untyped-def]
+        self,
+        endpoint: str,
+        **kwargs,
+    ):
+        self.calls.append(endpoint)
+        response = self.responses.get(endpoint, [])
+        if isinstance(response, Exception):
+            raise response
+        assert isinstance(response, list)
         return response
 
 
@@ -216,9 +230,127 @@ def test_remote_policy_uses_detailed_endpoint_when_summary_is_incomplete(
     assert policy.source == "branch_protection"
     assert policy.required_checks == (RequiredCheck("CI", app_id=42),)
     assert detail_endpoint in adapter.calls
+    assert _RULES_ENDPOINT in adapter.calls
 
 
-def test_protected_branch_with_unreadable_policy_is_fail_closed(tmp_path: Path) -> None:
+def test_ruleset_only_status_checks_are_authoritative(tmp_path: Path) -> None:
+    adapter = StubGitHubAdapter(
+        _config(tmp_path),
+        {
+            "repos/owner/repo/branches/main": {
+                "protected": True,
+                "protection": {"required_status_checks": None},
+            },
+            _RULES_ENDPOINT: [
+                {
+                    "type": "required_status_checks",
+                    "ruleset_source_type": "Organization",
+                    "ruleset_id": 17,
+                    "parameters": {
+                        "required_status_checks": [
+                            {"context": "CI", "integration_id": 42}
+                        ],
+                        "strict_required_status_checks_policy": True,
+                    },
+                }
+            ],
+        },
+    )
+
+    policy = adapter.remote_policy("main")
+
+    assert policy.authoritative is True
+    assert policy.source == "rulesets"
+    assert policy.strict is True
+    assert policy.required_checks == (RequiredCheck("CI", app_id=42),)
+
+
+def test_classic_and_ruleset_status_checks_are_combined(tmp_path: Path) -> None:
+    adapter = StubGitHubAdapter(
+        _config(tmp_path),
+        {
+            "repos/owner/repo/branches/main": {
+                "protected": True,
+                "protection": {
+                    "required_status_checks": {
+                        "strict": False,
+                        "checks": [{"context": "lint", "app_id": 7}],
+                    }
+                },
+            },
+            _RULES_ENDPOINT: [
+                {
+                    "type": "required_status_checks",
+                    "parameters": {
+                        "required_status_checks": [
+                            {"context": "CI", "integration_id": 42},
+                            {"context": "lint", "integration_id": 7},
+                        ],
+                        "strict_required_status_checks_policy": True,
+                    },
+                }
+            ],
+        },
+    )
+
+    policy = adapter.remote_policy("main")
+
+    assert policy.source == "branch_protection+rulesets"
+    assert policy.strict is True
+    assert policy.required_checks == (
+        RequiredCheck("lint", app_id=7),
+        RequiredCheck("CI", app_id=42),
+    )
+
+
+def test_unreadable_effective_rules_are_fail_closed(tmp_path: Path) -> None:
+    adapter = StubGitHubAdapter(
+        _config(tmp_path),
+        {
+            "repos/owner/repo/branches/main": {
+                "protected": True,
+                "protection": {
+                    "required_status_checks": {
+                        "checks": [{"context": "CI", "app_id": 42}]
+                    }
+                },
+            },
+            _RULES_ENDPOINT: GitHubError("forbidden"),
+        },
+    )
+
+    policy = adapter.remote_policy("main")
+
+    assert policy.authoritative is False
+    assert policy.source == "protected_policy_unavailable"
+
+
+def test_malformed_ruleset_status_check_policy_is_fail_closed(tmp_path: Path) -> None:
+    adapter = StubGitHubAdapter(
+        _config(tmp_path),
+        {
+            "repos/owner/repo/branches/main": {
+                "protected": True,
+                "protection": {"required_status_checks": None},
+            },
+            _RULES_ENDPOINT: [
+                {
+                    "type": "required_status_checks",
+                    "parameters": {"strict_required_status_checks_policy": True},
+                }
+            ],
+        },
+    )
+
+    policy = adapter.remote_policy("main")
+
+    assert policy.authoritative is False
+    assert policy.source == "protected_policy_unavailable"
+
+
+def test_protected_branch_with_unreadable_classic_policy_is_fail_closed(
+    tmp_path: Path,
+) -> None:
     branch_endpoint = "repos/owner/repo/branches/main"
     detail_endpoint = (
         "repos/owner/repo/branches/main/protection/required_status_checks"
@@ -228,6 +360,7 @@ def test_protected_branch_with_unreadable_policy_is_fail_closed(tmp_path: Path) 
         {
             branch_endpoint: {"protected": True},
             detail_endpoint: GitHubError("forbidden"),
+            _RULES_ENDPOINT: [],
         },
     )
 
