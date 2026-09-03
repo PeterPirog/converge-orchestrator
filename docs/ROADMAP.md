@@ -37,7 +37,7 @@ Implemented:
   to a concrete producer;
 - unrelated check runs remain evidence but do not satisfy or fail an authoritative required-check
   policy;
-- CI matrix on Python 3.11–3.13.
+- CI matrix on Python 3.11–3.13;
 - ownership-aware stale worktree cleanup with durable resource records and protected active,
   recoverable, interrupted and CI-wait runs.
 
@@ -63,13 +63,14 @@ Implemented:
   behavior-changing tasks;
 - deterministic final-diff risk classification for secrets, destructive migrations, public Python
   API changes, Node package entry-point compatibility and auth/authz weakening;
-- hard-block secret policy before semantic review and risk approval bound to the exact candidate diff.
+- hard-block secret policy before semantic review and risk approval bound to the exact candidate diff;
 - monotonic Python AST/import boundary enforcement independent from project-provided scripts.
 
 Remaining:
 
 - source-level Node plus Go/Rust compatibility adapters and broader safe roll-forward strategies;
-- broader chaos suite covering killed service/OpenCode/provider processes and stale resources.
+- explicit OpenCode/provider process-death coverage and stale-resource chaos extensions where they
+  materially protect autonomous convergence.
 
 ## v0.4 — reusable configuration and service/control plane — substantially complete
 
@@ -89,16 +90,20 @@ Implemented:
 - durable run lease, retry-safe side effects and checkpointable long CI waits;
 - bounded per-role provider retries and ordered model-profile fallback with fresh sessions, unchanged
   permissions, profile-specific context budgets and a durable attempt ledger;
-- process-level kill/restart fixture proving automatic LangGraph recovery after worktree creation,
-  preservation of uncheckpointed candidate data and no duplicate branch/worktree side effects;
-- process-level commit/push checkpoint-race fixture proving recovery of the exact candidate commit and
-  idempotent remote push without a duplicate commit, worktree or task branch;
+- process-level kill/restart proof after worktree creation preserving uncheckpointed candidate data
+  with no duplicate branch/worktree;
+- process-level commit/push checkpoint-race proof recovering the exact candidate commit and retrying
+  remote push idempotently;
+- process-level PR checkpoint-race proof reusing the exact external PR through ensure semantics;
+- process-level `ci_wait` restart proof restoring the durable wake timer and automatically resuming the
+  same LangGraph run/thread without HITL;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Crash/chaos completion** — remaining end-to-end kill/restart tests of PR creation, CI wait
-   restoration and explicit OpenCode/provider process death.
+1. **OpenCode/provider process-death hardening** — prove bounded automatic recovery when an executor or
+   model-provider process disappears during a role invocation, without changing target, permissions or
+   LangGraph thread.
 2. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence.
 3. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
@@ -109,7 +114,7 @@ Next priorities, in order:
 
 Planned:
 
-- broader end-to-end stale resource and kill/restart chaos fixtures;
+- remaining high-value process-death and stale-resource chaos fixtures;
 - flake-aware CI retry only for explicitly classified flaky jobs;
 - cost/token/time budgets per project and run;
 - provider-reported token/cost telemetry and aggregated per-role health statistics;
