@@ -188,6 +188,25 @@ def test_small_auth_surface_change_is_observed_not_interrupted(tmp_path: Path) -
     assert finding.disposition == "observe"
 
 
+def test_lost_security_primitive_interrupts(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "src/auth/authorization.py",
+        base=(
+            "def authorize(user):\n"
+            "    if not has_permission(user):\n"
+            "        raise PermissionError\n"
+            "    return True\n"
+        ),
+        candidate="def authorize(user):\n    return True\n",
+    )
+
+    assert "critical_auth_redesign" in report.flags
+    finding = next(item for item in report.findings if item.kind == "auth_security_change")
+    assert finding.disposition == "interrupt"
+    assert "permission" in finding.evidence
+
+
 def test_author_file_is_not_false_positive_auth_path(tmp_path: Path) -> None:
     report = _classify(
         tmp_path,
