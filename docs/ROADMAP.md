@@ -89,6 +89,13 @@ Implemented:
 - OpenWebUI native Workspace Tool operator bridge over FastAPI/LangGraph;
 - fail-closed interactive confirmation for register/bootstrap/start/pause/resume/HITL decisions;
 - read-only OpenWebUI access to run status, compliance, evidence and pending interrupts;
+- deterministic per-model input context budget with explicit output reserve;
+- fresh OpenCode session invariant for every agent invocation; continuity lives in LangGraph/evidence,
+  never hidden model-session history;
+- authoritative requirements/task/review diff are never silently truncated; core overflow fails closed;
+- only explicitly advisory Scout/working-memory context may be compacted;
+- bounded deterministic working-memory artifacts generated from LangGraph state before planning;
+- per-invocation context evidence in `.converge/context-usage.jsonl` plus run-scoped planning evidence;
 - `converge models` model-catalog discovery;
 - model gateway live validation in `converge doctor`;
 - OpenCode MCP configuration embedded in the project YAML;
@@ -97,7 +104,6 @@ Implemented:
 
 Next priorities:
 
-- context-budget/session-rotation policy for long-running projects;
 - sandboxed execution runner with filesystem/network/process policy;
 - deterministic TDD evidence policy for behavior-changing tasks;
 - risk classifier and public-API/data-migration compatibility adapters;
