@@ -162,13 +162,6 @@ class GitHubAdapter:
         protection = branch.get("protection")
         if isinstance(protection, dict) and "required_status_checks" in protection:
             summary = protection.get("required_status_checks")
-            if summary is None:
-                return RemotePolicy(
-                    base_branch=base_branch,
-                    protected=True,
-                    authoritative=True,
-                    source="branch_summary",
-                )
             if isinstance(summary, dict) and (
                 "contexts" in summary or "checks" in summary
             ):
