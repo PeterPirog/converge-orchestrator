@@ -1,8 +1,8 @@
 # Architecture
 
 Converge moves an existing Git repository toward an immutable architecture specification through
-bounded, auditable iterations. LangGraph owns control flow and durable checkpoints; OpenCode is the
-repository-aware coding runtime; deterministic tools and GitHub CI provide evidence. An LLM never
+bounded, auditable iterations. LangGraph owns control flow and durable checkpoints; stable OpenCode is
+the repository-aware coding runtime; deterministic tools and GitHub CI provide evidence. An LLM never
 acts as the policy engine.
 
 ## Trust hierarchy
@@ -25,17 +25,17 @@ A project is configured through one user-maintained `converge.yaml`. The recomme
 ```text
 project   -> target repo, immutable requirements, state/worktree paths
 github    -> repo, base branch, PR/CI/merge policy
-opencode  -> CLI/server mode, generated config path, MCP
+opencode  -> stable CLI/server mode, generated config path, MCP
 models    -> gateway plus reusable model profiles
-agents    -> role -> OpenCode agent + model profile + runtime limits
+agents    -> role -> OpenCode agent + model profile + bounded runtime limits
 quality   -> discovery, deterministic gates, requirement verifiers
 workflow  -> repair/replan/iteration/diff budgets
 ```
 
 The runtime normalizes that document into `ProjectConfig`. Older flat configuration remains accepted
-for compatibility, but the graph does not depend on either layout.
+for compatibility, but graph topology does not depend on either layout.
 
-The user-facing YAML is the Source of Configuration. Converge materializes derived runtime config under
+The user-facing YAML is the Source of Configuration. Converge materializes derived runtime state under
 `state_dir`, never inside the target repository:
 
 ```text
@@ -49,8 +49,9 @@ converge.yaml
     |
     +--> opencode.generated.json
            |
-           +--> provider/model catalog
-           +--> agent model/request overrides
+           +--> stable provider/model catalog
+           +--> complete runtime agent role definitions
+           +--> model/request overrides
            +--> MCP
 ```
 
@@ -64,16 +65,39 @@ Converge supports three model-routing modes without changing graph topology:
 - `openwebui`: generate an OpenAI-compatible OpenCode provider pointing at OpenWebUI;
 - `openai_compatible`: generate a provider for another compatible gateway.
 
-Secrets are referenced by environment-variable name only. The generated OpenCode config does not
-serialize API-key values.
+Secrets are referenced by environment-variable name only. Generated OpenCode config never serializes
+API-key values.
 
-Model profiles are separate from agent roles. A profile describes the model/provider, optional variant
-and request overlays. Agent roles select profiles and add execution properties such as timeout and
-OpenCode step budget. This allows the same orchestration graph to use different model portfolios for
-different projects.
+Model profiles are separate from agent roles. A profile describes model/provider plus optional
+provider-specific request overlays. Agent roles select profiles and add bounded execution properties
+such as timeout and step budget. This allows the same orchestration graph to use different model
+portfolios for different projects.
 
 OpenWebUI is currently a **model gateway** integration. A future OpenWebUI operator dashboard is a
 separate control-plane concern and must not become durable workflow state.
+
+## Model diversity invariant
+
+Model selection is part of quality engineering, not policy authority. The reference quality-first
+routing intentionally uses different model families for generation and review:
+
+```text
+Planner   -> deepseek-v4-pro:cloud
+Builder   -> kimi-k2.7-code:cloud
+Reviewer  -> glm-5.3-flash:cloud
+```
+
+The Builder is optimized for long-horizon coding. Planner is optimized for architecture/reasoning.
+Reviewer deliberately comes from another model family so review is less likely to reproduce the
+Builder's assumptions.
+
+This diversity is **not** sufficient evidence for merge. Model output remains below deterministic
+quality gates, requirement verifiers and CI in the trust hierarchy. If models are changed for another
+project, preserve the principle where practical: Builder and semantic Reviewer should not be the same
+model/family by default.
+
+Future read-only review fan-out should add a second independent family (for example a security reviewer)
+rather than turning a single reviewer into a larger prompt.
 
 ## Execution topology
 
@@ -86,7 +110,7 @@ contract.json + durable compliance
         |
 LangGraph state machine + SQLite checkpoints
   |              |              |
-planner        builder        reviewer     <-- OpenCode roles
+planner        builder        reviewer     <-- stable OpenCode roles
                   |
              git worktree
                   |
@@ -121,12 +145,30 @@ planner        builder        reviewer     <-- OpenCode roles
   deterministic gate results and the actual diff.
 - **Integrator** is deterministic code. It performs commit/push/PR/merge only after policy permits it.
 
-Checked-in OpenCode V2 agent profiles preserve these role boundaries. Per-project YAML changes model
-selection and runtime parameters, not integration authority.
+The checked-in `.opencode/agents` definitions document reference roles, but actual local execution uses
+complete role definitions generated by Converge and supplied with higher precedence than target-repo
+OpenCode configuration. This prevents a repository-local `opencode.json`/`.opencode` from weakening
+Builder/Reviewer safety boundaries.
 
-`opencode.auto_approve` can auto-approve operations that OpenCode would normally classify as `ask`.
-Explicit `deny` rules remain denied. This is convenience for autonomy, not a replacement for OS/container
-sandboxing.
+Project YAML may select models and enable custom/MCP tools, but it cannot override protected role
+permissions such as edit, shell integration authority, external directories or task delegation.
+
+`opencode.auto_approve` can auto-approve operations OpenCode would normally classify as `ask`. Explicit
+`deny` rules remain denied. This is autonomy convenience, not an OS/container sandbox.
+
+## Requirement-context boundary
+
+The architecture file is outside the writable worktree. The orchestrator reads and hashes Source of
+Truth itself. Builder does not receive a mutable copy and is not asked to access the external file.
+Instead each build/repair prompt contains the exact requirement statements and source anchors selected
+by the validated Task Envelope.
+
+This avoids two failure modes:
+
+- opening filesystem access outside the worktree just so the Builder can read requirements;
+- repeated paraphrasing of requirements through model memory/chat history.
+
+The original Markdown remains authoritative; injected excerpts are traceable to its source anchors.
 
 ## Task Envelope and scope gate
 
