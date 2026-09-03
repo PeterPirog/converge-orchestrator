@@ -9,7 +9,7 @@ from .context import (
     finalize_report,
     prepare_prompt,
 )
-from .models import AgentResult, ProjectConfig, ReviewFinding, ReviewResult
+from .models import AgentConfig, AgentResult, ProjectConfig, ReviewFinding, ReviewResult
 from .opencode_config import (
     materialize_opencode_config,
     resolve_agent_model,
@@ -103,24 +103,65 @@ class OpenCodeAdapter:
 
     def invoke(self, role: str, prompt: str | PromptEnvelope, cwd: Path) -> AgentResult:
         generated_config = materialize_opencode_config(self.config)
-        runtime_config = json.dumps(
-            runtime_opencode_config(self.config),
-            separators=(",", ":"),
-        )
         if role == "reviewer" and self.config.review_roles:
             return self._invoke_review_fanout(
                 prompt,
                 cwd,
                 generated_config,
-                runtime_config,
             )
         return self._invoke_single(
             role,
             prompt,
             cwd,
             generated_config,
-            runtime_config,
         )
+
+    def _attempt_profiles(self, agent_cfg: AgentConfig) -> list[str | None]:
+        if not agent_cfg.model_profile:
+            return [None]
+        return [agent_cfg.model_profile, *agent_cfg.fallback_model_profiles]
+
+    def _config_for_attempt(self, role: str, profile_name: str | None) -> ProjectConfig:
+        agent_cfg = self.config.agents[role]
+        if profile_name is None or profile_name == agent_cfg.model_profile:
+            return self.config
+        attempt_config = self.config.model_copy(deep=True)
+        attempt_config.agents[role] = attempt_config.agents[role].model_copy(
+            update={
+                "model": None,
+                "model_profile": profile_name,
+                "fallback_model_profiles": [],
+            }
+        )
+        return attempt_config
+
+    @staticmethod
+    def _attempt_evidence(
+        *,
+        index: int,
+        profile_name: str | None,
+        model: str | None,
+        variant: str | None,
+        fallback: bool,
+        returncode: int | None = None,
+        error_type: str | None = None,
+    ) -> dict:
+        if error_type is not None:
+            outcome = "exception"
+        elif returncode == 0:
+            outcome = "success"
+        else:
+            outcome = "nonzero"
+        return {
+            "attempt": index,
+            "profile": profile_name,
+            "model": model,
+            "variant": variant,
+            "fallback": fallback,
+            "outcome": outcome,
+            "returncode": returncode,
+            "error_type": error_type,
+        }
 
     def _invoke_single(
         self,
@@ -128,7 +169,6 @@ class OpenCodeAdapter:
         prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
-        runtime_config: str,
     ) -> AgentResult:
         try:
             rendered_prompt, context_report = prepare_prompt(self.config, role, prompt)
@@ -142,47 +182,91 @@ class OpenCodeAdapter:
                 context=exc.report.model_dump(mode="json"),
             )
 
-        agent_cfg = self.config.agents[role]
-        cmd = [self.config.opencode_binary, "run", "--agent", agent_cfg.agent]
-        model = resolve_agent_model(self.config, agent_cfg)
-        variant = resolve_agent_variant(self.config, agent_cfg)
-        if model:
-            cmd += ["--model", model]
-        if variant:
-            cmd += ["--variant", variant]
-        if self.config.opencode_auto_approve:
-            cmd.append("--auto")
-        if self.config.opencode_attach_url:
-            cmd += ["--attach", self.config.opencode_attach_url]
-        # Fresh-session invariant: Converge never supplies --continue or --session. Long-running
-        # continuity comes from LangGraph state and explicit evidence, not hidden model history.
-        cmd += ["--dir", str(cwd), rendered_prompt]
-        try:
-            result = ExecutionSandbox(self.config).run(
-                cmd,
-                cwd=cwd,
-                timeout=agent_cfg.timeout_seconds,
-                env={
-                    "OPENCODE_CONFIG": str(generated_config),
-                    # Stable OpenCode loads inline config after project config and `.opencode`.
-                    # This keeps orchestrator safety policy authoritative even for a target
-                    # repository that contains its own OpenCode configuration.
-                    "OPENCODE_CONFIG_CONTENT": runtime_config,
-                },
-                scope="agent",
-                writable_cwd=role == "builder",
-                include_state=True,
+        primary_agent_cfg = self.config.agents[role]
+        profiles = self._attempt_profiles(primary_agent_cfg)
+        attempts: list[dict] = []
+        last_result = None
+
+        for attempt_index, profile_name in enumerate(profiles, start=1):
+            attempt_config = self._config_for_attempt(role, profile_name)
+            agent_cfg = attempt_config.agents[role]
+            runtime_config = json.dumps(
+                runtime_opencode_config(attempt_config),
+                separators=(",", ":"),
             )
-        except Exception:
-            append_context_ledger(self.config, context_report, cwd)
-            raise
-        context_report = finalize_report(context_report, result.stdout)
+            cmd = [self.config.opencode_binary, "run", "--agent", agent_cfg.agent]
+            model = resolve_agent_model(attempt_config, agent_cfg)
+            variant = resolve_agent_variant(attempt_config, agent_cfg)
+            if model:
+                cmd += ["--model", model]
+            if variant:
+                cmd += ["--variant", variant]
+            if self.config.opencode_auto_approve:
+                cmd.append("--auto")
+            if self.config.opencode_attach_url:
+                cmd += ["--attach", self.config.opencode_attach_url]
+            # Fresh-session invariant: every fallback attempt is a new OpenCode session with the
+            # exact same already-budgeted prompt. Continuity stays in LangGraph state/evidence.
+            cmd += ["--dir", str(cwd), rendered_prompt]
+
+            try:
+                result = ExecutionSandbox(self.config).run(
+                    cmd,
+                    cwd=cwd,
+                    timeout=primary_agent_cfg.timeout_seconds,
+                    env={
+                        "OPENCODE_CONFIG": str(generated_config),
+                        # Stable OpenCode loads inline config after project config and `.opencode`.
+                        # This keeps orchestrator safety policy authoritative even for a target
+                        # repository that contains its own OpenCode configuration.
+                        "OPENCODE_CONFIG_CONTENT": runtime_config,
+                    },
+                    scope="agent",
+                    writable_cwd=role == "builder",
+                    include_state=True,
+                )
+            except Exception as exc:
+                attempts.append(
+                    self._attempt_evidence(
+                        index=attempt_index,
+                        profile_name=profile_name,
+                        model=model,
+                        variant=variant,
+                        fallback=attempt_index > 1,
+                        error_type=type(exc).__name__,
+                    )
+                )
+                if attempt_index < len(profiles):
+                    continue
+                report = context_report.model_copy(update={"model_attempts": attempts})
+                append_context_ledger(self.config, report, cwd)
+                raise
+
+            last_result = result
+            attempts.append(
+                self._attempt_evidence(
+                    index=attempt_index,
+                    profile_name=profile_name,
+                    model=model,
+                    variant=variant,
+                    fallback=attempt_index > 1,
+                    returncode=result.returncode,
+                )
+            )
+            if result.returncode == 0:
+                break
+
+        if last_result is None:
+            raise RuntimeError(f"OpenCode role {role!r} produced no execution result")
+
+        context_report = context_report.model_copy(update={"model_attempts": attempts})
+        context_report = finalize_report(context_report, last_result.stdout)
         append_context_ledger(self.config, context_report, cwd)
         return AgentResult(
             role=role,
-            ok=result.returncode == 0,
-            output=result.stdout,
-            returncode=result.returncode,
+            ok=last_result.returncode == 0,
+            output=last_result.stdout,
+            returncode=last_result.returncode,
             context=context_report.model_dump(mode="json"),
         )
 
@@ -191,7 +275,6 @@ class OpenCodeAdapter:
         prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
-        runtime_config: str,
     ) -> AgentResult:
         roles = list(self.config.review_roles)
         workers = min(self.config.max_parallel_reviews, len(roles))
@@ -209,7 +292,6 @@ class OpenCodeAdapter:
                     prompt,
                     cwd,
                     generated_config,
-                    runtime_config,
                 )
                 for role in roles
             }

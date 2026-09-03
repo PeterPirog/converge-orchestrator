@@ -53,6 +53,7 @@ class ContextReport(BaseModel):
     advisory_included: list[str] = Field(default_factory=list)
     advisory_truncated: list[str] = Field(default_factory=list)
     advisory_dropped: list[str] = Field(default_factory=list)
+    model_attempts: list[dict[str, Any]] = Field(default_factory=list)
     estimator: str = "ceil(utf8_bytes/3)"
 
 
@@ -73,8 +74,15 @@ def _profile_limits(config: ProjectConfig, role: str) -> tuple[int | None, int |
     agent = config.agents[role]
     if not agent.model_profile:
         return None, None
-    profile = config.model_profiles[agent.model_profile]
-    return profile.context_tokens, profile.output_tokens
+    profile_names = [agent.model_profile, *agent.fallback_model_profiles]
+    profiles = [config.model_profiles[name] for name in profile_names]
+    context_limits = [profile.context_tokens for profile in profiles]
+    if any(limit is None for limit in context_limits):
+        return None, None
+    output_limits = [profile.output_tokens or 0 for profile in profiles]
+    context_limit = min(limit for limit in context_limits if limit is not None)
+    output_limit = max(output_limits) or None
+    return context_limit, output_limit
 
 
 def _input_budget(config: ProjectConfig, role: str) -> tuple[int | None, int | None, str]:

@@ -82,6 +82,7 @@ class AgentConfig(BaseModel):
     agent: str
     model: str | None = None
     model_profile: str | None = None
+    fallback_model_profiles: list[str] = Field(default_factory=list, max_length=2)
     variant: str | None = None
     timeout_seconds: int = 1800
     steps: int | None = Field(default=None, ge=1)
@@ -94,6 +95,16 @@ class AgentConfig(BaseModel):
     def model_source_is_unambiguous(self) -> AgentConfig:
         if self.model and self.model_profile:
             raise ValueError("agent may define either model or model_profile, not both")
+        if self.fallback_model_profiles and not self.model_profile:
+            raise ValueError(
+                "agent fallback_model_profiles require a primary model_profile"
+            )
+        if len(self.fallback_model_profiles) != len(set(self.fallback_model_profiles)):
+            raise ValueError("agent fallback_model_profiles must not contain duplicates")
+        if self.model_profile in self.fallback_model_profiles:
+            raise ValueError(
+                "agent fallback_model_profiles must not repeat the primary model_profile"
+            )
         return self
 
 
@@ -149,8 +160,13 @@ class PythonImportBoundary(BaseModel):
 
         def normalize_modules(values: list[str], label: str) -> list[str]:
             normalized = [value.strip() for value in values]
-            if any(not value or _PYTHON_MODULE_RE.fullmatch(value) is None for value in normalized):
-                raise ValueError(f"{label} must contain valid absolute Python module prefixes")
+            if any(
+                not value or _PYTHON_MODULE_RE.fullmatch(value) is None
+                for value in normalized
+            ):
+                raise ValueError(
+                    f"{label} must contain valid absolute Python module prefixes"
+                )
             if len(normalized) != len(set(normalized)):
                 raise ValueError(f"{label} must not contain duplicates")
             return normalized
@@ -344,15 +360,50 @@ class ProjectConfig(BaseModel):
             self.opencode_generated_config_path or self.state_dir / "opencode.generated.json"
         ).expanduser().resolve()
 
-        missing_profiles = sorted(
-            {
-                agent.model_profile
-                for agent in self.agents.values()
-                if agent.model_profile and agent.model_profile not in self.model_profiles
-            }
-        )
+        referenced_profiles = {
+            profile
+            for agent in self.agents.values()
+            for profile in (
+                ([agent.model_profile] if agent.model_profile else [])
+                + list(agent.fallback_model_profiles)
+            )
+        }
+        missing_profiles = sorted(referenced_profiles - set(self.model_profiles))
         if missing_profiles:
             raise ValueError(f"agents reference unknown model profiles: {missing_profiles}")
+
+        for role, agent in self.agents.items():
+            if not agent.fallback_model_profiles:
+                continue
+            if role == "builder":
+                raise ValueError(
+                    "builder fallback_model_profiles are forbidden; writer fallback requires "
+                    "deterministic worktree rollback"
+                )
+            profile_chain = [agent.model_profile, *agent.fallback_model_profiles]
+            missing_context = sorted(
+                profile_name
+                for profile_name in profile_chain
+                if profile_name
+                and self.model_profiles[profile_name].context_tokens is None
+            )
+            if missing_context:
+                raise ValueError(
+                    f"agent {role!r} fallback chain requires context_tokens for all profiles: "
+                    f"{missing_context}"
+                )
+            model_targets = [
+                (
+                    self.model_profiles[profile_name].provider,
+                    self.model_profiles[profile_name].model,
+                )
+                for profile_name in profile_chain
+                if profile_name
+            ]
+            if len(model_targets) != len(set(model_targets)):
+                raise ValueError(
+                    f"agent {role!r} fallback chain must resolve distinct configured models"
+                )
 
         agent_ids = [agent.agent for agent in self.agents.values()]
         duplicate_agent_ids = sorted(
