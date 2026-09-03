@@ -67,14 +67,23 @@ Implemented:
 - no implicit sandbox image pulls, deterministic preflight and forced container cleanup after timeout;
 - host-visible versus agent-visible model-gateway endpoints and fail-closed rejection of loopback or
   `opencode.attach_url` configurations that would bypass the execution boundary;
-- final diff/scope measurement after repository-controlled quality commands and requirement verifiers.
+- final diff/scope measurement after repository-controlled quality commands and requirement verifiers;
+- Task Envelope classification of behavior-changing work and mandatory structured TDD contract for
+  behavior tasks;
+- deterministic TDD baseline using an existing configured/discovered test gate rather than a
+  Planner-supplied shell command;
+- bounded test-only RED phase requiring a novel literal failure marker, ordinary test failure and
+  both Planner-declared scope plus deterministic cross-language test-artifact classification;
+- SHA-256 freezing of every accepted RED test artifact, with GREEN requiring the exact frozen tests
+  to remain unchanged and the same deterministic test gate to pass;
+- bounded RED repair/replan path and dedicated HITL that permits replan/stop only, never bypass of
+  missing RED evidence into integration.
 
 Remaining:
 
 - deterministic AST/import architecture rules independent from custom project scripts;
 - explicit public-API compatibility adapters;
 - destructive migration / secret / public-API / auth risk classifier;
-- deterministic red-before-green evidence for behavior-changing tasks where TDD is applicable;
 - fault-recovery tests for killed orchestrator/OpenCode/CI failures.
 
 ## v0.4 — reusable configuration and service/control plane — in progress
@@ -117,7 +126,6 @@ Implemented:
 
 Next priorities:
 
-- deterministic TDD evidence policy for behavior-changing tasks;
 - risk classifier and public-API/data-migration/secret/auth compatibility adapters;
 - crash/chaos hardening including stale worktree cleanup and killed-process recovery;
 - provider/model fallback policy with bounded retries and evidence;
