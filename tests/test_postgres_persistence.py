@@ -10,14 +10,13 @@ from uuid import uuid4
 import pytest
 from langgraph.graph import END, START, StateGraph
 
+from converge_orchestrator.runtime import RunController
+from converge_orchestrator.storage import open_checkpointer, setup_checkpoint_storage
+
 DSN = os.environ.get("CONVERGE_TEST_POSTGRES_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="PostgreSQL integration DSN is not configured")
 pytest.importorskip("psycopg")
 pytest.importorskip("langgraph.checkpoint.postgres")
-
-from converge_orchestrator.registry_postgres import PostgresControlRegistry
-from converge_orchestrator.runtime import RunController
-from converge_orchestrator.storage import open_checkpointer, setup_checkpoint_storage
 
 
 class _TinyState(TypedDict, total=False):
@@ -42,6 +41,8 @@ def _tiny_graph(checkpointer=None):
 
 
 def test_postgres_registry_is_shared_and_lease_claim_is_atomic(tmp_path: Path) -> None:
+    from converge_orchestrator.registry_postgres import PostgresControlRegistry
+
     assert DSN is not None
     project_id = f"project-{uuid4().hex}"
     run_id = f"run-{uuid4().hex}"
