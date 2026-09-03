@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field, model_validator
@@ -13,6 +13,7 @@ _REVIEW_AGENT_ROLES = {
     "architecture_reviewer",
     "security_reviewer",
 }
+_PYTHON_MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 class RequirementStatus(enum.StrEnum):
@@ -104,6 +105,85 @@ class QualityGate(BaseModel):
     shell: bool = False
 
 
+class PythonImportBoundary(BaseModel):
+    """Explicit Python dependency boundary; no project architecture is inferred from path names."""
+
+    name: str
+    source_paths: list[str]
+    forbidden_imports: list[str] = Field(default_factory=list)
+    allowed_imports: list[str] = Field(default_factory=list)
+    forbid_relative_imports: bool = False
+    required: bool = True
+
+    @model_validator(mode="after")
+    def validate_boundary(self) -> PythonImportBoundary:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("python import boundary name must not be empty")
+        if not self.source_paths:
+            raise ValueError("python import boundary requires at least one source_path")
+
+        normalized_paths: list[str] = []
+        for raw in self.source_paths:
+            value = raw.strip().rstrip("/")
+            if value.startswith("./"):
+                value = value[2:]
+            if not value:
+                raise ValueError("python import boundary source_path must not be empty")
+            if value == ".":
+                normalized_paths.append(value)
+                continue
+            if "\\" in value or any(marker in value for marker in ("*", "?", "[", "]")):
+                raise ValueError(
+                    "python import boundary source_paths are literal POSIX paths, not globs"
+                )
+            path = PurePosixPath(value)
+            if path.is_absolute() or ".." in path.parts or ":" in value:
+                raise ValueError(
+                    "python import boundary source_paths must stay inside the repository"
+                )
+            normalized_paths.append(path.as_posix())
+        if len(normalized_paths) != len(set(normalized_paths)):
+            raise ValueError("python import boundary source_paths must not contain duplicates")
+        self.source_paths = normalized_paths
+
+        def normalize_modules(values: list[str], label: str) -> list[str]:
+            normalized = [value.strip() for value in values]
+            if any(not value or _PYTHON_MODULE_RE.fullmatch(value) is None for value in normalized):
+                raise ValueError(f"{label} must contain valid absolute Python module prefixes")
+            if len(normalized) != len(set(normalized)):
+                raise ValueError(f"{label} must not contain duplicates")
+            return normalized
+
+        self.forbidden_imports = normalize_modules(
+            self.forbidden_imports,
+            "forbidden_imports",
+        )
+        self.allowed_imports = normalize_modules(self.allowed_imports, "allowed_imports")
+        if not self.forbidden_imports and not self.forbid_relative_imports:
+            raise ValueError("python import boundary must forbid imports or relative imports")
+        for allowed in self.allowed_imports:
+            if not any(
+                allowed == forbidden or allowed.startswith(forbidden + ".")
+                for forbidden in self.forbidden_imports
+            ):
+                raise ValueError(
+                    "allowed_imports must be equal to or nested under a forbidden_import prefix"
+                )
+        return self
+
+
+class ArchitecturePolicyConfig(BaseModel):
+    python_import_rules: list[PythonImportBoundary] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_rule_names(self) -> ArchitecturePolicyConfig:
+        names = [rule.name for rule in self.python_import_rules]
+        if len(names) != len(set(names)):
+            raise ValueError("architecture python_import_rules must have unique names")
+        return self
+
+
 class StackProfile(BaseModel):
     stacks: list[Literal["python", "node", "go", "rust"]] = Field(default_factory=list)
     indicators: dict[str, list[str]] = Field(default_factory=dict)
@@ -166,6 +246,7 @@ class ProjectConfig(BaseModel):
     model_profiles: dict[str, ModelProfile] = Field(default_factory=dict)
     mcp: dict[str, Any] = Field(default_factory=dict)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    architecture: ArchitecturePolicyConfig = Field(default_factory=ArchitecturePolicyConfig)
     agents: dict[str, AgentConfig]
     quality_gates: list[QualityGate] = Field(default_factory=list)
     requirement_verifiers: dict[str, list[QualityGate]] = Field(default_factory=dict)
