@@ -1,22 +1,21 @@
 # Referencja konfiguracji `converge.yaml`
 
 `converge.yaml` jest jedynym plikiem, który powinien być ręcznie edytowany dla konkretnego projektu.
-Converge celowo oddziela konfigurację użytkownika od generowanej konfiguracji OpenCode.
+Converge celowo oddziela konfigurację użytkownika od wygenerowanego runtime configu OpenCode.
 
-Zalecany wzorzec znajduje się w `examples/converge.yaml`.
+Wzorzec: [`examples/converge.yaml`](../examples/converge.yaml).
 
-## Zasady ogólne
+## Zasady nadrzędne
 
-1. `converge.yaml` trzymaj poza repozytorium, które jest rozwijane autonomicznie.
+1. `converge.yaml` trzymaj poza repozytorium rozwijanym autonomicznie.
 2. Nie zapisuj w nim sekretów.
-3. `architecture.md` trzymaj poza repozytorium i ustaw read-only.
-4. Zmiana projektu powinna wymagać zmiany YAML, a nie kodu LangGraph.
-5. Jawne quality gates i requirement verifiers są ważniejsze niż heurystyki auto-discovery.
-6. Generated OpenCode config jest artefaktem runtime i nie jest Source of Truth.
+3. `architecture.md` trzymaj poza target repo i ustaw read-only.
+4. Zmiana projektu ma wymagać zmiany YAML, nie grafu LangGraph.
+5. Jawne deterministic quality gates/verifiers są ważniejsze niż heurystyki.
+6. Generated OpenCode config jest artefaktem runtime, nie Source of Truth.
+7. Project YAML może wybierać modele i custom/MCP tools, ale nie może osłabiać twardych granic ról.
 
 ## Top-level
-
-Zalecany układ:
 
 ```yaml
 version: 1
@@ -29,52 +28,41 @@ quality: {}
 workflow: {}
 ```
 
-Converge nadal akceptuje wcześniejszy płaski format konfiguracji dla kompatybilności wstecznej, ale
-nowe projekty powinny używać formatu sekcyjnego.
+`version` musi obecnie wynosić `1`. Wcześniejszy płaski format jest nadal akceptowany dla
+kompatybilności wstecznej, ale nowe projekty powinny używać formatu sekcyjnego.
+
+Ścieżki względne w `converge.yaml` są rozwiązywane względem katalogu tego YAML, nie względem bieżącego
+working directory procesu/PyCharm.
 
 ---
 
 ## `project`
 
-### `project.name`
-
-Opcjonalna nazwa czytelna dla człowieka.
-
 ```yaml
 project:
   name: payments
-```
-
-Nie zmienia nazwy repo GitHub ani branchy.
-
-### `project.repo_path`
-
-Wymagana absolutna ścieżka do lokalnego klona repozytorium docelowego.
-
-```yaml
-project:
-  repo_path: /workspace/payments/repository
-```
-
-To jest bazowy checkout. Builder nie pracuje bezpośrednio tutaj; Converge tworzy worktree.
-
-### `project.requirements_path`
-
-Wymagana ścieżka do immutable Markdown Source of Truth.
-
-```yaml
-project:
-  requirements_path: /workspace/payments/architecture.md
-```
-
-Plik nie powinien znajdować się wewnątrz `repo_path`.
-
-### `project.state_dir`
-
-```yaml
-project:
+  repo_path: ./repository
+  requirements_path: ./architecture.md
   state_dir: null
+  worktree_dir: null
+  require_spec_read_only: true
 ```
+
+### `name`
+
+Opcjonalna nazwa czytelna dla człowieka. Nie zmienia GitHub repo ani branchy.
+
+### `repo_path`
+
+Lokalny klon repozytorium docelowego. Jest bazowym checkoutem; Builder nie zapisuje bezpośrednio w tym
+katalogu, tylko w izolowanym worktree.
+
+### `requirements_path`
+
+Read-only Markdown z architekturą/wymaganiami docelowymi. To Source of Truth. Plik powinien znajdować
+się poza `repo_path`.
+
+### `state_dir`
 
 `null` oznacza:
 
@@ -82,37 +70,19 @@ project:
 <repo-parent>/.converge
 ```
 
-Tutaj trafiają checkpointy, compliance, generated OpenCode config i evidence.
+Tutaj trafiają checkpointy LangGraph, `contract.json`, compliance, evidence i runtime OpenCode config.
 
-### `project.worktree_dir`
+### `worktree_dir`
 
-```yaml
-project:
-  worktree_dir: null
-```
+`null` oznacza `<state_dir>/worktrees`.
 
-`null` oznacza:
+### `require_spec_read_only`
 
-```text
-<state_dir>/worktrees
-```
-
-### `project.require_spec_read_only`
-
-Domyślnie `true`.
-
-```yaml
-project:
-  require_spec_read_only: true
-```
-
-Wyłączenie tej kontroli obniża gwarancję Immutable Intent i nie jest zalecane dla autonomous mode.
+Domyślnie `true`. Wyłączanie tego w autonomous mode nie jest zalecane.
 
 ---
 
 ## `github`
-
-### Przykład
 
 ```yaml
 github:
@@ -126,58 +96,22 @@ github:
   ci_timeout_seconds: 1800
 ```
 
-### `github.repo`
+- `repo`: `owner/name`; `null` wyłącza GitHub PR/CI.
+- `cli`: binarka GitHub CLI, domyślnie `gh`.
+- `base_branch`: domyślnie `main`.
+- `branch_prefix`: domyślnie `converge/`.
+- `auto_merge`: merge dopiero po local gates, review, policy i remote CI.
+- `merge_method`: `merge`, `squash` albo `rebase`.
+- `ci_poll_seconds`: częstotliwość obserwacji CI.
+- `ci_timeout_seconds`: twardy timeout CI observation.
 
-Repo w formacie `owner/name`.
-
-```yaml
-github:
-  repo: acme/payments
-```
-
-Ustaw `null`, jeśli chcesz pracować bez GitHub PR/CI.
-
-### `github.cli`
-
-Domyślnie `gh`. Można podać pełną ścieżkę do binarki.
-
-### `github.base_branch`
-
-Domyślnie `main`.
-
-### `github.branch_prefix`
-
-Domyślnie `converge/`.
-
-### `github.auto_merge`
-
-Domyślnie `false`.
-
-Przy `true` merge następuje dopiero po lokalnych gate'ach, independent review, policy oraz remote CI.
-
-### `github.merge_method`
-
-Dozwolone:
-
-```text
-merge
-squash
-rebase
-```
-
-### `github.ci_poll_seconds`
-
-Częstotliwość sprawdzania GitHub CI.
-
-### `github.ci_timeout_seconds`
-
-Twardy timeout obserwacji CI.
+Builder nie dostaje `gh` ani `git push`; integracja jest deterministyczną warstwą orkiestratora.
 
 ---
 
 ## `opencode`
 
-### Przykład
+Converge celuje w aktualny **stabilny `opencode`**. Osobne beta `opencode2` nie jest domyślnym runtime.
 
 ```yaml
 opencode:
@@ -189,18 +123,13 @@ opencode:
     servers: {}
 ```
 
-### `opencode.binary`
+### `binary`
 
-Nazwa lub ścieżka OpenCode CLI.
+Nazwa lub pełna ścieżka do stable OpenCode CLI.
 
-### `opencode.attach_url`
+### `attach_url`
 
-`null` oznacza lokalne `opencode run`.
-
-```yaml
-opencode:
-  attach_url: null
-```
+`null` oznacza lokalne `opencode run` dla każdego agent call.
 
 Dla persistent server:
 
@@ -209,46 +138,24 @@ opencode:
   attach_url: http://127.0.0.1:4096
 ```
 
-W trybie attach provider/MCP/agent request configuration musi być również widoczna dla serwera
-OpenCode. Najprościej uruchomić `opencode serve` z `OPENCODE_CONFIG` wskazującym wygenerowany plik.
+Serwer musi widzieć ten sam filesystem repo/worktrees.
 
-### `opencode.auto_approve`
+### `auto_approve`
 
-Domyślnie `true`.
+Domyślnie `true`. Converge może automatyzować promptowane operacje, ale jawne `deny` wygenerowane dla
+roli nadal obowiązują. To nie zastępuje systemowego sandboxu.
 
-Converge dodaje `--auto` do `opencode run`. OpenCode automatycznie zatwierdza operacje, które normalnie
-miałyby efekt `ask`, ale jawne `deny` w profilu agenta pozostają zablokowane.
+### `generated_config_path`
 
-To nie zastępuje sandboxingu systemowego.
+`null` oznacza `<state_dir>/opencode.generated.json`. Plik jest generowany i nadpisywany. Nie edytuj go
+ręcznie.
 
-### `opencode.generated_config_path`
+Dla lokalnych agent calls Converge dodatkowo przekazuje tę samą definicję jako high-precedence runtime
+config, żeby config znajdujący się w target repo nie mógł osłabić safety policy.
 
-`null` oznacza:
+### `mcp`
 
-```text
-<state_dir>/opencode.generated.json
-```
-
-Plik jest nadpisywany przez Converge. Nie edytuj go ręcznie.
-
-### `opencode.mcp`
-
-Ta sekcja jest przekazywana do OpenCode V2 jako `mcp`.
-
-Przykład local stdio MCP:
-
-```yaml
-opencode:
-  mcp:
-    servers:
-      local-tools:
-        type: local
-        command: [python, -m, my_mcp_server]
-        environment:
-          API_KEY: "{env:MY_MCP_KEY}"
-```
-
-Przykład remote Streamable HTTP MCP:
+Neutralny user-facing format:
 
 ```yaml
 opencode:
@@ -257,23 +164,35 @@ opencode:
       docs:
         type: remote
         url: https://mcp.example.com/mcp
+        enabled: true
         oauth: false
         headers:
           X-API-Key: "{env:DOCS_MCP_API_KEY}"
 ```
 
-Converge nie interpoluje sekretów. Składnia `{env:NAME}` jest obsługiwana przez OpenCode.
+Local MCP:
+
+```yaml
+opencode:
+  mcp:
+    servers:
+      local-tools:
+        type: local
+        command: [python, -m, my_mcp_server]
+        enabled: true
+        environment:
+          API_KEY: "{env:LOCAL_MCP_API_KEY}"
+```
+
+Converge konwertuje `servers` do formatu stable OpenCode. Nie interpoluje sekretów. Używaj `{env:NAME}`.
 
 ---
 
 ## `models`
 
-Sekcja `models` rozwiązuje dwa problemy:
+### OpenWebUI gateway
 
-1. definiuje transport/provider do modeli;
-2. definiuje wielokrotnie używalne profile modeli dla ról agentów.
-
-### OpenWebUI jako gateway
+Domyślna integracja:
 
 ```yaml
 models:
@@ -285,11 +204,8 @@ models:
     api_key_env: OPENWEBUI_API_KEY
 ```
 
-Dla OpenWebUI `base_url` powinien kończyć się na `/api`. Generated OpenCode provider dokłada ścieżkę
-Chat Completions zgodnie z providerem OpenAI-compatible.
-
-Converge przechowuje wyłącznie nazwę ENV, np. `OPENWEBUI_API_KEY`. Wartość sekretu nie trafia do
-generowanego JSON.
+`base_url` kończy się na `/api`; provider OpenAI-compatible używa endpointu Chat Completions poniżej tej
+bazy. Wartość klucza nie trafia do YAML ani generated JSON — tylko referencja ENV.
 
 ### Generic OpenAI-compatible gateway
 
@@ -301,24 +217,13 @@ models:
     name: Internal LLM Gateway
     base_url: https://llm.example.com/v1
     api_key_env: INTERNAL_LLM_API_KEY
-```
-
-Możesz także dodać statyczne niesekretne nagłówki:
-
-```yaml
-models:
-  gateway:
-    kind: openai_compatible
-    provider_id: internal-llm
-    base_url: https://llm.example.com/v1
-    api_key_env: INTERNAL_LLM_API_KEY
     headers:
       X-Tenant: platform-team
 ```
 
-### Existing OpenCode providers
+`headers` powinny zawierać tylko niesekretne wartości albo provider-supported ENV substitution.
 
-Jeżeli provider jest już skonfigurowany globalnie w OpenCode:
+### Existing OpenCode provider
 
 ```yaml
 models:
@@ -326,116 +231,106 @@ models:
     kind: existing
   profiles:
     planner:
-      model: anthropic/claude-sonnet-example
-    builder:
-      model: openai/gpt-example
+      model: anthropic/example-model
 ```
 
-Jeśli `model` zawiera `/` i `provider` nie jest podany, Converge traktuje go jako kompletny
-`provider/model`.
+Dla `kind: existing` podaj pełne `provider/model` albo jawny `provider` w profilu.
 
-### Profile modeli
+### Domyślny quality-first routing
 
 ```yaml
 models:
   profiles:
     planner:
-      model: my-reasoning-model
-      name: Planner reasoning model
-      variant: null
-      request_body:
-        temperature: 0.1
-      request_headers: {}
-```
+      model: deepseek-v4-pro:cloud
+      name: DeepSeek V4 Pro - architecture planner
+      request_body: {}
 
-#### `model`
+    builder:
+      model: kimi-k2.7-code:cloud
+      name: Kimi K2.7 Code - implementation builder
+      request_body: {}
 
-Model ID. Dla gateway OpenWebUI powinien być identyczny z ID zwracanym przez `/api/models`.
-
-#### `provider`
-
-Opcjonalny provider override.
-
-```yaml
-models:
-  profiles:
     reviewer:
-      provider: another-provider
-      model: review-model
+      model: glm-5.3-flash:cloud
+      name: GLM 5.3 Flash - independent reviewer
+      request_body: {}
 ```
 
-Jeżeli `provider` nie jest podany, profil używa `models.gateway.provider_id`, chyba że `model` jest już
-pełnym `provider/model`.
+Routing jest celowo heterogeniczny. Builder i Reviewer używają różnych rodzin modeli. Szczegółowe
+uzasadnienie i alternatywy: [`MODEL_ROUTING.md`](MODEL_ROUTING.md).
 
-#### `name`
+### `model`
 
-Czytelna nazwa wpisywana do generated provider catalog.
+Dokładne ID modelu zwracane przez OpenWebUI `/api/models`. Sprawdź je komendą:
 
-#### `variant`
-
-OpenCode model variant. Jest provider-specific.
-
-```yaml
-variant: high
+```bash
+converge models --config /path/to/converge.yaml
 ```
 
-Nie ustawiaj wariantu na podstawie przypuszczenia. Używaj tylko wariantów dostępnych dla konkretnego
-modelu/providera.
+### `provider`
 
-#### `request_body`
+Opcjonalny provider override dla profilu.
 
-Dowolne parametry requestu przekazywane przez OpenCode do providera.
+### `name`
+
+Czytelna nazwa w generated OpenCode model catalog.
+
+### `variant`
+
+Opcjonalny wariant provider-specific. Nie zakładaj, że `high`, `max` itd. istnieje dla każdego modelu.
+
+### `request_body`
+
+Provider/model-specific opcje requestu. Domyślne profile mają `{}` celowo.
 
 ```yaml
 request_body:
-  temperature: 0.1
+  temperature: 1.0
+  top_p: 0.95
 ```
 
-Możliwe pola zależą od modelu i providera. Nie wszystkie modele akceptują `temperature`.
+Nie ustawiaj parametrów na podstawie nazwy modelu lub ogólnej heurystyki. Benchmarkuj przez dokładnie ten
+sam OpenWebUI/OpenCode transport. Determinism integracyjny jest zapewniany przez gates, nie przez
+sampling parameter.
 
-#### `request_headers`
+### `request_headers`
 
-Per-model/agent request headers. Nie umieszczaj tu sekretów, jeśli plik ma być przechowywany w Git.
+Opcjonalne per-profile nagłówki. Nie wpisuj tu sekretów w plaintext.
 
 ---
 
 ## `agents`
 
-Minimalna konfiguracja trzech ról:
+Domyślne bounded budgets:
 
 ```yaml
 agents:
   planner:
     agent: converge-planner
     model_profile: planner
-    timeout_seconds: 1200
-    steps: 12
+    timeout_seconds: 1800
+    steps: 18
+    tool_permissions: {}
 
   builder:
     agent: converge-builder
     model_profile: builder
-    timeout_seconds: 2400
-    steps: 40
+    timeout_seconds: 3600
+    steps: 60
+    tool_permissions: {}
 
   reviewer:
     agent: converge-reviewer
     model_profile: reviewer
-    timeout_seconds: 1200
-    steps: 16
+    timeout_seconds: 1800
+    steps: 24
+    tool_permissions: {}
 ```
 
 ### `agent`
 
-ID profilu OpenCode, obecnie dostarczanego przez:
-
-```text
-.opencode/agents/converge-planner.md
-.opencode/agents/converge-builder.md
-.opencode/agents/converge-reviewer.md
-```
-
-System prompt i twarde role bezpieczeństwa pozostają w repo Converge. Konfiguracja projektu wybiera
-modele i parametry runtime.
+Stable OpenCode runtime agent ID. Converge generuje prompt i twarde permissions dla znanych ról.
 
 ### `model_profile`
 
@@ -443,154 +338,127 @@ Nazwa z `models.profiles`.
 
 ### `model`
 
-Alternatywa dla `model_profile`; bezpośredni OpenCode `provider/model`.
+Alternatywa dla `model_profile`, np. `openai/example-model`. Nie ustawiaj jednocześnie obu.
+
+### `timeout_seconds`
+
+Twardy timeout pojedynczego `opencode run`.
+
+### `steps`
+
+Maksymalny budżet tool/model loop. Jest limitem, nie celem.
+
+### `request_body`
+
+Per-agent override profilu. Nie może nadpisać pól bezpieczeństwa runtime agent definition.
+
+### `tool_permissions`
+
+Może służyć do włączenia konkretnych custom/MCP tools, np.:
 
 ```yaml
 agents:
   planner:
-    agent: converge-planner
-    model: openai/gpt-example
+    tool_permissions:
+      docs_*: allow
 ```
 
-Nie ustawiaj jednocześnie `model` i `model_profile`.
+Nie można z YAML nadpisać chronionych kluczy takich jak `edit`, `bash`, `external_directory`, `task`,
+`read`, `websearch` itd. Próba osłabienia granicy roli powoduje błąd configu.
 
-### `variant`
+### Twarde granice ról
 
-Per-agent override wariantu. Ma pierwszeństwo przed wariantem profilu.
+Planner/Reviewer:
 
-### `timeout_seconds`
+- read-only;
+- bez edit;
+- ograniczony Git shell (`status`, `diff`, `log`);
+- bez external directory;
+- bez nested task delegation.
 
-Twardy timeout całego `opencode run` dla roli.
+Builder:
 
-### `steps`
-
-Maksymalna liczba kroków model/tool loop konfigurowana dla profilu OpenCode.
-
-### `request_body` / `request_headers`
-
-Per-agent override. Są mergowane na profil modelu; wartości agenta mają pierwszeństwo.
-
-Przykład:
-
-```yaml
-models:
-  profiles:
-    coding:
-      model: code-model
-      request_body:
-        temperature: 0.1
-
-agents:
-  builder:
-    agent: converge-builder
-    model_profile: coding
-    request_body:
-      max_completion_tokens: 16000
-```
+- edit + lokalny shell w worktree;
+- zakaz `git push`;
+- zakaz `gh`;
+- zakaz `git reset --hard` i `git clean`;
+- bez external directory;
+- bez nested task delegation.
 
 ---
 
 ## Jak powstaje `opencode.generated.json`
 
-Dla konfiguracji:
-
-```yaml
-models:
-  gateway:
-    kind: openwebui
-    base_url: http://127.0.0.1:3000/api
-    api_key_env: OPENWEBUI_API_KEY
-  profiles:
-    builder:
-      model: code-model
-
-agents:
-  builder:
-    agent: converge-builder
-    model_profile: builder
-    steps: 40
-```
-
-Converge generuje logicznie odpowiednik:
+Dla OpenWebUI Converge generuje logicznie stable OpenCode config w rodzaju:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "providers": {
+  "provider": {
     "openwebui": {
+      "npm": "@ai-sdk/openai-compatible",
       "name": "OpenWebUI",
-      "env": ["OPENWEBUI_API_KEY"],
-      "package": "@opencode-ai/ai/providers/openai-compatible",
-      "settings": {
-        "baseURL": "http://127.0.0.1:3000/api"
+      "options": {
+        "baseURL": "http://127.0.0.1:3000/api",
+        "apiKey": "{env:OPENWEBUI_API_KEY}"
       },
       "models": {
-        "code-model": {
-          "name": "code-model"
+        "kimi-k2.7-code:cloud": {
+          "name": "Kimi K2.7 Code - implementation builder"
         }
       }
     }
   },
-  "agents": {
+  "agent": {
     "converge-builder": {
-      "model": "openwebui/code-model",
-      "steps": 40
+      "model": "openwebui/kimi-k2.7-code:cloud",
+      "steps": 60,
+      "permission": {
+        "edit": "allow",
+        "external_directory": "deny"
+      }
     }
   }
 }
 ```
 
-Wartość `OPENWEBUI_API_KEY` nie jest serializowana.
+Rzeczywisty generated agent zawiera pełną policy, w tym shell deny rules. Sekret nie jest
+serializowany.
 
 ---
 
 ## `quality`
 
-### `quality.auto_discover`
-
-Domyślnie `true`.
-
 ```yaml
 quality:
   auto_discover: true
+  gates: []
+  requirement_verifiers: {}
 ```
 
-Aktualny inspector rozpoznaje konserwatywnie:
+### `auto_discover`
 
-- Python;
-- Node;
-- Go;
-- Rust.
+Rozpoznaje konserwatywnie Python, Node, Go i Rust z manifestów/metadanych. Nie zgaduje dowolnych
+komend projektu.
 
-Nie uruchamia komendy tylko dlatego, że „wydaje się standardowa”; szuka odpowiednich manifestów,
-metadanych lub skryptów projektu.
+### `gates`
 
-### `quality.gates`
-
-Jawne deterministic quality gates.
+Jawne deterministic quality gates:
 
 ```yaml
 quality:
   gates:
-    - name: tests
+    - name: project-test-suite
       command: [make, test]
       required: true
       timeout_seconds: 1800
 ```
 
-`command` może być listą argv albo stringiem. Shell jest domyślnie wyłączony.
+`command` może być argv list albo string. `shell` jest domyślnie `false`.
 
-```yaml
-- name: special-check
-  command: "./scripts/check.sh --strict"
-  shell: false
-```
+### `requirement_verifiers`
 
-Ustaw `shell: true` tylko gdy komenda rzeczywiście wymaga interpretacji przez shell.
-
-### `quality.requirement_verifiers`
-
-Mapowanie konkretnych requirement IDs na deterministic evidence.
+Machine-verifiable evidence przypisane do immutable requirement ID:
 
 ```yaml
 quality:
@@ -599,16 +467,16 @@ quality:
       - name: architecture-boundary
         command: [pytest, -q, tests/architecture/test_boundary.py]
         required: true
+        timeout_seconds: 600
 ```
 
-Reguły konwergencji:
+Reguły:
 
-- baseline `FAIL` może pozostać `FAIL` w unrelated PR;
+- istniejący baseline `FAIL` może pozostać `FAIL` w unrelated change;
 - mandatory `PASS` nie może przejść do non-PASS;
-- jeśli Task Envelope targetuje skonfigurowany verifier, przynajmniej jeden target musi poprawić się z
-  non-PASS do PASS.
+- target z configured verifier musi wykazać rzeczywisty postęp do `PASS` przed integracją.
 
-Requirement ID pobieraj z wygenerowanego `contract.json`. Nie zgaduj ID.
+Requirement IDs bierz z `<state_dir>/contract.json`.
 
 ---
 
@@ -622,113 +490,54 @@ workflow:
   max_diff_lines_hard: 1000
 ```
 
-### `max_repair_attempts`
+- `max_repair_attempts`: bounded repair loop przed replan/HITL.
+- `max_replans`: bounded fresh planning po nieudanych repair loops.
+- `max_iterations`: maksymalna liczba zmian w jednym autonomous run.
+- `max_diff_lines_hard`: twarda górna granica Task Envelope diff; Planner może ustawić mniejszą.
 
-Maksymalna liczba lokalnych repair loops przed replan/HITL.
-
-### `max_replans`
-
-Maksymalna liczba fresh replans przed wyjątkiem wymagającym operatora.
-
-### `max_iterations`
-
-Twardy budżet liczby iteracji autonomous convergence.
-
-### `max_diff_lines_hard`
-
-Globalny hard limit diff size. Task Envelope może ustawić niższy limit, ale nie może przekroczyć tej
-wartości.
+Te limity są częścią safety modelu. Nie ustawiaj wartości „nieskończonych”.
 
 ---
 
-## Sekrety i środowisko
+## Walidacja konfiguracji
 
-Nie zapisuj w YAML:
+### Lista modeli
 
-- OpenWebUI API key;
-- GitHub token;
-- MCP API keys;
-- hasła OpenCode server;
-- provider secrets.
-
-Używaj ENV lub native credential stores.
-
-Przykład `.env` jest wygodny lokalnie, ale nie powinien być commitowany:
-
-```text
-OPENWEBUI_API_KEY=...
-DOCS_MCP_API_KEY=...
+```bash
+converge models --config /path/to/converge.yaml
 ```
 
-Jeżeli PyCharm uruchamia Converge z Run Configuration, dodaj te ENV do konfiguracji uruchomieniowej albo
-upewnij się, że PyCharm dziedziczy je z procesu nadrzędnego.
-
----
-
-## Różne projekty, ten sam orkiestrator
-
-Przykład:
-
-```text
-/workspace/
-├── converge-orchestrator/
-├── payments/
-│   ├── architecture.md
-│   ├── repository/
-│   └── converge.yaml
-└── orders/
-    ├── architecture.md
-    ├── repository/
-    └── converge.yaml
-```
-
-Każdy projekt ma osobny:
-
-- Source of Truth;
-- state_dir;
-- worktrees;
-- compliance matrix;
-- model profiles;
-- MCP/gates;
-- GitHub target.
-
-Kod Converge jest wspólny.
-
----
-
-## Walidacja
-
-Po każdej istotnej zmianie YAML uruchom:
+### Pełny preflight
 
 ```bash
 converge doctor --config /path/to/converge.yaml
 ```
 
-Dla pracy bez dostępu do gateway:
+`doctor` sprawdza ścieżki, read-only Source of Truth, narzędzia, requirement IDs, stack/gates, model
+routing, ENV i live model catalog.
+
+### Offline
 
 ```bash
 converge doctor --offline --config /path/to/converge.yaml
 ```
 
-`--offline` pomija live model catalog, ale nie pomija walidacji ścieżek, read-only Source of Truth,
-model profile references, stacku, quality policy ani verifier IDs.
+Pomija wyłącznie live model catalog check. Nie służy do omijania błędnego ID modelu.
 
----
+## Co zmieniać przy nowym projekcie
 
-## Kompatybilność z wcześniejszym płaskim YAML
+Najczęściej tylko:
 
-Starszy format nadal działa:
-
-```yaml
-repo_path: /workspace/project/repository
-requirements_path: /workspace/project/architecture.md
-github_repo: acme/project
-opencode_binary: opencode
-agents:
-  planner:
-    agent: converge-planner
-    model: openai/example-model
+```text
+project.name
+project.repo_path
+project.requirements_path
+github.repo
+models.gateway.*     # jeśli gateway jest inny
+models.profiles.*    # jeśli katalog modeli jest inny
+opencode.mcp         # opcjonalnie
+quality.*
+workflow.*
 ```
 
-Nie jest jednak zalecany dla nowych instalacji, ponieważ nie skaluje się równie czytelnie do gateway,
-model profiles, MCP i wieloprojektowej administracji.
+Nie powinno być potrzeby edycji kodu LangGraph ani generated OpenCode JSON.
