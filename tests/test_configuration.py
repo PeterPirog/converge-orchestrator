@@ -131,9 +131,7 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
     assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openwebui/reasoning/model"
 
 
-def test_container_sandbox_requires_image_and_rejects_host_agent_network(
-    tmp_path: Path,
-) -> None:
+def test_container_sandbox_requires_image_and_named_agent_network(tmp_path: Path) -> None:
     raw = _nested_config(tmp_path)
     raw["sandbox"] = {"mode": "container"}
     with pytest.raises(ValidationError, match="sandbox.image is required"):
@@ -145,7 +143,7 @@ def test_container_sandbox_requires_image_and_rejects_host_agent_network(
         "image": "converge-runtime:test",
         "agent_network": "host",
     }
-    with pytest.raises(ValidationError, match="agent_network=host"):
+    with pytest.raises(ValidationError, match="named agent_network"):
         ProjectConfig.model_validate(raw)
 
 
@@ -153,7 +151,7 @@ def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("OPENWEBUI_API_KEY", "must-never-be-written")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "test-value")
     cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
     payload = build_opencode_config(cfg)
 
@@ -180,11 +178,29 @@ def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety
     assert builder["permission"]["edit"] == "allow"
     assert builder["permission"]["bash"]["git push *"] == "deny"
     assert builder["permission"]["external_directory"] == "deny"
-    assert "must-never-be-written" not in json.dumps(payload)
+    assert "test-value" not in json.dumps(payload)
 
     generated = materialize_opencode_config(cfg)
     assert generated == cfg.opencode_generated_config_path
-    assert "must-never-be-written" not in generated.read_text(encoding="utf-8")
+    assert "test-value" not in generated.read_text(encoding="utf-8")
+
+
+def test_container_runtime_uses_agent_visible_gateway_override(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["sandbox"] = {
+        "mode": "container",
+        "image": "converge-runtime:test",
+        "agent_network": "converge-ai",
+        "agent_gateway_base_url": "http://open-webui:8080/api",
+    }
+    cfg = ProjectConfig.model_validate(raw)
+
+    payload = build_opencode_config(cfg)
+
+    assert cfg.model_gateway.base_url == "http://127.0.0.1:3000/api"
+    assert payload["provider"]["openwebui"]["options"]["baseURL"] == (
+        "http://open-webui:8080/api"
+    )
 
 
 def test_conflicting_limits_for_same_gateway_model_are_rejected(tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ def _container_config(tmp_path: Path) -> ProjectConfig:
             "image": "converge-runtime:test",
             "agent_network": "converge-ai",
             "quality_network": "none",
+            "agent_gateway_base_url": "http://open-webui:8080/api",
             "pass_env": ["PROJECT_TOKEN"],
         },
         agents={},
@@ -54,9 +55,9 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     monkeypatch,
 ) -> None:
     cfg = _container_config(tmp_path)
-    monkeypatch.setenv("OPENWEBUI_API_KEY", "gateway-secret")
-    monkeypatch.setenv("PROJECT_TOKEN", "project-secret")
-    monkeypatch.setenv("HOST_ONLY_SECRET", "must-not-enter-container")
+    monkeypatch.setenv("OPENWEBUI_API_KEY", "test-api-key")
+    monkeypatch.setenv("PROJECT_TOKEN", "test-project-token")
+    monkeypatch.setenv("HOST_ONLY_VALUE", "must-not-enter-container")
     completed = types.SimpleNamespace(returncode=0, stdout="ok")
 
     with (
@@ -86,7 +87,7 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     passed = _env_names(argv)
     assert "OPENWEBUI_API_KEY" in passed
     assert "PROJECT_TOKEN" in passed
-    assert "HOST_ONLY_SECRET" not in passed
+    assert "HOST_ONLY_VALUE" not in passed
 
 
 def test_builder_worktree_and_git_pointer_have_distinct_permissions(tmp_path: Path) -> None:
@@ -166,6 +167,28 @@ def test_agent_container_requires_a_real_docker_internal_network(tmp_path: Path)
                 scope="agent",
                 writable_cwd=False,
             )
+
+
+def test_agent_container_rejects_loopback_gateway_and_attach_server(tmp_path: Path) -> None:
+    cfg = _container_config(tmp_path)
+    cfg.sandbox.agent_gateway_base_url = "http://127.0.0.1:3000/api"
+    with pytest.raises(SandboxPreflightError, match="loopback model gateway"):
+        ExecutionSandbox(cfg).run(
+            ["opencode", "run"],
+            cwd=cfg.repo_path,
+            scope="agent",
+            writable_cwd=False,
+        )
+
+    cfg = _container_config(tmp_path)
+    cfg.opencode_attach_url = "http://opencode:4096"
+    with pytest.raises(SandboxPreflightError, match="attach_url is incompatible"):
+        ExecutionSandbox(cfg).run(
+            ["opencode", "run"],
+            cwd=cfg.repo_path,
+            scope="agent",
+            writable_cwd=False,
+        )
 
 
 def test_timed_out_container_is_force_removed(tmp_path: Path) -> None:
