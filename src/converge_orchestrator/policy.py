@@ -45,12 +45,12 @@ def can_integrate(
         return Decision(DecisionKind.BLOCK, "SPEC_CHANGED")
     if not required_gates_pass(gates):
         return Decision(DecisionKind.BLOCK, "QUALITY_GATE_FAILED")
+    if BLOCKING_RISK_FLAGS.intersection(risk_flags):
+        return Decision(DecisionKind.BLOCK, "RISK_POLICY_BLOCKED")
     if review.verdict != "pass":
         return Decision(DecisionKind.BLOCK, "REVIEW_REJECTED")
     if compliance.mandatory_regressions > 0:
         return Decision(DecisionKind.BLOCK, "ARCHITECTURE_REGRESSION")
-    if BLOCKING_RISK_FLAGS.intersection(risk_flags):
-        return Decision(DecisionKind.BLOCK, "RISK_POLICY_BLOCKED")
     if HUMAN_ONLY_FLAGS.intersection(risk_flags):
         return Decision(DecisionKind.INTERRUPT, "HUMAN_RISK_POLICY")
     return Decision(DecisionKind.ALLOW, "ALL_GATES_PASS")
