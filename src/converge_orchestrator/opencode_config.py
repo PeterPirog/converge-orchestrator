@@ -272,11 +272,11 @@ def _stable_mcp_config(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def role_mcp_config(config: ProjectConfig, role: str | None) -> dict[str, Any]:
-    """Disable configured MCP servers unless the active role explicitly grants `<server>_*`."""
+    """Enable configured MCP servers only when the active role grants `<server>_*`."""
     servers = _stable_mcp_config(config.mcp)
-    if not servers:
-        return {}
-    agent = config.agents.get(role) if role else None
+    if not servers or role is None:
+        return servers
+    agent = config.agents.get(role)
     for name, server in servers.items():
         permission = agent.tool_permissions.get(f"{name}_*") if agent else None
         server["enabled"] = permission in {"allow", "ask"}
@@ -410,7 +410,7 @@ def runtime_opencode_config(
 
 
 def materialize_opencode_config(config: ProjectConfig) -> Path:
-    """Write a safe baseline config; role-specific MCP enablement is inline at invocation time."""
+    """Write the stable baseline; inline runtime config applies role-specific MCP enablement."""
     target = config.opencode_generated_config_path
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = runtime_opencode_config(config, active_role=None)
