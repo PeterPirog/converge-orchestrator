@@ -46,7 +46,11 @@ def _config(tmp_path: Path, *, context_tokens: int = 6000) -> ProjectConfig:
 
 def test_contract_excerpt_never_silently_drops_requirement_after_80() -> None:
     requirements = [
-        Requirement(id=f"ARCH-{index:03d}", statement=f"Requirement {index}", source=f"spec:{index}")
+        Requirement(
+            id=f"ARCH-{index:03d}",
+            statement=f"Requirement {index}",
+            source=f"spec:{index}",
+        )
         for index in range(100)
     ]
 
