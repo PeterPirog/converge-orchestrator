@@ -182,9 +182,8 @@ class ScheduledRunController(RunController):
             self._cancel_timer(run_id)
 
     def _open_graph(self, record: dict[str, Any]):
-        """Open the canonical service graph with the selected persistence backend."""
-        project = self.registry.get_project(record["project_id"])
-        cfg = load_config(project["config_path"])
+        """Open the canonical service graph only for this controller's bound workspace."""
+        _, cfg = self._local_project(record["project_id"])
         checkpointer, db = self.persistence.open_checkpointer(cfg.state_dir)
         graph = build_graph(checkpointer=checkpointer)
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}
@@ -214,7 +213,7 @@ class ScheduledRunController(RunController):
             return None
 
     def _initial_recovery_input(self, record: dict[str, Any]) -> dict[str, Any]:
-        project = self.registry.get_project(record["project_id"])
+        project, _ = self._local_project(record["project_id"])
         return {
             "project_id": record["project_id"],
             "config_path": project["config_path"],
@@ -224,6 +223,8 @@ class ScheduledRunController(RunController):
 
     def _unfinished_records(self):
         for project in self.registry.list_projects():
+            if not self._project_is_local(project):
+                continue
             for record in self.registry.runs_for_project(project["id"]):
                 if not record["finished_at"]:
                     yield record
