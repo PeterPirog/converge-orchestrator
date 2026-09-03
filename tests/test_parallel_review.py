@@ -8,7 +8,6 @@ from converge_orchestrator.models import ProjectConfig, ReviewResult
 from converge_orchestrator.opencode import OpenCodeAdapter
 from converge_orchestrator.opencode_config import build_opencode_config
 
-
 REVIEW_ROLES = [
     "correctness_reviewer",
     "architecture_reviewer",
