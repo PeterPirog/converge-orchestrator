@@ -16,7 +16,7 @@ from .opencode_config import (
     resolve_agent_variant,
     runtime_opencode_config,
 )
-from .shell import run
+from .sandbox import ExecutionSandbox
 
 
 def _json_object(text: str) -> dict:
@@ -158,7 +158,7 @@ class OpenCodeAdapter:
         # continuity comes from LangGraph state and explicit evidence, not hidden model history.
         cmd += ["--dir", str(cwd), rendered_prompt]
         try:
-            result = run(
+            result = ExecutionSandbox(self.config).run(
                 cmd,
                 cwd=cwd,
                 timeout=agent_cfg.timeout_seconds,
@@ -169,6 +169,9 @@ class OpenCodeAdapter:
                     # repository that contains its own OpenCode configuration.
                     "OPENCODE_CONFIG_CONTENT": runtime_config,
                 },
+                scope="agent",
+                writable_cwd=role == "builder",
+                include_state=True,
             )
         except Exception:
             append_context_ledger(self.config, context_report, cwd)
@@ -221,9 +224,7 @@ class OpenCodeAdapter:
         for role in roles:
             if role in failures:
                 failure = failures[role]
-                reason = (
-                    f"{role} execution raised {type(failure).__name__}: {failure}"
-                )
+                reason = f"{role} execution raised {type(failure).__name__}: {failure}"
                 reviews[role] = _failed_review(role, reason)
             else:
                 reviews[role] = _normalize_review(role, raw_results[role])
