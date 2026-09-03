@@ -85,18 +85,20 @@ def test_placeholder_secret_literal_is_not_treated_as_material(tmp_path: Path) -
     assert "secret_material_detected" not in report.flags
 
 
-def test_destructive_migration_interrupts(tmp_path: Path) -> None:
+def test_destructive_migration_interrupts_without_copying_sql(tmp_path: Path) -> None:
+    sql = "ALTER TABLE customer DROP COLUMN legacy_id;"
     report = _classify(
         tmp_path,
         "migrations/0042_remove_customer.sql",
         base="-- old migration\n",
-        candidate="ALTER TABLE customer DROP COLUMN legacy_id;\n",
+        candidate=f"{sql}\n",
     )
 
     assert "destructive_data_migration" in report.flags
     finding = next(item for item in report.findings if item.kind == "destructive_migration")
     assert finding.disposition == "interrupt"
-    assert "DROP COLUMN" in finding.evidence
+    assert "destructive migration operation" in finding.evidence
+    assert sql not in finding.evidence
 
 
 def test_deleted_existing_migration_interrupts(tmp_path: Path) -> None:
@@ -184,3 +186,14 @@ def test_small_auth_surface_change_is_observed_not_interrupted(tmp_path: Path) -
     assert "critical_auth_redesign" not in report.flags
     finding = next(item for item in report.findings if item.kind == "auth_security_change")
     assert finding.disposition == "observe"
+
+
+def test_author_file_is_not_false_positive_auth_path(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "src/author.py",
+        base="def author_name():\n    return 'old'\n",
+        candidate="def author_name():\n    return 'new'\n",
+    )
+
+    assert not any(item.kind == "auth_security_change" for item in report.findings)
