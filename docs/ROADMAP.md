@@ -89,12 +89,14 @@ Implemented:
 - durable run lease, retry-safe side effects and checkpointable long CI waits;
 - bounded per-role provider retries and ordered model-profile fallback with fresh sessions, unchanged
   permissions, profile-specific context budgets and a durable attempt ledger;
+- process-level kill/restart fixture proving automatic LangGraph recovery after worktree creation,
+  preservation of uncheckpointed candidate data and no duplicate branch/worktree side effects;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Crash/chaos completion** — end-to-end kill/restart tests of service, OpenCode/provider,
-   integration checkpoint races and CI wait restoration.
+1. **Crash/chaos completion** — remaining end-to-end kill/restart tests of OpenCode/provider,
+   integration/PR checkpoint races and CI wait restoration.
 2. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence.
 3. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
