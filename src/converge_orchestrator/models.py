@@ -118,6 +118,7 @@ class SandboxConfig(BaseModel):
     image: str | None = None
     agent_network: str = "none"
     quality_network: str = "none"
+    agent_gateway_base_url: str | None = None
     require_internal_agent_network: bool = True
     read_only_root: bool = True
     pids_limit: int = Field(default=512, ge=32)
@@ -134,10 +135,10 @@ class SandboxConfig(BaseModel):
         if (
             self.mode == "container"
             and self.require_internal_agent_network
-            and self.agent_network == "host"
+            and self.agent_network in {"none", "host"}
         ):
             raise ValueError(
-                "sandbox.agent_network=host is incompatible with "
+                "sandbox requires a named agent_network when "
                 "require_internal_agent_network=true"
             )
         if len(self.pass_env) != len(set(self.pass_env)):
