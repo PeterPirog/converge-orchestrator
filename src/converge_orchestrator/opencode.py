@@ -263,7 +263,7 @@ class OpenCodeAdapter:
             ),
             separators=(",", ":"),
         )
-        managed_config_dir = materialize_managed_skills(self.config)
+        managed_config_dir = materialize_managed_skills(self.config, role)
         try:
             result = ExecutionSandbox(self.config).run(
                 cmd,
