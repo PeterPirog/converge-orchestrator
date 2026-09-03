@@ -76,6 +76,7 @@ def _nested_config(tmp_path: Path) -> dict:
                 },
             },
         },
+        "sandbox": {"mode": "host"},
         "agents": {
             "planner": {
                 "agent": "converge-planner",
@@ -118,6 +119,7 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
         tmp_path / ".converge" / "opencode.generated.json"
     ).resolve()
     assert cfg.model_gateway.kind == "openwebui"
+    assert cfg.sandbox.mode == "host"
     assert cfg.agents["builder"].model_profile == "builder"
     assert cfg.model_profiles["builder"].context_tokens == 128000
     assert cfg.model_profiles["builder"].output_tokens == 16000
@@ -127,6 +129,24 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
     assert cfg.context_output_reserve_tokens == 8192
     assert resolve_agent_model(cfg, cfg.agents["builder"]) == "openwebui/coding-model"
     assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openwebui/reasoning/model"
+
+
+def test_container_sandbox_requires_image_and_rejects_host_agent_network(
+    tmp_path: Path,
+) -> None:
+    raw = _nested_config(tmp_path)
+    raw["sandbox"] = {"mode": "container"}
+    with pytest.raises(ValidationError, match="sandbox.image is required"):
+        ProjectConfig.model_validate(raw)
+
+    raw = _nested_config(tmp_path)
+    raw["sandbox"] = {
+        "mode": "container",
+        "image": "converge-runtime:test",
+        "agent_network": "host",
+    }
+    with pytest.raises(ValidationError, match="agent_network=host"):
+        ProjectConfig.model_validate(raw)
 
 
 def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety(
@@ -226,7 +246,8 @@ def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: P
     adapter = OpenCodeAdapter(cfg)
     fake_result = type("Result", (), {"returncode": 0, "stdout": "ok"})()
 
-    with patch("converge_orchestrator.opencode.run", return_value=fake_result) as runner:
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with patch(target, return_value=fake_result) as runner:
         result = adapter.invoke("builder", "Implement task", cfg.repo_path)
 
     assert result.ok
@@ -235,6 +256,8 @@ def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: P
     inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     assert env["OPENCODE_CONFIG"] == str(cfg.opencode_generated_config_path)
     assert inline["agent"]["converge-builder"]["permission"]["bash"]["gh *"] == "deny"
+    assert call.kwargs["writable_cwd"] is True
+    assert call.kwargs["scope"] == "agent"
     command = call.args[0]
     assert "--auto" in command
     assert command[command.index("--agent") + 1] == "converge-builder"
@@ -293,6 +316,7 @@ def test_legacy_flat_configuration_remains_supported(tmp_path: Path) -> None:
     )
     assert cfg.repo_path == repo.resolve()
     assert cfg.model_gateway.kind == "existing"
+    assert cfg.sandbox.mode == "host"
     assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openai/gpt-test"
 
 
