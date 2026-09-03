@@ -132,10 +132,11 @@ def prepare_prompt(
 
     if status == "invalid_budget":
         report.budget_status = "invalid_budget"
-        raise ContextBudgetExceeded(
-            f"Invalid context budget for role {role}: context window is smaller than output reserve",
-            report,
+        message = (
+            f"Invalid context budget for role {role}: "
+            "context window is smaller than output reserve"
         )
+        raise ContextBudgetExceeded(message, report)
     if input_budget is not None and core_tokens > input_budget:
         report.budget_status = "core_exceeded"
         raise ContextBudgetExceeded(
