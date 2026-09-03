@@ -1,238 +1,175 @@
 # Audyt zbieżności z referencyjną architekturą autonomicznych agentów
 
 Ten dokument śledzi zgodność Converge z referencyjnymi założeniami autonomicznego workflow
-software-engineering: niezmienny plik architektury, wyspecjalizowane role, małe iteracje, testy,
-niezależny review, Git/GitHub, MCP, minimalny HITL i prostą rekonfigurację między projektami.
+software-engineering: niezmienny plik architektury, wyspecjalizowane role, małe iteracje, TDD,
+niezależny review, Git/GitHub, MCP, minimalny HITL, trwały LangGraph oraz prostą rekonfigurację
+między projektami.
 
 Audyt rozróżnia **cel architektoniczny** od konkretnej technologii opisanej w materiale referencyjnym.
-Jeżeli nowsza wersja platformy zastąpiła wskazany mechanizm, Converge zachowuje cel, ale nie utrzymuje
-legacy dependency wyłącznie dla literalnej zgodności.
+Stan trwały i przejścia procesu należą do LangGraph/control plane; OpenCode jest repo-centric executor,
+OpenWebUI jest punktem operatorskim, a GitHub jest zewnętrzną barierą PR/CI/merge.
 
 ## Stan ogólny
 
-Aktualnie 14 z 15 obszarów jest zgodnych albo zaimplementowanych mocniej niż w referencji, a 1 jest
-częściowy. OpenWebUI pełni rolę operatorskiego punktu wejścia przez wspierany Workspace Tool, podczas
-gdy LangGraph pozostaje trwałym silnikiem procesu. Długotrwała ciągłość pracy także nie zależy już od
-ukrytej historii modelu: każdy agent call jest świeżą sesją, a continuity pochodzi z LangGraph state i
-jawnych artefaktów evidence.
+Aktualnie **14 z 15 obszarów** jest zgodnych albo zaimplementowanych mocniej niż w referencji, a jeden
+obszar (`MCP jako szyna narzędziowa`) pozostaje częściowy z wyboru architektonicznego. Nie oznacza to,
+że projekt jest już production-complete: pozostały hardening crash/chaos, deterministic architecture
+analyzers, szersze compatibility adapters, provider fallback i produkcyjny multi-worker storage.
 
-Deterministyczna klasyfikacja finalnego diffu dla sekretów, migracji, publicznego Python API oraz
-auth/authz nie jest już luką. Największą pozostałą luką operacyjną jest crash/chaos recovery: leases,
-stale worktree cleanup, wznowienie po zabitym procesie oraz długotrwałe oczekiwanie na CI. Dalszego
-rozszerzenia wymagają także cross-language compatibility adapters, remote branch-protection awareness
-i observability. OS/container execution boundary oraz wymuszane red-before-green dla behavior tasks
-nie są już lukami architektonicznymi.
+Najważniejsze wcześniejsze luki operacyjne zostały istotnie zmniejszone. LangGraph ma trwałe run leases,
+retry-safe side effects i checkpointowane oczekiwanie na GitHub CI. Worktree utworzony przed crashem
+jest adoptowany zamiast kasowany; commit/push/PR/merge są odporne na ponowne wykonanie węzła. Długie CI
+nie trzyma workera: graf przechodzi przez `ci_poll -> ci_wait(interrupt) -> ci_poll`, a serwis odtwarza
+timer po restarcie z checkpointu.
+
+Warstwa GitHub weryfikuje także lokalny `origin`, klasyczne branch protection oraz efektywne
+`required_status_checks` z GitHub Rulesets. Gdy polityki chronionej gałęzi nie można odczytać lub jest
+malformed, CI pozostaje `pending` — nigdy false-PASS. Największą pozostałą luką recovery jest teraz
+**ownership-aware stale worktree/branch cleanup oraz pełny E2E chaos suite**, a nie sam checkpointing.
 
 ## Macierz zbieżności
 
 | Obszar | Status | Implementacja Converge | Pozostała luka |
 | --- | --- | --- | --- |
-| Niezmienny Markdown jako Source of Truth | **STRONGER** | plik poza repo, OS read-only, SHA-256 pin, ponowne sprawdzanie przed zmianami i bezpośrednio przed integration | brak krytycznej luki |
-| Przeciwdziałanie architectural drift | **STRONGER** | traceable `contract.json`, source anchors, exact target requirement injection, compliance i monotonic verifier policy; pełny contract nie jest już cicho obcinany do 80 wymagań | semantic-only requirements nadal wymagają LLM review |
-| Deterministyczny kontroler nad LLM | **STRONGER** | LangGraph + Pydantic state/policy; LLM nie steruje merge, nie może anulować failing gate ani sam wyprodukować hard-block evidence bez deterministycznego klasyfikatora | brak krytycznej luki |
-| Planner / Worker / Reviewer | **STRONGER** | Scout RO mapuje dokładny base commit, Planner RO wybiera task, Builder jest jedynym writerem, trzy niezależne review lanes są RO | dalsze specialty analyzers są opcjonalnym rozszerzeniem |
-| Autonomiczny TDD / repair loop | **ALIGNED** | behavior task wymaga strukturalnego TDD contract; orkiestrator wykonuje baseline, test-only RED, literalny novel failure marker, deterministic test-artifact check, SHA-256 freeze i GREEN na tym samym gate; repair/replan są bounded, a HITL nie może ominąć RED | klasyfikacja `change_kind` pozostaje semantic/reviewer-backed i może być dalej wzmacniana regułami językowymi |
-| Izolacja Git | **STRONGER** | osobny `git worktree` per task; w container sandbox shared `.git` i worktree `.git` pointer są dodatkowo read-only | cleanup po crash wymaga dalszego hardeningu |
-| Code review jako bariera przed dryfem | **STRONGER** | deterministic risk scan poprzedza semantic review; correctness + architecture + security są wykonywane równolegle; jeden reject albo reviewer failure blokuje integration; candidate z materiałem sekretu nie jest wysyłany reviewerom | future specialty lanes mogą zostać dodane później |
-| GitHub PR + CI | **ALIGNED** | deterministic integrator, branch push, PR, bounded CI wait, opcjonalny merge po PASS | required-check/branch-protection discovery i długie checkpointowane oczekiwanie jeszcze niepełne |
-| MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do stable OpenCode | Converge nie wymusza konkretnego katalogu git/github/pytest/desktop MCP; część funkcji realizuje bezpieczniej deterministycznym kodem lokalnym |
-| OpenWebUI jako punkt wejścia operatora | **ALIGNED** | natywny Workspace Tool nad Bearer-authenticated FastAPI; read-only status/compliance/evidence oraz confirmation-gated register/bootstrap/start/pause/resume/decision; durable state pozostaje w LangGraph | docelowy dashboard może poprawić ergonomię, ale nie jest wymagany do kontroli workflow |
-| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/sandbox/quality/workflow oraz Valves dla operator bridge | pełny GUI editor projektu pozostaje opcjonalny |
-| Minimalny HITL | **STRONGER** | przerwanie tylko dla deterministic risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate, hard-block secret material ani ominąć brakującego RED evidence; risk approval jest związane z hashem candidate diffu | szersze cross-language compatibility adapters mogą jeszcze zmniejszyć liczbę eskalacji |
-| Least privilege / sandbox | **STRONGER** | deny-by-default role permissions + niezależny container boundary: RO Scout/Planner/Reviewers, RW tylko active Builder worktree, RO Git metadata/pointer, read-only root, cap-drop, no-new-privileges, resource limits, allowlisted ENV, rozdzielone sieci, internal-agent-network validation, timeout cleanup i host-only GitHub integration | production image hardening i konkretne sieci/toolchainy pozostają deployment-specific |
-| Dual-memory / context rotation | **ALIGNED** | każda inwokacja OpenCode jest świeżą sesją bez `--continue`/`--session`; continuity pochodzi z LangGraph/evidence; deterministyczny bounded working memory jest advisory-only; context budget failuje przed model call, jeśli pełny authoritative core się nie mieści | token usage jest obecnie konserwatywnie estymowany; provider-reported cost/token telemetry pozostaje późniejszym hardeningiem |
-| Evidence + compliance | **STRONGER** | SQLite checkpoints, evidence bundles, events, compliance snapshot, requirement verifiers, baseline/candidate regression policy, TDD baseline/RED/GREEN evidence, deterministic `risk.json`, candidate risk fingerprint oraz per-invocation context ledger | docelowo metrics/tracing i storage dla multi-worker |
+| Niezmienny Markdown jako Source of Truth | **STRONGER** | plik poza target repo, OS read-only, SHA-256 pin, sprawdzanie przed krytycznymi przejściami, traceable `contract.json` | brak krytycznej luki |
+| Przeciwdziałanie architectural drift | **STRONGER** | stable requirement IDs, source anchors, exact requirement injection, compliance, deterministic verifiers i monotonic regression policy | semantic-only requirements nadal wymagają niezależnego review |
+| Deterministyczny kontroler nad LLM | **STRONGER** | LangGraph + Pydantic state + policy code; LLM nie może ominąć gate, sterować merge ani sam wytworzyć hard-block evidence | brak krytycznej luki |
+| Planner / Worker / Reviewer | **STRONGER** | Scout RO, Planner RO, Builder jako jedyny writer, niezależne correctness/architecture/security review lanes RO | specialty analyzers mogą być rozszerzane |
+| Autonomiczny TDD / repair loop | **ALIGNED** | behavior task wymaga baseline, test-only RED, novel literal marker, deterministic test-artifact check, SHA freeze i GREEN; bounded repair/replan; brak human bypass | `change_kind` może być dalej wzmacniany regułami językowymi |
+| Izolacja Git | **STRONGER** | osobny deterministic worktree per task, safe adoption po crashu, RO shared Git metadata w sandboxie | ownership-aware stale worktree/branch GC i chaos tests |
+| Code review jako bariera przed dryfem | **STRONGER** | deterministic risk scan przed semantic review; trzy niezależne lanes; reject albo reviewer failure blokuje integration; secret material nie trafia do reviewerów | dalsze specialty lanes opcjonalne |
+| GitHub PR + CI | **STRONGER** | retry-safe push/PR/merge, checkpointable CI machine wait, origin validation, classic branch protection + effective Rulesets required checks, App-ID-aware matching, fail-closed protected policy | jawna flaky-job retry policy i dodatkowe E2E failure tests |
+| MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do OpenCode; MCP dostępne dla agentów zgodnie z rolą | część krytycznych operacji Git/GitHub/test policy celowo pozostaje deterministycznym kodem zamiast delegacji do MCP |
+| OpenWebUI jako punkt wejścia operatora | **ALIGNED** | Workspace Tool nad Bearer-authenticated FastAPI; confirmation-gated mutations; status/compliance/evidence/interrupts; durable state poza chatem | dashboard pozostaje ergonomicznym rozszerzeniem |
+| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne, model profiles, agents, MCP, sandbox, quality, verifiers i workflow | GUI editor opcjonalny |
+| Minimalny HITL | **STRONGER** | HITL tylko dla risk policy/ambiguity lub wyczerpania bounded recovery; failing deterministic gates, hard secret BLOCK i brak RED nie są approvable | compatibility adapters mogą dalej zmniejszać eskalacje |
+| Least privilege / sandbox | **STRONGER** | role permissions + container boundary: RO Scout/Planner/Reviewers, RW tylko Builder worktree, RO Git metadata, read-only root, cap-drop, no-new-privileges, resource limits, ENV/network policy i timeout cleanup | pinned production images i deployment-specific hardening |
+| Dual-memory / context rotation | **ALIGNED** | świeża sesja OpenCode per agent call; continuity w LangGraph/evidence; authoritative core bez silent truncation; advisory-only compaction | provider-reported token/cost telemetry |
+| Evidence + compliance | **STRONGER** | LangGraph/SQLite checkpoints, event/evidence bundles, persistent compliance, verifier evidence, TDD RED/GREEN, risk fingerprint, CI policy evidence i context ledger | produkcyjny shared storage, backup i metrics/tracing |
 
-## Wspierana implementacja zamiast legacy OpenWebUI Pipelines
+## LangGraph pozostaje źródłem prawdy o przebiegu
 
-Materiał referencyjny zakłada OpenWebUI Pipelines/Manifold jako główny silnik orkiestracji. Dla nowego
-wdrożenia nie jest to już właściwy target. Aktualna dokumentacja OpenWebUI oznacza Pipelines jako
-legacy i wskazuje wspierane mechanizmy Tools, Functions oraz zewnętrzne MCP/OpenAPI.
-
-Converge realizuje funkcjonalny cel OpenWebUI w następującym układzie:
+Aktywny przepływ jest jawnie grafowy. Modele wykonują ograniczone role, ale nie posiadają kontroli nad
+przejściami procesu. Uproszczony przebieg wygląda następująco:
 
 ```text
-OpenWebUI Workspace Tool
-  |       |
-  |       +--> native confirmation for mutations
-  |
-  +--> authenticated FastAPI control requests
-              |
-              v
-        Converge FastAPI
-              |
-              v
-       LangGraph durable workflow
-          |              |
-       OpenCode        GitHub/CI
-          |
-        MCP/tools
+bootstrap -> spec guard -> scout -> planner -> worktree
+                                    |
+                                    v
+                         TDD baseline / RED / build
+                                    |
+                                    v
+                       quality + scope + risk scan
+                                    |
+                                    v
+                   parallel independent read-only review
+                                    |
+                                    v
+                      integrate -> PR -> ci_poll
+                                        |
+                               pending  v
+                                  ci_wait interrupt
+                                        |
+                                  auto resume
+                                        v
+                                     ci_poll
+                                        |
+                              PASS -> merge -> refresh
+                                        |
+                              next requirement / end
 ```
 
-FastAPI może wymagać `CONVERGE_API_TOKEN`; poza `/health` żądania wymagają Bearer auth. Workspace Tool
-ma password-masked Valve na token i prosi operatora o natywne potwierdzenie przed register/bootstrap,
-start, pause, resume oraz decyzją HITL. Brak potwierdzenia, odmowa, disconnect lub event-call error
-kończy operację bez mutującego requestu.
+`ci_wait` jest machine interruptem, nie HITL. `wake_at` jest częścią checkpointu LangGraph. Worker i run
+lease są zwalniane na czas oczekiwania, a `ScheduledRunController` odtwarza timer z checkpointu po
+restarcie usługi. Dzięki temu wielogodzinne CI nie wymaga żywego procesu ani historii czatu.
 
-To zachowuje pojedynczy wygodny punkt wejścia w OpenWebUI, ale stan, checkpointy, retry policy, repair,
-compliance i dowody pozostają w serwisie/LangGraph zaprojektowanym do długotrwałego procesu. Chat nie
-jest durable state.
+## Crash recovery i semantyka at-least-once
 
-## Repo Scout/Triage
+LangGraph może po awarii powtórzyć węzeł z side effectem, dlatego krytyczne operacje są projektowane
+jako `ensure`, a nie `create blindly`:
 
-Aktywny LangGraph dodaje Scouta bezpośrednio przed Plannerem:
+- `create_worktree()` adoptuje wyłącznie worktree o oczekiwanej deterministic path/branch i nie robi
+  automatycznego force-cleanup niejasnego stanu;
+- `integrate` rozpoznaje candidate commit utworzony przed utratą checkpointu i może ponowić push;
+- `ensure_pull_request()` wykorzystuje istniejący otwarty PR zamiast tworzyć duplikat;
+- `merge()` rozpoznaje already-merged PR;
+- SQLite run lease ma owner/TTL/heartbeat i blokuje równoległe wykonanie tego samego `thread_id`, ale po
+  śmierci procesu może zostać przejęty po expiry;
+- checkpointowane CI wait nie utrzymuje lease przez okres bezczynności.
+
+Pozostały hardening nie polega już na „dodaniu checkpointów”, lecz na bezpiecznym sprzątaniu zasobów.
+Automatyczny GC nie może skasować worktree wskazywanego przez active/recoverable/waiting run. Musi być
+oparty na jawnej własności zasobu i terminalnym stanie runu.
+
+## GitHub remote policy
+
+Converge nie ufa samemu `github.repo` z konfiguracji. Przed rejestracją projektu GitHub-backed i przed
+rzeczywistym transportem `gh` lokalny `origin` musi wskazywać ten sam kanoniczny `github.com/owner/repo`.
+Mismatched albo non-GitHub remote failuje przed PR/CI/merge side effects.
+
+Dla chronionej gałęzi CI gate buduje efektywną politykę z dwóch źródeł:
 
 ```text
-guard_plan -> pause_plan -> scout -> plan -> prepare_worktree
+classic branch protection required checks
+                 +
+active GitHub Rulesets required_status_checks
+                 |
+                 v
+        effective required-check set
+                 |
+           candidate SHA checks
 ```
 
-Scout jest read-only i działa na świeżo odświeżonym canonical base. Zapisuje dokładny SHA base commit,
-krótką mapę stosu i ważnych ścieżek, uwagi o granicach architektury, ryzykowne powierzchnie oraz
-wskazówki requirement-ID -> code paths. Wynik jest ograniczany rozmiarem i utrwalany jako
-`baseline.repo_scout` oraz `evidence/<run>/run/repo-scout.json`.
+Rulesets są pobierane dla konkretnej base branch i obejmują aktywne reguły repo/organization zwrócone
+przez GitHub. `integration_id` rulesetu jest mapowany na GitHub App ID check-runu. Check o tej samej
+nazwie z innej aplikacji nie spełnia wymagania. Klasyczna i rulesetowa lista są sumowane, nie
+nadpisywane. Unrelated checki pozostają evidence, ale nie mogą ani spełnić, ani oblać autorytatywnego
+required-check gate.
 
-Snapshot nie staje się nowym Source of Truth. Planner dostaje go jako advisory context i nadal może
-weryfikować szczegóły w repo. Nieznane requirement IDs są odrzucane. Brak konfiguracji Scouta, błąd
-modelu albo malformed JSON daje jawny fallback i nie zatrzymuje autonomicznego planowania.
+Jeśli chroniona polityka nie jest autorytatywna, malformed albo niedostępna, wynik pozostaje `pending`.
+Converge nie próbuje kopiować całej logiki GitHub reviews/merge queue/signatures — GitHub pozostaje
+ostatecznym enforcement point przy merge.
 
-## Context budget i fresh-session continuity
+## Context, review i sandbox
 
-Każde wywołanie OpenCode jest niezależną, świeżą sesją. Converge nie przekazuje `--continue` ani
-`--session`; nie istnieje więc ukryta historia modelu, od której zależy następna iteracja. Długotrwała
-ciągłość pochodzi z checkpointowanego LangGraph state oraz jawnych artefaktów.
+Każde wywołanie OpenCode jest świeżą sesją. Continuity pochodzi wyłącznie z checkpointowanego LangGraph
+state, Repo Scout snapshotu i jawnego working-memory/evidence. Immutable requirement statements, Task
+Envelope i pełny review diff należą do authoritative core i nie są cicho skracane. Przekroczenie
+budżetu core failuje przed model call; kompaktowane mogą być jedynie sekcje advisory.
 
-Prompt jest dzielony na dwie klasy:
+Review jest równoległe wyłącznie dla read-only lanes. Deterministyczny agregator wymaga wszystkich
+skonfigurowanych lanes; execution failure reviewera nie staje się PASS.
 
-```text
-AUTHORITATIVE CORE
-  - immutable requirement statements + source anchors
-  - Task Envelope / acceptance criteria
-  - pełny review diff
-  - bieżące deterministic quality/review evidence wymagane przez daną rolę
+`ExecutionSandbox` otacza OpenCode, quality gates i requirement verifiers. Deterministyczny Git/GitHub
+integrator pozostaje na hoście. Builder jest jedynym writerem worktree; reszta ról ma mount RO. W
+container mode działają read-only root, drop capabilities, no-new-privileges, limity zasobów, tmpfs,
+ENV allowlist, sieci kontrolowane i cleanup kontenera po timeout.
 
-ADVISORY CONTEXT
-  - Repo Scout snapshot
-  - bounded working-memory artifact z LangGraph state
-```
+## TDD i deterministic risk policy
 
-Authoritative core nigdy nie jest automatycznie obcinany. Jeśli konserwatywny budżet wejścia wyliczony
-z `model_profile.context_tokens`, `workflow.context_input_fraction` i output reserve jest za mały,
-agent nie zostaje uruchomiony i pojawia się jawny `CONTEXT_BUDGET_EXCEEDED`. Kompaktować lub odrzucić
-można wyłącznie sekcje oznaczone jako advisory.
+Dla `change_kind=behavior` Planner musi dostarczyć structured TDD contract wskazujący istniejący test
+gate i test paths. RED jest ważny tylko dla deterministycznie rozpoznawalnych artefaktów testowych i
+normalnego test failure z nowym literalnym markerem. Po RED hashe testów są zamrażane; GREEN musi
+przejść na tym samym gate bez zmiany zaakceptowanych testów.
 
-Working memory zawiera bounded metadata continuity: compliance counts/requirement IDs, ostatni task,
-krótkie review findings, retry counters, CI status i Scout base SHA. Nie kopiuje ani nie streszcza
-immutable requirement statements, więc nie może zastąpić Source of Truth. Każdy agent call zapisuje
-context evidence do `.converge/context-usage.jsonl`; Planner/Scout mają dodatkowo run-scoped evidence.
-
-## Parallel Review Coordinator
-
-Aktywny preset używa trzech lane'ów:
-
-```text
-                        +--> correctness_reviewer (GLM 5.3 Flash)
-quality gates -> fanout +--> architecture_reviewer (DeepSeek V4 Pro)
-                        +--> security_reviewer (gpt-oss 120B)
-                                      |
-                                      v
-                            deterministic aggregate
-                                      |
-                         all PASS -----+----- any REJECT/failure
-                            |                       |
-                       integrate                 repair/replan
-```
-
-Współbieżność jest tylko read-only. Nie wprowadza wielowriterowego dostępu do worktree. Wynik każdego
-lane'a jest niezależny, a failure-to-review jest traktowane jako rejection, nie jako PASS.
-
-## Execution sandbox
-
-`ExecutionSandbox` jest wspólną granicą dla OpenCode, quality gates i requirement verifiers. W
-hardened `container` mode utrzymuje deterministic control plane poza kontenerem, a niezaufane wykonanie
-przenosi do ograniczonego runtime:
-
-```text
-host: requirements / LangGraph / Git worktrees / commit / push / PR / merge
-                         |
-                    controlled mounts
-                         v
-container: Scout / Planner / Reviewers / Builder / tests / verifiers
-```
-
-Read-only role dostają wyłącznie RO repo. Builder jest jedynym writerem aktywnego worktree; shared
-`.git` oraz sam `worktree/.git` pointer pozostają RO. Kontener ma read-only root, tmpfs scratch,
-`cap-drop=ALL`, `no-new-privileges`, PID/RAM/CPU limits i selektywne ENV. Obrazy nie są pobierane
-implicit, a timeout powoduje jawne `docker rm -f` nazwanej instancji.
-
-Agent network może być wymagany jako rzeczywista Docker `Internal=true` network. Host-visible model
-gateway i agent-visible gateway mają osobne endpointy, dzięki czemu host może używać loopbacku, ale
-sandbox nie dostaje błędnej/pozornej ścieżki przez `127.0.0.1`. `opencode.attach_url` jest w container
-mode zakazany, bo external server obchodziłby granicę wykonawczą.
-
-Repo-controlled quality commands i verifiers działają przed finalnym scope gate; dopiero po nich
-Converge mierzy zmienione pliki i diff budget. Pełny model operacyjny opisuje
-[`EXECUTION_SANDBOX.md`](EXECUTION_SANDBOX.md).
-
-## Deterministic TDD evidence
-
-Dla tasków sklasyfikowanych jako `behavior` Task Envelope wymaga `tdd.mode=required`. Planner nie może
-wstrzyknąć arbitralnego shell commandu: wybierany jest wyłącznie istniejący configured/discovered test
-gate. Orkiestrator uruchamia ten gate na świeżym worktree jako baseline, zanim Builder dostanie fazę
-RED.
-
-RED jest akceptowany tylko wtedy, gdy zmiana jest test-only z dwóch niezależnych perspektyw. Musi
-mieścić się w deklarowanych `tdd.test_paths`, ale sama deklaracja modelu nie jest authority: każdy
-faktycznie zmieniony plik musi dodatkowo przejść deterministic cross-language test-artifact classifier
-(np. `tests/`, `__tests__/`, `*_test.*`, `*.test.*`, `*.spec.*`, popularne `*Test` forms). Dzięki temu
-Planner nie może nazwać `src/**` testami i otworzyć produkcyjnego write-setu w RED.
-
-Wybrany test gate musi zakończyć się zwykłym failure, nie timeoutem ani brakiem narzędzia. Krótki,
-single-line failure marker jest porównywany literalnie, nie jako regex, i musi pojawić się dopiero po
-dodaniu nowego testu. Istniejące unrelated baseline failures są dopuszczalne, jeśli nowy sygnał jest
-rzeczywiście novel.
-
-Po zaakceptowanym RED Converge zapisuje SHA-256 wszystkich zmienionych artefaktów testowych. GREEN
-wymaga, żeby każdy z nich nadal istniał z identycznym hashem oraz żeby ten sam deterministic test gate
-przeszedł. Builder/repair nie mogą więc uzyskać GREEN przez osłabienie, skip, usunięcie albo przepisaną
-wersję testu. Po wyczerpaniu bounded repair/replan specjalny TDD HITL oferuje wyłącznie replan lub stop;
-nie istnieje human override prowadzący do integration bez RED.
-
-## Deterministic repository-risk policy
-
-Przed semantic review aktywny LangGraph uruchamia deterministyczną klasyfikację finalnego candidate
-diffu. Risk scan nie korzysta z oceny LLM i nie ufa Plannerowi jako authority dla hard-block evidence.
-Planner może deklarować ryzyka advisory/HITL, ale zastrzeżone blocking flags są odrzucane z części
-deklaratywnej i mogą pojawić się w stanie grafu tylko jako rezultat klasyfikatora.
-
-Klasyfikator obecnie obejmuje:
-
-- high-confidence secret material i literalne sekrety — **BLOCK**, bez human override;
-- nowe zależności od nazwanych sekretów środowiskowych — **HITL**;
-- destrukcyjne operacje w ścieżkach migracji i usunięcie istniejącej migracji — **HITL**;
-- usunięcie lub zmianę sygnatury publicznego Python API — **HITL**;
-- jawne osłabienie albo utratę security primitives w auth/authz — **HITL**;
-- małe zmiany na powierzchni auth bez utraty primitive — jawne evidence `observe`, bez automatycznej
-  eskalacji.
-
-Wykrycie materiału sekretu następuje przed zewnętrznym semantic review. W takim przypadku reviewerzy
-nie otrzymują raw diffu, a evidence zapisuje tylko zredagowany finding. Dla approvable risków human
-approval jest związane z SHA-256 dokładnego candidate diffu. Każdy repair zmieniający choć jeden bajt
-unieważnia zgodę i wymusza świeżą klasyfikację oraz review.
-
-To zachowuje zasadę LangGraph: modele produkują propozycje i oceny semantyczne, natomiast przejścia do
-integration wynikają z jawnego stanu, deterministycznych węzłów i policy code.
+Przed semantic review finalny diff przechodzi deterministic risk classification. Wykryty secret
+material jest hard BLOCK i raw diff nie jest wtedy wysyłany reviewerom. Destructive migration,
+public-API compatibility i krytyczne auth/authz zmiany mogą wymagać HITL, ale approval jest związane z
+SHA-256 dokładnego candidate diffu i wygasa po repair.
 
 ## Priorytety dalszej zbieżności
 
-Kolejność prac powinna maksymalizować autonomię bez zwiększania blast radius:
+Kolejność prac po domknięciu effective GitHub policy:
 
-1. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie,
-   checkpointowane oczekiwanie na CI.
-2. **Compatibility adapters** — rozszerzenie public API/migration safety poza Python oraz bezpieczne
+1. **Ownership-aware crash/chaos completion** — bezpieczny stale worktree/branch GC i E2E kill/restart
+   testy dla service/OpenCode/integrate/CI-wait.
+2. **Deterministic architecture analyzers** — AST/import/dependency rules niezależne od project scripts
+   i oceny LLM.
+3. **Cross-language compatibility adapters** — public API/data migration safety i bezpieczne
    shim/roll-forward strategies redukujące HITL.
-3. **Remote policy/observability hardening** — branch protection/required checks, model fallback,
-   metrics/tracing i multi-worker state.
-4. **Deterministic architecture analyzers** — AST/import rules niezależne od custom project scripts.
+4. **Provider/model resilience** — bounded retries/fallback z evidence, bez ukrytej zmiany policy.
+5. **Production state + observability** — PostgreSQL checkpointer/control registry, backup,
+   OpenTelemetry/metrics i opcjonalny LangSmith bez przenoszenia evidence poza system.
 
 ## Kryterium docelowe
 
@@ -240,10 +177,12 @@ Projekt jest uznany za operacyjnie zbieżny z referencyjną wizją, gdy:
 
 - immutable requirements nie mogą zostać zmienione ani wyparte przez derived summary;
 - każde zadanie jest bounded i ma jednego writera;
-- behavior-changing task ma wymagany, zweryfikowany RED przed GREEN;
-- deterministyczne testy/policy oraz wszystkie wymagane review lanes przechodzą przed integracją;
-- GitHub CI potwierdza candidate commit;
-- system potrafi sam naprawiać/replanować do limitu i dopiero wtedy eskalować;
-- operator może uruchamiać i kontrolować workflow z OpenWebUI bez przechowywania durable state w chacie;
-- execution sandbox ogranicza szkody niezależnie od zachowania modelu;
-- context rotation pozwala na długie projekty bez kumulowania nieograniczonej historii promptów.
+- behavior-changing task ma zweryfikowany RED przed GREEN;
+- deterministic gates i wszystkie wymagane review lanes przechodzą przed integracją;
+- GitHub required CI policy potwierdza dokładny candidate commit;
+- workflow można bezpiecznie wznowić po crashu bez utraty lub duplikowania side effects;
+- system sam naprawia/replanuje do limitu i dopiero potem eskaluje wyjątki;
+- OpenWebUI steruje procesem bez przechowywania durable state w chacie;
+- execution sandbox ogranicza blast radius niezależnie od zachowania modelu;
+- context rotation pozwala na długie projekty bez kumulowania nieograniczonej historii;
+- cleanup po awarii nigdy nie usuwa zasobu należącego do aktywnego/recoverable runu.
