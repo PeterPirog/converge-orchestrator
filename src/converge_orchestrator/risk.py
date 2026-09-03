@@ -167,7 +167,10 @@ def _auth_path(path: str) -> bool:
     normalized = PurePosixPath(path)
     parts = [part.lower() for part in normalized.parts[:-1]]
     stem_tokens = set(re.split(r"[^a-z0-9]+", normalized.stem.lower()))
-    return bool(set(parts).intersection(_AUTH_SEGMENTS) or stem_tokens.intersection(_AUTH_SEGMENTS))
+    return bool(
+        set(parts).intersection(_AUTH_SEGMENTS)
+        or stem_tokens.intersection(_AUTH_SEGMENTS)
+    )
 
 
 def _canonical_auth_term(raw: str) -> str:
@@ -190,7 +193,10 @@ def _canonical_auth_term(raw: str) -> str:
 def _auth_terms(lines: list[str]) -> set[str]:
     terms: set[str] = set()
     for line in lines:
-        terms.update(_canonical_auth_term(match.group(0)) for match in _AUTH_PRIMITIVE.finditer(line))
+        terms.update(
+            _canonical_auth_term(match.group(0))
+            for match in _AUTH_PRIMITIVE.finditer(line)
+        )
     return terms
 
 
@@ -296,7 +302,9 @@ def _auth_findings(
         (line_no, line) for line_no, line in added if _AUTH_PRIMITIVE.search(line)
     ]
     removed_security = [line for line in removed if _AUTH_PRIMITIVE.search(line)]
-    weakening = [(line_no, line) for line_no, line in added if _AUTH_WEAKENING.search(line)]
+    weakening = [
+        (line_no, line) for line_no, line in added if _AUTH_WEAKENING.search(line)
+    ]
     lost_terms = _auth_terms(removed_security) - _auth_terms(added_lines)
     changed_security_lines = len(added_security) + len(removed_security)
     if weakening or lost_terms or changed_security_lines >= 8:
@@ -345,7 +353,10 @@ def _function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple:
     for index, arg in enumerate(positional):
         default = None
         if index >= defaults_start:
-            default = ast.dump(node.args.defaults[index - defaults_start], include_attributes=False)
+            default = ast.dump(
+                node.args.defaults[index - defaults_start],
+                include_attributes=False,
+            )
         positional_payload.append((arg.arg, _annotation(arg.annotation), default))
     kwonly_payload = [
         (
@@ -400,14 +411,19 @@ def _module_public_api(source: str | None) -> dict[str, tuple]:
                 continue
             if explicit_exports is not None and node.name not in explicit_exports:
                 continue
-            bases = tuple(ast.dump(base, include_attributes=False) for base in node.bases)
+            bases = tuple(
+                ast.dump(base, include_attributes=False) for base in node.bases
+            )
             api[node.name] = ("class", bases)
             for member in node.body:
                 if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
                 if member.name.startswith("_") and member.name != "__init__":
                     continue
-                api[f"{node.name}.{member.name}"] = ("method", _function_signature(member))
+                api[f"{node.name}.{member.name}"] = (
+                    "method",
+                    _function_signature(member),
+                )
     return api
 
 
@@ -470,7 +486,13 @@ def classify_repository_risk(
     deduped: list[RiskFinding] = []
     seen: set[tuple] = set()
     for finding in findings:
-        key = (finding.kind, finding.flag, finding.path, finding.line, finding.evidence)
+        key = (
+            finding.kind,
+            finding.flag,
+            finding.path,
+            finding.line,
+            finding.evidence,
+        )
         if key in seen:
             continue
         seen.add(key)
