@@ -157,14 +157,18 @@ def crash(registry_path: Path, config_path: Path) -> int:
 def recover(registry_path: Path) -> int:
     controller = _controller(registry_path)
     deadline = time.monotonic() + 15
+    last_record: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        record = controller.registry.runs_for_project("chaos-pr")[0]
-        if record["finished_at"]:
-            if record["status"] != "completed":
-                raise RuntimeError(f"recovered run failed: {record}")
+        last_record = controller.registry.runs_for_project("chaos-pr")[0]
+        if last_record["finished_at"]:
+            if last_record["status"] != "completed":
+                raise RuntimeError(f"recovered run failed: {last_record}")
             return 0
         time.sleep(0.05)
-    raise RuntimeError("recovered PR run did not reach a terminal checkpoint")
+    raise RuntimeError(
+        "recovered PR run did not reach a terminal checkpoint; "
+        f"last registry state: {last_record}"
+    )
 
 
 def main() -> int:
