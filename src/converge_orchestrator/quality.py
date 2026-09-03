@@ -9,7 +9,7 @@ from .compliance import ComplianceEngine
 from .git import changed_files, diff_line_count, paths_within_allowlist
 from .inspector import inspect_repository
 from .models import GateResult, ProjectConfig, QualityGate, RequirementStatus, TaskEnvelope
-from .shell import run_configured
+from .sandbox import ExecutionSandbox
 from .spec import compile_contract
 from .verification import run_requirement_verifiers
 
@@ -49,13 +49,19 @@ def effective_quality_gates(config: ProjectConfig, cwd: Path) -> list[QualityGat
     return gates
 
 
-def _execute_quality_gate(gate: QualityGate, cwd: Path) -> GateResult:
+def _execute_quality_gate(
+    config: ProjectConfig,
+    gate: QualityGate,
+    cwd: Path,
+) -> GateResult:
     try:
-        result = run_configured(
+        result = ExecutionSandbox(config).run(
             gate.command,
             cwd=cwd,
             timeout=gate.timeout_seconds,
             shell=gate.shell,
+            scope="quality",
+            writable_cwd=True,
         )
     except subprocess.TimeoutExpired as exc:
         output = f"Gate timed out after {gate.timeout_seconds}s"
@@ -86,7 +92,10 @@ def _execute_quality_gate(gate: QualityGate, cwd: Path) -> GateResult:
 
 
 def run_quality_gates(config: ProjectConfig, cwd: Path) -> list[GateResult]:
-    return [_execute_quality_gate(gate, cwd) for gate in effective_quality_gates(config, cwd)]
+    return [
+        _execute_quality_gate(config, gate, cwd)
+        for gate in effective_quality_gates(config, cwd)
+    ]
 
 
 def _convergence_details(
@@ -102,8 +111,18 @@ def _convergence_details(
         }
 
     contract = compile_contract(config.requirements_path)
-    baseline_results = run_requirement_verifiers(config, config.repo_path, contract.requirements)
-    candidate_results = run_requirement_verifiers(config, cwd, contract.requirements)
+    baseline_results = run_requirement_verifiers(
+        config,
+        config.repo_path,
+        contract.requirements,
+        writable_cwd=False,
+    )
+    candidate_results = run_requirement_verifiers(
+        config,
+        cwd,
+        contract.requirements,
+        writable_cwd=True,
+    )
     baseline = ComplianceEngine.apply_verifications(
         ComplianceEngine.initial(contract),
         baseline_results,
@@ -159,12 +178,17 @@ def run_scope_gate(
     cwd: Path,
     task: TaskEnvelope,
 ) -> GateResult:
+    # Repo-controlled verifiers run first. Scope is measured only after they finish so a verifier
+    # cannot mutate the candidate after allowlist/diff evidence has already been accepted.
+    convergence_ok, convergence = _convergence_details(config, cwd, task)
     paths = changed_files(cwd, config.base_branch)
     line_count = diff_line_count(cwd, config.base_branch)
-    hard_limit = min(task.max_diff_lines or config.max_diff_lines_hard, config.max_diff_lines_hard)
+    hard_limit = min(
+        task.max_diff_lines or config.max_diff_lines_hard,
+        config.max_diff_lines_hard,
+    )
     paths_ok = paths_within_allowlist(paths, task.allowed_paths)
     size_ok = line_count <= hard_limit
-    convergence_ok, convergence = _convergence_details(config, cwd, task)
     details = {
         "changed_files": paths,
         "diff_lines": line_count,
