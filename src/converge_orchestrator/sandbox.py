@@ -5,6 +5,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -83,6 +84,36 @@ class ExecutionSandbox:
                 "require_internal_agent_network=true"
             )
 
+    def _inspect_network(self, network: str) -> bool:
+        policy = self.config.sandbox
+        result = run_configured(
+            [
+                policy.engine,
+                "network",
+                "inspect",
+                "--format",
+                "{{.Internal}}",
+                network,
+            ],
+            cwd=self.config.repo_path,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise SandboxPreflightError(
+                f"configured sandbox network does not exist: {network}"
+            )
+        return result.stdout.strip().lower() == "true"
+
+    def _validate_internal_agent_network(self) -> None:
+        policy = self.config.sandbox
+        if not policy.require_internal_agent_network:
+            return
+        self._validate_network_policy()
+        if not self._inspect_network(policy.agent_network):
+            raise SandboxPreflightError(
+                f"sandbox agent network is not Docker-internal: {policy.agent_network}"
+            )
+
     def preflight(self) -> None:
         policy = self.config.sandbox
         if policy.mode == "host":
@@ -107,14 +138,14 @@ class ExecutionSandbox:
             )
         networks = {policy.agent_network, policy.quality_network} - {"none", "host"}
         for network in sorted(networks):
-            result = run_configured(
-                [policy.engine, "network", "inspect", network],
-                cwd=self.config.repo_path,
-                timeout=30,
-            )
-            if result.returncode != 0:
+            internal = self._inspect_network(network)
+            if (
+                network == policy.agent_network
+                and policy.require_internal_agent_network
+                and not internal
+            ):
                 raise SandboxPreflightError(
-                    f"configured sandbox network does not exist: {network}"
+                    f"sandbox agent network is not Docker-internal: {network}"
                 )
 
     def run(
@@ -138,6 +169,8 @@ class ExecutionSandbox:
                 env=env,
             )
         self._validate_network_policy()
+        if scope == "agent":
+            self._validate_internal_agent_network()
         return self._run_container(
             command,
             cwd=cwd,
@@ -175,12 +208,15 @@ class ExecutionSandbox:
         process_env["XDG_CACHE_HOME"] = "/tmp/converge-cache"
 
         network = policy.agent_network if scope == "agent" else policy.quality_network
+        container_name = f"converge-{uuid.uuid4().hex}"
         argv = [
             policy.engine,
             "run",
             "--rm",
             "--init",
             "--pull=never",
+            "--name",
+            container_name,
             "--entrypoint",
             "",
             "--cap-drop=ALL",
@@ -204,6 +240,9 @@ class ExecutionSandbox:
             argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
         argv += ["--mount", _mount(cwd, readonly=not writable_cwd)]
+        worktree_git = cwd / ".git"
+        if writable_cwd and worktree_git.is_file():
+            argv += ["--mount", _mount(worktree_git, readonly=True)]
         git_dir = self.config.repo_path / ".git"
         if git_dir.exists() and not _is_within(git_dir, cwd):
             argv += ["--mount", _mount(git_dir, readonly=True)]
@@ -220,13 +259,25 @@ class ExecutionSandbox:
 
         argv.append(image)
         argv.extend(_inner_command(command, shell=shell))
-        return subprocess.run(
-            argv,
-            cwd=cwd,
-            env=process_env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-        )
+        try:
+            return subprocess.run(
+                argv,
+                cwd=cwd,
+                env=process_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            subprocess.run(
+                [policy.engine, "rm", "-f", container_name],
+                cwd=cwd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=30,
+                check=False,
+            )
+            raise
