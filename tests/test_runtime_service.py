@@ -15,6 +15,11 @@ from converge_orchestrator.runtime_service import ScheduledRunController
 def _controller() -> ScheduledRunController:
     controller = object.__new__(ScheduledRunController)
     controller.registry = Mock()
+    controller.persistence = Mock()
+    controller.persistence.is_transient_error.side_effect = lambda exc: (
+        isinstance(exc, sqlite3.OperationalError)
+        and any(marker in str(exc).lower() for marker in ("locked", "busy"))
+    )
     controller._workers = {}
     controller._lock = threading.Lock()
     controller._lease_owner = "controller-test"
