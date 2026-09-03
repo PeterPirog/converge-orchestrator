@@ -16,6 +16,7 @@ from .runtime import RunController
 
 _CONTENTION_RETRY_SECONDS = 5
 _AUTO_RECOVERY_DELAY_SECONDS = 0.05
+_CHECKPOINT_INSPECTION_RETRY_SECONDS = 1.0
 _PRECHECKPOINT_RECOVERY_STATUSES = {
     "queued",
     "running",
@@ -37,6 +38,13 @@ def _is_contention_error(exc: RuntimeError) -> bool:
         "leased by another active controller" in message
         or "already executing" in message
     )
+
+
+def _is_transient_checkpoint_error(exc: Exception) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
 
 
 class ScheduledRunController(RunController):
@@ -151,7 +159,7 @@ class ScheduledRunController(RunController):
         return graph, db, graph_config
 
     def _recovery_snapshot(self, record: dict[str, Any]) -> dict[str, Any] | None:
-        """Read restart state without confusing storage failure with a missing first checkpoint."""
+        """Read restart state, retrying only transient SQLite lock/busy failures."""
         try:
             graph, db, graph_config = self._open_graph(record)
             try:
@@ -166,6 +174,11 @@ class ScheduledRunController(RunController):
                     f"{type(exc).__name__}: {exc}"
                 ),
             )
+            if _is_transient_checkpoint_error(exc):
+                self._schedule_recoverable(
+                    record["id"],
+                    _CHECKPOINT_INSPECTION_RETRY_SECONDS,
+                )
             return None
 
     def _initial_recovery_input(self, record: dict[str, Any]) -> dict[str, Any]:
