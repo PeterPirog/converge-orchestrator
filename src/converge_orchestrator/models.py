@@ -64,6 +64,8 @@ class ModelProfile(BaseModel):
     provider: str | None = None
     name: str | None = None
     variant: str | None = None
+    context_tokens: int | None = Field(default=None, ge=1)
+    output_tokens: int | None = Field(default=None, ge=1)
     request_body: dict[str, Any] = Field(default_factory=dict)
 
 
