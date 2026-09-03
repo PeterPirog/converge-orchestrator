@@ -49,7 +49,9 @@ Implemented:
 - compliance snapshot persisted across runs for unchanged Source of Truth;
 - stack-aware quality discovery for Python, Node, Go and Rust;
 - normalized missing-tool and timeout failures;
-- OpenCode V2 read-only Planner/Reviewer and bounded Builder permissions.
+- stable OpenCode read-only Planner/Reviewer and bounded Builder permissions;
+- high-precedence runtime role config so target-repo OpenCode settings cannot weaken role boundaries;
+- exact target requirement statements/source anchors injected into Builder/repair prompts.
 
 Remaining:
 
@@ -68,18 +70,25 @@ Implemented:
 - stable per-run LangGraph `thread_id` and checkpoint-aware resume;
 - autonomous post-merge next-task loop;
 - single user-maintained `converge.yaml` with documented sections;
+- paths resolved relative to the YAML file for IDE-independent behavior;
 - backward-compatible legacy flat configuration;
-- OpenWebUI/OpenAI-compatible generated OpenCode provider;
+- OpenWebUI/OpenAI-compatible generated stable OpenCode provider;
 - reusable model profiles and per-agent runtime properties;
+- quality-first default routing: DeepSeek V4 Pro Planner, Kimi K2.7 Code Builder, GLM 5.3 Flash Reviewer;
+- model-family diversity documented as a review-quality invariant;
+- `converge models` model-catalog discovery;
 - model gateway live validation in `converge doctor`;
 - OpenCode MCP configuration embedded in the project YAML;
 - generated `opencode.generated.json` outside the target repository;
-- detailed PyCharm/OpenWebUI/OpenCode onboarding and configuration reference.
+- detailed PyCharm/OpenWebUI/OpenCode onboarding, configuration and model-routing references.
 
 Next priorities:
 
-- OpenWebUI operator/control dashboard bridge on top of the existing FastAPI API;
 - parallel independent review coordinator: correctness, architecture and security;
+- use an independent model family for security review (reference candidate: `gpt-oss:120b`);
+- fast read-only Repo Scout/Triage role (reference candidate: `deepseek-v4-flash:cloud`);
+- provider/model fallback policy with bounded retries and evidence;
+- OpenWebUI operator/control dashboard bridge on top of the existing FastAPI API;
 - sandboxed execution runner with filesystem/network policy;
 - PostgreSQL checkpointer/control registry for multi-worker deployment;
 - structured metrics and OpenTelemetry/LangSmith integration;
@@ -94,7 +103,7 @@ Planned:
 - branch-protection and required-check awareness;
 - flake-aware CI retry policy without hiding deterministic failures;
 - cost/token/time budgets per project and per run;
-- model routing/fallback policy with audit trail;
+- model routing/fallback policy with audit trail and per-role health statistics;
 - container images and hardened deployment profile;
 - multi-project dashboard and operator audit views;
 - bounded parallel builders only for scheduler-proven non-overlapping write sets.
