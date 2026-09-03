@@ -10,7 +10,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from .config import load_config
-from .graph import build_graph
+from .graph_service import build_graph
 from .inspector import inspect_repository
 from .model_gateway import (
     ModelGatewayError,
