@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import subprocess
 from pathlib import Path
 
@@ -178,8 +177,8 @@ def run_tdd_red(
     task_scope_ok = paths_within_allowlist(paths, task.allowed_paths)
     expected = task.tdd.expected_failure_pattern or ""
     baseline_output = str(baseline_details.get("gate_output", ""))
-    signal_in_red = bool(re.search(expected, result.output, flags=re.MULTILINE))
-    signal_in_baseline = bool(re.search(expected, baseline_output, flags=re.MULTILINE))
+    signal_in_red = expected in result.output
+    signal_in_baseline = expected in baseline_output
     ordinary_failure = result.returncode != 0 and result.returncode not in _INVALID_EXECUTION_CODES
     novel_expected_failure = signal_in_red and not signal_in_baseline
     hashes = _file_hashes(cwd, paths) if test_paths_ok and task_scope_ok else {}
@@ -199,7 +198,7 @@ def run_tdd_red(
         "test_paths_ok": test_paths_ok,
         "task_scope_ok": task_scope_ok,
         "ordinary_failure": ordinary_failure,
-        "expected_failure_pattern": expected,
+        "expected_failure_marker": expected,
         "expected_signal_in_red": signal_in_red,
         "expected_signal_in_baseline": signal_in_baseline,
         "red_test_sha256": hashes,
