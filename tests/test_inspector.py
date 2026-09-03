@@ -67,7 +67,10 @@ def test_inspector_discovers_node_go_and_rust_without_graph_changes(tmp_path: Pa
     )
     (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n", encoding="utf-8")
     (tmp_path / "go.mod").write_text("module example.invalid/fixture\n", encoding="utf-8")
-    (tmp_path / "Cargo.toml").write_text("[package]\nname='fixture'\nversion='0.1.0'\n", encoding="utf-8")
+    (tmp_path / "Cargo.toml").write_text(
+        "[package]\nname='fixture'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
 
     profile = inspect_repository(tmp_path)
     commands = {gate.name: gate.command for gate in profile.quality_gates}
