@@ -62,15 +62,11 @@ def _failed_ci(name: str = "CI") -> CIResult:
     )
 
 
-def _store(bundle: dict | None = None):
-    if bundle is None:
-        read_task_bundle = Mock(side_effect=FileNotFoundError("no retry ledger"))
-    else:
-        read_task_bundle = Mock(return_value=bundle)
+def _store(ledger: dict | None = None):
     return types.SimpleNamespace(
         write_json=Mock(),
         append_event=Mock(),
-        read_task_bundle=read_task_bundle,
+        read_json=Mock(return_value=ledger),
     )
 
 
@@ -142,18 +138,7 @@ def test_uncheckpointed_retry_reservation_is_not_duplicated_after_restart(tmp_pa
     adapter = Mock()
     adapter.ci_status.return_value = _failed_ci()
     policy = FlakyCIPolicy(checks=["CI"], max_retries_per_check=1)
-    store = _store(
-        {
-            "run_id": "run-1",
-            "task_id": "ARCH-001-1",
-            "artifacts": {
-                "ci-flaky-retries.json": {
-                    "head_sha": "abc",
-                    "counts": {"CI": 1},
-                }
-            },
-        }
-    )
+    store = _store({"head_sha": "abc", "counts": {"CI": 1}})
 
     result = _invoke(tmp_path, _state(), adapter, policy, store=store)
 
