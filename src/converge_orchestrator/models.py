@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enum import StrEnum
+import enum
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -15,7 +15,7 @@ _REVIEW_AGENT_ROLES = {
 }
 
 
-class RequirementStatus(StrEnum):
+class RequirementStatus(enum.StrEnum):
     PASS = "pass"
     FAIL = "fail"
     PARTIAL = "partial"
