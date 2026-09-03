@@ -35,14 +35,14 @@ class Contract(BaseModel):
 
 
 class ModelGatewayConfig(BaseModel):
-    """Model transport used by generated OpenCode configuration."""
+    """Model transport used by generated stable OpenCode configuration."""
 
     kind: Literal["existing", "openwebui", "openai_compatible"] = "existing"
     provider_id: str = "openwebui"
     name: str = "OpenWebUI"
     base_url: str | None = None
     api_key_env: str | None = None
-    package: str = "@opencode-ai/ai/providers/openai-compatible"
+    package: str = "@ai-sdk/openai-compatible"
     headers: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -58,14 +58,13 @@ class ModelGatewayConfig(BaseModel):
 
 
 class ModelProfile(BaseModel):
-    """Reusable model selection and request properties shared by agent roles."""
+    """Reusable model selection and provider-specific model options."""
 
     model: str
     provider: str | None = None
     name: str | None = None
     variant: str | None = None
     request_body: dict[str, Any] = Field(default_factory=dict)
-    request_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentConfig(BaseModel):
@@ -76,7 +75,9 @@ class AgentConfig(BaseModel):
     timeout_seconds: int = 1800
     steps: int | None = Field(default=None, ge=1)
     request_body: dict[str, Any] = Field(default_factory=dict)
-    request_headers: dict[str, str] = Field(default_factory=dict)
+    tool_permissions: dict[str, Literal["allow", "ask", "deny"]] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def model_source_is_unambiguous(self) -> AgentConfig:
