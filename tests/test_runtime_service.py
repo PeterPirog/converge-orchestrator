@@ -98,6 +98,24 @@ def test_restore_precheckpoint_run_schedules_initial_recovery() -> None:
     controller._schedule_recoverable.assert_called_once_with("run-1")
 
 
+def test_restore_terminal_checkpoint_finishes_stale_registry_record() -> None:
+    controller = _controller()
+    _one_unfinished_run(controller)
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {"status": "completed"}, "interrupt": None, "next": []}
+    )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
+    controller._cancel_timer = Mock()  # type: ignore[method-assign]
+
+    controller._restore_recoverable_runs()
+
+    controller.registry.update_run.assert_called_once_with(
+        "run-1", status="completed", node="done", finished=True
+    )
+    controller._cancel_timer.assert_called_once_with("run-1")
+    controller._schedule_recoverable.assert_not_called()
+
+
 def test_restore_does_not_resume_human_or_controlled_interrupt() -> None:
     controller = _controller()
     _one_unfinished_run(controller)
@@ -153,6 +171,24 @@ def test_automatic_precheckpoint_recovery_replays_original_initial_input() -> No
             "thread_id": "thread-1",
         },
     )
+
+
+def test_recovery_timer_reconciles_terminal_checkpoint_without_reexecution() -> None:
+    controller = _controller()
+    record = {**_unfinished_record(), "status": "recoverable"}
+    controller.registry.get_run.return_value = record
+    controller._timer_generations["run-1"] = 6
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {"status": "converged"}, "interrupt": None, "next": []}
+    )
+    controller._submit = Mock()  # type: ignore[method-assign]
+
+    controller._resume_recoverable("run-1", 6)
+
+    controller.registry.update_run.assert_called_once_with(
+        "run-1", status="converged", node="done", finished=True
+    )
+    controller._submit.assert_not_called()
 
 
 def test_recovery_inspection_failure_never_restarts_from_empty_state() -> None:
