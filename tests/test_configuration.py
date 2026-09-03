@@ -65,10 +65,13 @@ def _nested_config(tmp_path: Path) -> dict:
             "profiles": {
                 "planner": {
                     "model": "reasoning/model",
+                    "context_tokens": 200000,
                     "request_body": {"temperature": 0.1},
                 },
                 "builder": {
                     "model": "coding-model",
+                    "context_tokens": 128000,
+                    "output_tokens": 16000,
                     "request_body": {"temperature": 0.0},
                 },
             },
@@ -114,6 +117,8 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
     ).resolve()
     assert cfg.model_gateway.kind == "openwebui"
     assert cfg.agents["builder"].model_profile == "builder"
+    assert cfg.model_profiles["builder"].context_tokens == 128000
+    assert cfg.model_profiles["builder"].output_tokens == 16000
     assert resolve_agent_model(cfg, cfg.agents["builder"]) == "openwebui/coding-model"
     assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openwebui/reasoning/model"
 
@@ -131,6 +136,11 @@ def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety
     assert provider["options"]["baseURL"] == "http://127.0.0.1:3000/api"
     assert provider["options"]["apiKey"] == "{env:OPENWEBUI_API_KEY}"
     assert set(provider["models"]) == {"reasoning/model", "coding-model"}
+    assert provider["models"]["reasoning/model"]["limit"] == {"context": 200000}
+    assert provider["models"]["coding-model"]["limit"] == {
+        "context": 128000,
+        "output": 16000,
+    }
     assert payload["mcp"]["docs"]["enabled"] is True
     assert payload["mcp"]["docs"]["oauth"] is False
 
@@ -149,6 +159,21 @@ def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety
     generated = materialize_opencode_config(cfg)
     assert generated == cfg.opencode_generated_config_path
     assert "must-never-be-written" not in generated.read_text(encoding="utf-8")
+
+
+def test_conflicting_limits_for_same_gateway_model_are_rejected(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["models"]["profiles"]["second-builder"] = {
+        "model": "coding-model",
+        "context_tokens": 64000,
+    }
+    raw["agents"]["second-builder"] = {
+        "agent": "unsupported-role",
+        "model_profile": "second-builder",
+    }
+    cfg = ProjectConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="conflicting OpenCode context/output limits"):
+        build_opencode_config(cfg)
 
 
 def test_request_body_cannot_override_orchestrator_safety_fields(tmp_path: Path) -> None:
@@ -249,12 +274,16 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["project"]["repo_path"]
     assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
-    assert raw["models"]["profiles"]["planner"]["model"] == "deepseek-v4-pro:cloud"
-    assert raw["models"]["profiles"]["builder"]["model"] == "kimi-k2.7-code:cloud"
-    assert raw["models"]["profiles"]["reviewer"]["model"] == "glm-5.3-flash:cloud"
-    assert raw["models"]["profiles"]["planner"]["request_body"] == {}
-    assert raw["models"]["profiles"]["builder"]["request_body"] == {}
-    assert raw["models"]["profiles"]["reviewer"]["request_body"] == {}
+    profiles = raw["models"]["profiles"]
+    assert profiles["planner"]["model"] == "deepseek-v4-pro:cloud"
+    assert profiles["planner"]["context_tokens"] == 1048576
+    assert profiles["builder"]["model"] == "kimi-k2.7-code:cloud"
+    assert profiles["builder"]["context_tokens"] == 262144
+    assert profiles["reviewer"]["model"] == "glm-5.3-flash:cloud"
+    assert profiles["reviewer"]["context_tokens"] == 1048576
+    assert profiles["planner"]["request_body"] == {}
+    assert profiles["builder"]["request_body"] == {}
+    assert profiles["reviewer"]["request_body"] == {}
     assert raw["agents"]["planner"]["steps"] == 18
     assert raw["agents"]["builder"]["steps"] == 60
     assert raw["agents"]["reviewer"]["steps"] == 24
