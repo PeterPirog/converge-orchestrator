@@ -48,6 +48,13 @@ class QualityGate(BaseModel):
     shell: bool = False
 
 
+class StackProfile(BaseModel):
+    stacks: list[Literal["python", "node", "go", "rust"]] = Field(default_factory=list)
+    indicators: dict[str, list[str]] = Field(default_factory=dict)
+    quality_gates: list[QualityGate] = Field(default_factory=list)
+    package_manager: str | None = None
+
+
 class ProjectConfig(BaseModel):
     repo_path: Path
     requirements_path: Path
@@ -62,6 +69,7 @@ class ProjectConfig(BaseModel):
     agents: dict[str, AgentConfig]
     quality_gates: list[QualityGate] = Field(default_factory=list)
     requirement_verifiers: dict[str, list[QualityGate]] = Field(default_factory=dict)
+    auto_discover_quality: bool = True
     max_repair_attempts: int = 3
     max_replans: int = 2
     max_iterations: int = 50

@@ -9,6 +9,8 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from .config import load_config
+from .inspector import inspect_repository
+from .quality import effective_quality_gates
 from .spec import compile_contract, is_read_only, sha256_file
 from .workflow import build_graph
 
@@ -30,11 +32,15 @@ def doctor(config: ConfigOption) -> None:
         raise typer.BadParameter(
             f"requirement_verifiers reference unknown IDs: {sorted(unknown_verifiers)}"
         )
+    profile = inspect_repository(cfg.repo_path)
+    gates = effective_quality_gates(cfg, cfg.repo_path)
     console.print(f"repo: {cfg.repo_path}")
     console.print(f"requirements: {cfg.requirements_path}")
     console.print(f"requirements read-only: {is_read_only(cfg.requirements_path)}")
     console.print(f"sha256: {sha256_file(cfg.requirements_path)}")
     console.print(f"compiled requirements: {len(contract.requirements)}")
+    console.print(f"detected stacks: {', '.join(profile.stacks) or 'none'}")
+    console.print(f"quality gates: {', '.join(gate.name for gate in gates) or 'none'}")
     console.print(f"deterministic requirement verifiers: {len(cfg.requirement_verifiers)}")
     console.print(f"github: {cfg.github_repo or 'disabled'}")
 
