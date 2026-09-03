@@ -6,25 +6,37 @@ from urllib.parse import urlparse
 
 from .shell import run
 
+_GITHUB_HOST = "github.com"
+
 
 class RemoteValidationError(RuntimeError):
     pass
 
 
 def repository_slug_from_remote(remote_url: str) -> str:
-    """Extract canonical owner/repo from common GitHub HTTPS and SSH remotes."""
+    """Extract canonical owner/repo from supported github.com HTTPS/SSH remotes."""
     raw = remote_url.strip()
     if not raw:
         raise RemoteValidationError("origin remote URL is empty")
 
     if "://" in raw:
         parsed = urlparse(raw)
+        host = (parsed.hostname or "").casefold()
         path = parsed.path
     else:
-        scp_like = re.match(r"^[^@\s]+@[^:\s]+:(?P<path>.+)$", raw)
+        scp_like = re.match(
+            r"^[^@\s]+@(?P<host>[^:\s]+):(?P<path>.+)$",
+            raw,
+        )
         if not scp_like:
             raise RemoteValidationError(f"Unsupported origin remote URL: {raw}")
+        host = scp_like.group("host").casefold()
         path = scp_like.group("path")
+
+    if host != _GITHUB_HOST:
+        raise RemoteValidationError(
+            f"Unsupported git origin host {host or '<missing>'}; expected {_GITHUB_HOST}"
+        )
 
     normalized = path.strip("/")
     if normalized.endswith(".git"):
