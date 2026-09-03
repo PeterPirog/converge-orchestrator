@@ -25,6 +25,7 @@ def _controller() -> ScheduledRunController:
     controller._lease_owner = "controller-test"
     controller._timers = {}
     controller._timer_generations = {}
+    controller._project_is_local = Mock(return_value=True)  # type: ignore[method-assign]
     return controller
 
 
