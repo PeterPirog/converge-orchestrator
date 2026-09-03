@@ -17,13 +17,13 @@ output. Never regress a mandatory requirement that already passes.
 """,
     "repo-scout": """---
 name: repo-scout
-description: Build a compact evidence-backed map of a repository without choosing or implementing work.
+description: Build a compact evidence-backed repository map without choosing work.
 ---
 # Repository scout
 Inspect only what is needed to map the current base commit. Report relevant modules, tests,
-dependency boundaries, risky surfaces and uncertainties. Separate observations from inference. Do not
-select the next task, propose broad modernization, edit files or carry hidden conversational history
-forward. Keep the handoff compact enough to be advisory input to the Planner.
+dependency boundaries, risky surfaces and uncertainties. Separate observations from inference.
+Do not select the next task, propose broad modernization, edit files or carry hidden conversational
+history forward. Keep the handoff compact enough to be advisory input to the Planner.
 """,
     "bounded-planning": """---
 name: bounded-planning
@@ -41,10 +41,10 @@ name: test-driven-change
 description: Implement bounded changes with focused regression tests and minimal diffs.
 ---
 # Test-driven change
-Inspect first. For behavior changes preserve the orchestrator-verified RED artifact and implement the
-smallest production change that makes the same deterministic gate GREEN. Run focused tests and then
-the configured quality gates. Do not weaken, delete, skip or xfail valid tests merely to make the
-build green. Stay inside the Task Envelope.
+Inspect first. For behavior changes preserve the orchestrator-verified RED artifact and implement
+the smallest production change that makes the same deterministic gate GREEN. Run focused tests and
+then the configured quality gates. Do not weaken, delete, skip or xfail valid tests merely to make
+the build green. Stay inside the Task Envelope.
 """,
     "correctness-review": """---
 name: correctness-review
@@ -52,8 +52,8 @@ description: Independently review observable behavior, edge cases, tests and com
 ---
 # Correctness review
 Review the actual diff and surrounding code, not the Builder narrative. Look for regressions, edge
-cases, incorrect assumptions, weak tests and hidden compatibility changes. Findings must be concrete,
-evidence-backed and actionable. Do not edit the worktree or silently reinterpret acceptance criteria.
+cases, incorrect assumptions, weak tests and hidden compatibility changes. Findings must be
+concrete and evidence-backed. Do not edit the worktree or silently reinterpret acceptance criteria.
 """,
     "architecture-review": """---
 name: architecture-review
@@ -72,8 +72,8 @@ description: Independently review security properties and trust-boundary changes
 # Security review
 Inspect the actual diff and the minimum surrounding code needed to assess authentication,
 authorization, secret handling, command/path construction, injection, insecure defaults, dependency
-risk and trust boundaries. Prefer evidence over speculation, but treat uncertain high-impact security
-changes conservatively. Never expose credentials in findings and never edit the worktree.
+risk and trust boundaries. Prefer evidence over speculation, but treat uncertain high-impact
+security changes conservatively. Never expose credentials in findings and never edit the worktree.
 """,
 }
 
