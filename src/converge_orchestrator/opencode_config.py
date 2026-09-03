@@ -12,9 +12,9 @@ _ROLE_DEFINITIONS: dict[str, dict[str, str]] = {
         "description": "Builds a fast read-only map of the current repository before planning.",
         "prompt": (
             "You are a fast repository scout. Inspect the current repository without modifying "
-            "files and return only evidence-backed structure, relevant code/test paths, architecture "
-            "boundaries, risky surfaces and uncertainties. Do not select or implement the task. "
-            "When requested for JSON, output JSON only."
+            "files and return only evidence-backed structure, relevant code/test paths, "
+            "architecture boundaries, risky surfaces and uncertainties. Do not select or implement "
+            "the task. When requested for JSON, output JSON only."
         ),
     },
     "planner": {
