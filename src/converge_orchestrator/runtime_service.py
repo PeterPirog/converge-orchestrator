@@ -57,7 +57,9 @@ class ScheduledRunController(RunController):
         snapshot = self._snapshot(record)
         interrupt_payload = snapshot.get("interrupt")
         if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
-            raise RuntimeError("CI wait is machine-managed; use resume only for an early poll")
+            raise RuntimeError(
+                "CI wait is machine-managed; use resume only for an early poll"
+            )
         return super().decide(run_id, decision)
 
     def status(self, run_id: str) -> dict[str, Any]:
@@ -89,7 +91,10 @@ class ScheduledRunController(RunController):
     def _open_graph(self, record: dict[str, Any]):
         project = self.registry.get_project(record["project_id"])
         cfg = load_config(project["config_path"])
-        db = sqlite3.connect(cfg.state_dir / "langgraph.sqlite", check_same_thread=False)
+        db = sqlite3.connect(
+            cfg.state_dir / "langgraph.sqlite",
+            check_same_thread=False,
+        )
         graph = build_graph(checkpointer=SqliteSaver(db))
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}
         return graph, db, graph_config
@@ -102,7 +107,11 @@ class ScheduledRunController(RunController):
                 snapshot = self._snapshot(record)
                 interrupt_payload = snapshot.get("interrupt")
                 if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
-                    self.registry.update_run(record["id"], status="waiting_ci", node="ci_wait")
+                    self.registry.update_run(
+                        record["id"],
+                        status="waiting_ci",
+                        node="ci_wait",
+                    )
                     self._schedule_ci_wait(
                         record["id"],
                         str(interrupt_payload["wake_at"]),
@@ -129,7 +138,9 @@ class ScheduledRunController(RunController):
     def _cancel_timer(self, run_id: str) -> None:
         with self._lock:
             timer = self._timers.pop(run_id, None)
-            self._timer_generations[run_id] = self._timer_generations.get(run_id, 0) + 1
+            self._timer_generations[run_id] = (
+                self._timer_generations.get(run_id, 0) + 1
+            )
         if timer is not None:
             timer.cancel()
 
@@ -153,7 +164,11 @@ class ScheduledRunController(RunController):
             self._submit(run_id, Command(resume="resume"))
         except RuntimeError as exc:
             message = str(exc)
-            if "leased by another active controller" not in message and "already executing" not in message:
+            lease_conflict = "leased by another active controller" in message
+            local_conflict = "already executing" in message
+            if not lease_conflict and not local_conflict:
                 raise
-            retry_at = datetime.now(UTC) + timedelta(seconds=_CONTENTION_RETRY_SECONDS)
+            retry_at = datetime.now(UTC) + timedelta(
+                seconds=_CONTENTION_RETRY_SECONDS
+            )
             self._schedule_ci_wait(run_id, retry_at.isoformat())
