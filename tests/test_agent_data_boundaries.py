@@ -109,14 +109,25 @@ def test_runtime_config_enables_only_role_assigned_mcp_and_skills(tmp_path: Path
     }
 
 
-def test_managed_skills_are_materialized_outside_target_repo(tmp_path: Path) -> None:
+def test_managed_skills_are_materialized_per_role_outside_target_repo(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    root = materialize_managed_skills(cfg)
+    planner_root = materialize_managed_skills(cfg, "planner")
+    builder_root = materialize_managed_skills(cfg, "builder")
 
-    assert root == cfg.state_dir / "opencode-runtime"
-    assert not root.is_relative_to(cfg.repo_path)
-    assert (root / "skills" / "bounded-planning" / "SKILL.md").is_file()
-    assert (root / "skills" / "security-review" / "SKILL.md").is_file()
+    assert planner_root == cfg.state_dir / "opencode-runtime" / "planner"
+    assert builder_root == cfg.state_dir / "opencode-runtime" / "builder"
+    assert not planner_root.is_relative_to(cfg.repo_path)
+    assert not builder_root.is_relative_to(cfg.repo_path)
+
+    assert (planner_root / "skills" / "bounded-planning" / "SKILL.md").is_file()
+    assert (planner_root / "skills" / "requirements-compliance" / "SKILL.md").is_file()
+    assert not (planner_root / "skills" / "security-review" / "SKILL.md").exists()
+    assert not (planner_root / "skills" / "test-driven-change" / "SKILL.md").exists()
+
+    assert (builder_root / "skills" / "test-driven-change" / "SKILL.md").is_file()
+    assert (builder_root / "skills" / "requirements-compliance" / "SKILL.md").is_file()
+    assert not (builder_root / "skills" / "bounded-planning" / "SKILL.md").exists()
+    assert not (builder_root / "skills" / "security-review" / "SKILL.md").exists()
 
 
 def test_host_agent_environment_excludes_other_role_and_unrelated_secrets(
@@ -165,8 +176,9 @@ def test_adapter_does_not_mount_full_state_into_agent_runtime(tmp_path: Path) ->
     assert call.kwargs["agent_role"] == "planner"
     readonly_paths = call.kwargs["readonly_paths"]
     assert cfg.opencode_generated_config_path in readonly_paths
-    managed_dir = cfg.state_dir / "opencode-runtime"
+    managed_dir = cfg.state_dir / "opencode-runtime" / "planner"
     assert managed_dir in readonly_paths
+    assert cfg.state_dir not in readonly_paths
     env = call.kwargs["env"]
     assert env["OPENCODE_CONFIG_DIR"] == str(managed_dir)
     inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
