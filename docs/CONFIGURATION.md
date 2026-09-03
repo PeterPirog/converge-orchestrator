@@ -3,17 +3,18 @@
 `converge.yaml` jest jedynym plikiem, który powinien być ręcznie edytowany dla konkretnego projektu.
 Converge celowo oddziela konfigurację użytkownika od wygenerowanego runtime configu OpenCode.
 
-Wzorzec: [`examples/converge.yaml`](../examples/converge.yaml).
+Kanoniczny, w pełni komentowany wzorzec: [`examples/converge.yaml`](../examples/converge.yaml).
 
 ## Zasady nadrzędne
 
 1. `converge.yaml` trzymaj poza repozytorium rozwijanym autonomicznie.
-2. Nie zapisuj w nim sekretów.
+2. Nie zapisuj w nim sekretów; używaj nazw zmiennych środowiskowych.
 3. `architecture.md` trzymaj poza target repo i ustaw read-only.
 4. Zmiana projektu ma wymagać zmiany YAML, nie grafu LangGraph.
-5. Jawne deterministic quality gates/verifiers są ważniejsze niż heurystyki.
+5. Jawne deterministic quality gates/verifiers są ważniejsze niż heurystyki LLM.
 6. Generated OpenCode config jest artefaktem runtime, nie Source of Truth.
 7. Project YAML może wybierać modele i custom/MCP tools, ale nie może osłabiać twardych granic ról.
+8. Builder jest jedynym writerem; parallelism jest domyślnie ograniczony do read-only review.
 
 ## Top-level
 
@@ -31,8 +32,8 @@ workflow: {}
 `version` musi obecnie wynosić `1`. Wcześniejszy płaski format jest nadal akceptowany dla
 kompatybilności wstecznej, ale nowe projekty powinny używać formatu sekcyjnego.
 
-Ścieżki względne w `converge.yaml` są rozwiązywane względem katalogu tego YAML, nie względem bieżącego
-working directory procesu/PyCharm.
+Ścieżki względne są rozwiązywane względem katalogu `converge.yaml`, nie względem bieżącego working
+directory procesu/PyCharm.
 
 ---
 
@@ -50,7 +51,7 @@ project:
 
 ### `name`
 
-Opcjonalna nazwa czytelna dla człowieka. Nie zmienia GitHub repo ani branchy.
+Opcjonalna nazwa czytelna dla człowieka.
 
 ### `repo_path`
 
@@ -59,18 +60,13 @@ katalogu, tylko w izolowanym worktree.
 
 ### `requirements_path`
 
-Read-only Markdown z architekturą/wymaganiami docelowymi. To Source of Truth. Plik powinien znajdować
-się poza `repo_path`.
+Read-only Markdown z architekturą/wymaganiami docelowymi. To immutable Source of Truth i powinien
+znajdować się poza `repo_path`.
 
 ### `state_dir`
 
-`null` oznacza:
-
-```text
-<repo-parent>/.converge
-```
-
-Tutaj trafiają checkpointy LangGraph, `contract.json`, compliance, evidence i runtime OpenCode config.
+`null` oznacza `<repo-parent>/.converge`. Tutaj trafiają checkpointy LangGraph, `contract.json`,
+compliance, evidence i generated OpenCode config.
 
 ### `worktree_dir`
 
@@ -78,7 +74,7 @@ Tutaj trafiają checkpointy LangGraph, `contract.json`, compliance, evidence i r
 
 ### `require_spec_read_only`
 
-Domyślnie `true`. Wyłączanie tego w autonomous mode nie jest zalecane.
+Domyślnie `true`. W autonomous mode nie zaleca się wyłączania.
 
 ---
 
@@ -105,13 +101,14 @@ github:
 - `ci_poll_seconds`: częstotliwość obserwacji CI.
 - `ci_timeout_seconds`: twardy timeout CI observation.
 
-Builder nie dostaje `gh` ani `git push`; integracja jest deterministyczną warstwą orkiestratora.
+Builder nie dostaje `gh` ani `git push`; finalna integracja jest deterministyczną warstwą
+orkiestratora.
 
 ---
 
 ## `opencode`
 
-Converge celuje w aktualny **stabilny `opencode`**. Osobne beta `opencode2` nie jest domyślnym runtime.
+Converge celuje w aktualny stabilny `opencode`.
 
 ```yaml
 opencode:
@@ -129,29 +126,21 @@ Nazwa lub pełna ścieżka do stable OpenCode CLI.
 
 ### `attach_url`
 
-`null` oznacza lokalne `opencode run` dla każdego agent call.
-
-Dla persistent server:
-
-```yaml
-opencode:
-  attach_url: http://127.0.0.1:4096
-```
-
-Serwer musi widzieć ten sam filesystem repo/worktrees.
+`null` oznacza osobne lokalne `opencode run`. Persistent server może być wskazany np. jako
+`http://127.0.0.1:4096`; musi widzieć ten sam filesystem repo/worktrees.
 
 ### `auto_approve`
 
-Domyślnie `true`. Converge może automatyzować promptowane operacje, ale jawne `deny` wygenerowane dla
-roli nadal obowiązują. To nie zastępuje systemowego sandboxu.
+Domyślnie `true`. Automatyzuje operacje, które OpenCode normalnie sklasyfikowałby jako `ask`, ale jawne
+`deny` wygenerowane przez Converge nadal obowiązują. Nie jest to zamiennik OS/container sandboxu.
 
 ### `generated_config_path`
 
 `null` oznacza `<state_dir>/opencode.generated.json`. Plik jest generowany i nadpisywany. Nie edytuj go
 ręcznie.
 
-Dla lokalnych agent calls Converge dodatkowo przekazuje tę samą definicję jako high-precedence runtime
-config, żeby config znajdujący się w target repo nie mógł osłabić safety policy.
+Dla lokalnych agent calls Converge przekazuje tę samą policy jako high-precedence runtime config, żeby
+config znajdujący się w target repo nie mógł osłabić safety boundaries.
 
 ### `mcp`
 
@@ -184,15 +173,16 @@ opencode:
           API_KEY: "{env:LOCAL_MCP_API_KEY}"
 ```
 
-Converge konwertuje `servers` do formatu stable OpenCode. Nie interpoluje sekretów. Używaj `{env:NAME}`.
+Converge konwertuje `servers` do stable OpenCode MCP config. Sekretów nie interpoluje.
+
+MCP jest rozszerzeniem narzędzi, a nie źródłem finalnej authority: commit/push/PR/merge, requirement
+hash i deterministic gates pozostają po stronie orkiestratora.
 
 ---
 
 ## `models`
 
 ### OpenWebUI gateway
-
-Domyślna integracja:
 
 ```yaml
 models:
@@ -204,8 +194,7 @@ models:
     api_key_env: OPENWEBUI_API_KEY
 ```
 
-`base_url` kończy się na `/api`; provider OpenAI-compatible używa endpointu Chat Completions poniżej tej
-bazy. Wartość klucza nie trafia do YAML ani generated JSON — tylko referencja ENV.
+Wartość API key nie trafia do YAML ani generated JSON — zapisuje się tylko nazwa ENV.
 
 ### Generic OpenAI-compatible gateway
 
@@ -217,11 +206,7 @@ models:
     name: Internal LLM Gateway
     base_url: https://llm.example.com/v1
     api_key_env: INTERNAL_LLM_API_KEY
-    headers:
-      X-Tenant: platform-team
 ```
-
-`headers` powinny zawierać tylko niesekretne wartości albo provider-supported ENV substitution.
 
 ### Existing OpenCode provider
 
@@ -243,66 +228,51 @@ models:
   profiles:
     planner:
       model: deepseek-v4-pro:cloud
-      name: DeepSeek V4 Pro - architecture planner
+      context_tokens: 1048576
       request_body: {}
 
     builder:
       model: kimi-k2.7-code:cloud
-      name: Kimi K2.7 Code - implementation builder
+      context_tokens: 262144
       request_body: {}
 
     reviewer:
       model: glm-5.3-flash:cloud
-      name: GLM 5.3 Flash - independent reviewer
+      context_tokens: 1048576
+      request_body: {}
+
+    security:
+      model: gpt-oss:120b
+      context_tokens: 131072
       request_body: {}
 ```
 
-Routing jest celowo heterogeniczny. Builder i Reviewer używają różnych rodzin modeli. Szczegółowe
-uzasadnienie i alternatywy: [`MODEL_ROUTING.md`](MODEL_ROUTING.md).
+Routing jest heterogeniczny celowo. Szczegóły: [`MODEL_ROUTING.md`](MODEL_ROUTING.md).
 
-### `model`
+### Pola profilu
 
-Dokładne ID modelu zwracane przez OpenWebUI `/api/models`. Sprawdź je komendą:
+- `model`: dokładne ID zwracane przez gateway.
+- `provider`: opcjonalny provider override.
+- `name`: czytelna nazwa w generated OpenCode catalog.
+- `variant`: opcjonalny wariant provider-specific.
+- `context_tokens`: jawny limit context; trafia do OpenCode `limit.context`.
+- `output_tokens`: opcjonalny jawny limit output; `null` = nie zgaduj.
+- `request_body`: provider/model-specific request options; domyślnie `{}`.
+
+Nie wymuszaj jednego `temperature` dla wszystkich modeli. Powtarzalność integracji zapewniają gates,
+review i CI, nie sampling parameter.
+
+Lista modeli widocznych przez gateway:
 
 ```bash
 converge models --config /path/to/converge.yaml
 ```
 
-### `provider`
-
-Opcjonalny provider override dla profilu.
-
-### `name`
-
-Czytelna nazwa w generated OpenCode model catalog.
-
-### `variant`
-
-Opcjonalny wariant provider-specific. Nie zakładaj, że `high`, `max` itd. istnieje dla każdego modelu.
-
-### `request_body`
-
-Provider/model-specific opcje requestu. Domyślne profile mają `{}` celowo.
-
-```yaml
-request_body:
-  temperature: 1.0
-  top_p: 0.95
-```
-
-Nie ustawiaj parametrów na podstawie nazwy modelu lub ogólnej heurystyki. Benchmarkuj przez dokładnie ten
-sam OpenWebUI/OpenCode transport. Determinism integracyjny jest zapewniany przez gates, nie przez
-sampling parameter.
-
-### `request_headers`
-
-Opcjonalne per-profile nagłówki. Nie wpisuj tu sekretów w plaintext.
-
 ---
 
 ## `agents`
 
-Domyślne bounded budgets:
+Referencyjny preset:
 
 ```yaml
 agents:
@@ -320,110 +290,64 @@ agents:
     steps: 60
     tool_permissions: {}
 
-  reviewer:
-    agent: converge-reviewer
+  correctness_reviewer:
+    agent: converge-correctness-reviewer
     model_profile: reviewer
+    timeout_seconds: 1800
+    steps: 24
+    tool_permissions: {}
+
+  architecture_reviewer:
+    agent: converge-architecture-reviewer
+    model_profile: planner
+    timeout_seconds: 1800
+    steps: 24
+    tool_permissions: {}
+
+  security_reviewer:
+    agent: converge-security-reviewer
+    model_profile: security
     timeout_seconds: 1800
     steps: 24
     tool_permissions: {}
 ```
 
-### `agent`
+Starsze konfiguracje mogą nadal definiować pojedynczy `reviewer` i pominąć `workflow.review_roles`.
 
-Stable OpenCode runtime agent ID. Converge generuje prompt i twarde permissions dla znanych ról.
+### Pola agenta
 
-### `model_profile`
+- `agent`: unikalny stable OpenCode runtime agent ID.
+- `model_profile`: nazwa z `models.profiles`.
+- `model`: alternatywa dla profilu; nie ustawiaj jednocześnie `model` i `model_profile`.
+- `timeout_seconds`: twardy timeout pojedynczego agent call.
+- `steps`: maksymalny budżet tool/model loop.
+- `request_body`: per-agent override profilu; nie może nadpisać safety fields.
+- `tool_permissions`: wyłącznie exact custom/MCP tool overrides.
 
-Nazwa z `models.profiles`.
-
-### `model`
-
-Alternatywa dla `model_profile`, np. `openai/example-model`. Nie ustawiaj jednocześnie obu.
-
-### `timeout_seconds`
-
-Twardy timeout pojedynczego `opencode run`.
-
-### `steps`
-
-Maksymalny budżet tool/model loop. Jest limitem, nie celem.
-
-### `request_body`
-
-Per-agent override profilu. Nie może nadpisać pól bezpieczeństwa runtime agent definition.
-
-### `tool_permissions`
-
-Może służyć do włączenia konkretnych custom/MCP tools, np.:
-
-```yaml
-agents:
-  planner:
-    tool_permissions:
-      docs_*: allow
-```
-
-Nie można z YAML nadpisać chronionych kluczy takich jak `edit`, `bash`, `external_directory`, `task`,
-`read`, `websearch` itd. Próba osłabienia granicy roli powoduje błąd configu.
+OpenCode agent IDs muszą być unikalne. To zapobiega sytuacji, w której dwa logiczne lane'y nadpisują
+sobie generated runtime definition.
 
 ### Twarde granice ról
 
-Planner/Reviewer:
+Planner i wszystkie review roles:
 
 - read-only;
-- bez edit;
+- bez `edit`;
 - ograniczony Git shell (`status`, `diff`, `log`);
 - bez external directory;
 - bez nested task delegation.
 
 Builder:
 
-- edit + lokalny shell w worktree;
+- `edit` + lokalny shell w worktree;
 - zakaz `git push`;
 - zakaz `gh`;
 - zakaz `git reset --hard` i `git clean`;
 - bez external directory;
 - bez nested task delegation.
 
----
-
-## Jak powstaje `opencode.generated.json`
-
-Dla OpenWebUI Converge generuje logicznie stable OpenCode config w rodzaju:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "openwebui": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "OpenWebUI",
-      "options": {
-        "baseURL": "http://127.0.0.1:3000/api",
-        "apiKey": "{env:OPENWEBUI_API_KEY}"
-      },
-      "models": {
-        "kimi-k2.7-code:cloud": {
-          "name": "Kimi K2.7 Code - implementation builder"
-        }
-      }
-    }
-  },
-  "agent": {
-    "converge-builder": {
-      "model": "openwebui/kimi-k2.7-code:cloud",
-      "steps": 60,
-      "permission": {
-        "edit": "allow",
-        "external_directory": "deny"
-      }
-    }
-  }
-}
-```
-
-Rzeczywisty generated agent zawiera pełną policy, w tym shell deny rules. Sekret nie jest
-serializowany.
+Project YAML nie może nadpisać chronionych permissions takich jak `edit`, `bash`, `task`,
+`external_directory`, `read` czy `websearch`.
 
 ---
 
@@ -438,8 +362,7 @@ quality:
 
 ### `auto_discover`
 
-Rozpoznaje konserwatywnie Python, Node, Go i Rust z manifestów/metadanych. Nie zgaduje dowolnych
-komend projektu.
+Konserwatywnie rozpoznaje Python, Node, Go i Rust z manifestów/metadanych.
 
 ### `gates`
 
@@ -454,7 +377,7 @@ quality:
       timeout_seconds: 1800
 ```
 
-`command` może być argv list albo string. `shell` jest domyślnie `false`.
+Exit code jest źródłem prawdy. Brak narzędzia i timeout są failure, nie opinią modelu.
 
 ### `requirement_verifiers`
 
@@ -470,7 +393,7 @@ quality:
         timeout_seconds: 600
 ```
 
-Reguły:
+Reguły monotonic convergence:
 
 - istniejący baseline `FAIL` może pozostać `FAIL` w unrelated change;
 - mandatory `PASS` nie może przejść do non-PASS;
@@ -488,14 +411,52 @@ workflow:
   max_replans: 2
   max_iterations: 50
   max_diff_lines_hard: 1000
+  review_roles:
+    - correctness_reviewer
+    - architecture_reviewer
+    - security_reviewer
+  max_parallel_reviews: 3
 ```
+
+### Budżety autonomii
 
 - `max_repair_attempts`: bounded repair loop przed replan/HITL.
 - `max_replans`: bounded fresh planning po nieudanych repair loops.
 - `max_iterations`: maksymalna liczba zmian w jednym autonomous run.
-- `max_diff_lines_hard`: twarda górna granica Task Envelope diff; Planner może ustawić mniejszą.
+- `max_diff_lines_hard`: twarda górna granica Task Envelope diff.
 
-Te limity są częścią safety modelu. Nie ustawiaj wartości „nieskończonych”.
+Nie ustawiaj wartości „nieskończonych”.
+
+### `review_roles`
+
+Jawna lista wymaganych review lanes. Reguły:
+
+- rola musi być skonfigurowana w `agents`;
+- dozwolone są `reviewer`, `correctness_reviewer`, `architecture_reviewer`, `security_reviewer`;
+- lista nie może zawierać duplikatów;
+- każdy lane jest read-only;
+- jeden `reject`, malformed JSON, timeout lub awaria procesu daje aggregate `reject`.
+
+Brak `review_roles` zachowuje compatibility mode: workflow wywołuje pojedynczy `reviewer` tak jak
+wcześniej.
+
+### `max_parallel_reviews`
+
+Zakres 1–16, domyślnie 3. Ogranicza concurrency, ale nie zmienia semantyki: wszystkie skonfigurowane
+lane'y nadal muszą zakończyć się `pass`.
+
+Jeżeli lokalny sprzęt nie utrzymuje kilku ciężkich modeli jednocześnie, ustaw `1` lub `2` zamiast
+redukować liczbę wymaganych reviewerów.
+
+---
+
+## Generated `opencode.generated.json`
+
+Converge tworzy provider/model catalog, kompletne agent definitions, permissions i MCP. Przykładowo
+Builder ma jawne `edit: allow`, ale `git push`, `gh`, destructive reset/clean, external directory i task
+delegation pozostają denied. Reviewerzy mają deny-by-default i tylko read/git-inspection capabilities.
+
+Sekretów nie serializuje się do generated JSON.
 
 ---
 
@@ -522,7 +483,7 @@ routing, ENV i live model catalog.
 converge doctor --offline --config /path/to/converge.yaml
 ```
 
-Pomija wyłącznie live model catalog check. Nie służy do omijania błędnego ID modelu.
+Pomija live model catalog check; nie służy do omijania błędnej konfiguracji.
 
 ## Co zmieniać przy nowym projekcie
 
@@ -533,11 +494,12 @@ project.name
 project.repo_path
 project.requirements_path
 github.repo
-models.gateway.*     # jeśli gateway jest inny
-models.profiles.*    # jeśli katalog modeli jest inny
-opencode.mcp         # opcjonalnie
-quality.*
-workflow.*
+models.gateway.*      # jeżeli gateway jest inny
+models.profiles.*     # jeżeli katalog modeli jest inny
+opencode.mcp          # opcjonalne narzędzia projektu
+quality.gates         # canonical project commands
+quality.requirement_verifiers
+workflow budgets      # tylko gdy projekt wymaga innych limitów
 ```
 
-Nie powinno być potrzeby edycji kodu LangGraph ani generated OpenCode JSON.
+Nie zmieniaj grafu LangGraph ani core role permissions tylko dlatego, że przechodzisz na inne repo.
