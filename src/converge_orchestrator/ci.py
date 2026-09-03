@@ -57,12 +57,7 @@ def _durable_retry_counts(
     task_id: str,
     head_sha: str,
 ) -> dict[str, int]:
-    try:
-        bundle = store.read_task_bundle(run_id, task_id)
-    except FileNotFoundError:
-        return {}
-    artifacts = bundle.get("artifacts") if isinstance(bundle, dict) else None
-    ledger = artifacts.get(_FLAKY_RETRY_LEDGER) if isinstance(artifacts, dict) else None
+    ledger = store.read_json(run_id, task_id, _FLAKY_RETRY_LEDGER)
     if not isinstance(ledger, dict) or ledger.get("head_sha") != head_sha:
         return {}
     return _normalized_retry_counts(ledger.get("counts"))
