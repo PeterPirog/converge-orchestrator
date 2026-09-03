@@ -58,7 +58,7 @@ Stale-resource garbage collection uses durable ownership records and only remove
 recorded path/branch still match Git and whose owner run is terminal. Active, paused, interrupted,
 recoverable and `ci_wait` runs remain protected. Ambiguous or foreign resources fail closed.
 
-The process-level chaos suite now exercises four critical recovery boundaries with separate OS
+The process-level chaos suite exercises four critical workflow recovery boundaries with separate OS
 processes:
 
 1. **Worktree creation** — the service is killed after worktree creation and an uncommitted candidate
@@ -75,5 +75,10 @@ processes:
    the original `wake_at`, automatically resumes the same run/thread and reaches the next node without
    a human `/resume` or `/decision` call.
 
-Remaining end-to-end chaos work should focus on explicit OpenCode/provider process death and any newly
-discovered external side-effect boundary that lacks an equivalent retry-safe process-level proof.
+The executor resilience suite also crosses the real OS subprocess boundary: a local fake OpenCode
+process terminates abruptly on its first invocation, and the configured bounded primary retry launches
+a fresh process with the exact same role, prompt and model. The retry succeeds without hidden session
+continuation or HITL, and the provider-health ledger records only bounded attempt metadata.
+
+Additional chaos fixtures should be added only for newly discovered failure boundaries that are not
+already covered by deterministic retry/fallback, LangGraph recovery, or retry-safe side-effect tests.
