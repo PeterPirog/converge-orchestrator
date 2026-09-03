@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 import yaml
 
 from converge_orchestrator.models import ProjectConfig
+from converge_orchestrator.opencode import OpenCodeAdapter
 from converge_orchestrator.opencode_config import (
     build_opencode_config,
     materialize_opencode_config,
@@ -39,7 +42,17 @@ def _nested_config(tmp_path: Path) -> dict:
             "attach_url": None,
             "auto_approve": True,
             "generated_config_path": None,
-            "mcp": {"servers": {}},
+            "mcp": {
+                "servers": {
+                    "docs": {
+                        "type": "remote",
+                        "url": "https://mcp.example.invalid/mcp",
+                        "enabled": True,
+                        "oauth": False,
+                        "headers": {"X-API-Key": "{env:DOCS_MCP_API_KEY}"},
+                    }
+                }
+            },
         },
         "models": {
             "gateway": {
@@ -49,7 +62,7 @@ def _nested_config(tmp_path: Path) -> dict:
             },
             "profiles": {
                 "planner": {
-                    "model": "reasoning-model",
+                    "model": "reasoning/model",
                     "request_body": {"temperature": 0.1},
                 },
                 "builder": {
@@ -63,6 +76,7 @@ def _nested_config(tmp_path: Path) -> dict:
                 "agent": "converge-planner",
                 "model_profile": "planner",
                 "steps": 12,
+                "tool_permissions": {"docs_*": "allow"},
             },
             "builder": {
                 "agent": "converge-builder",
@@ -85,8 +99,7 @@ def _nested_config(tmp_path: Path) -> dict:
 
 
 def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> None:
-    raw = _nested_config(tmp_path)
-    cfg = ProjectConfig.model_validate(raw)
+    cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
 
     assert cfg.project_name == "fixture"
     assert cfg.github_repo == "acme/fixture"
@@ -99,9 +112,10 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
     assert cfg.model_gateway.kind == "openwebui"
     assert cfg.agents["builder"].model_profile == "builder"
     assert resolve_agent_model(cfg, cfg.agents["builder"]) == "openwebui/coding-model"
+    assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openwebui/reasoning/model"
 
 
-def test_generated_opencode_config_contains_gateway_agents_and_mcp_without_secret(
+def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -109,21 +123,56 @@ def test_generated_opencode_config_contains_gateway_agents_and_mcp_without_secre
     cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
     payload = build_opencode_config(cfg)
 
-    provider = payload["providers"]["openwebui"]
-    assert provider["settings"]["baseURL"] == "http://127.0.0.1:3000/api"
-    assert provider["env"] == ["OPENWEBUI_API_KEY"]
-    assert set(provider["models"]) == {"reasoning-model", "coding-model"}
-    assert payload["mcp"] == {"servers": {}}
-    assert payload["agents"]["converge-planner"]["model"] == "openwebui/reasoning-model"
-    assert payload["agents"]["converge-planner"]["steps"] == 12
-    assert payload["agents"]["converge-planner"]["request"]["body"] == {
-        "temperature": 0.1
-    }
+    provider = payload["provider"]["openwebui"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"]["baseURL"] == "http://127.0.0.1:3000/api"
+    assert provider["options"]["apiKey"] == "{env:OPENWEBUI_API_KEY}"
+    assert set(provider["models"]) == {"reasoning/model", "coding-model"}
+    assert payload["mcp"]["docs"]["enabled"] is True
+    assert payload["mcp"]["docs"]["oauth"] is False
+
+    planner = payload["agent"]["converge-planner"]
+    builder = payload["agent"]["converge-builder"]
+    assert planner["model"] == "openwebui/reasoning/model"
+    assert planner["steps"] == 12
+    assert planner["temperature"] == 0.1
+    assert planner["permission"]["edit"] == "deny"
+    assert planner["permission"]["docs_*"] == "allow"
+    assert builder["permission"]["edit"] == "allow"
+    assert builder["permission"]["bash"]["git push *"] == "deny"
+    assert builder["permission"]["external_directory"] == "deny"
     assert "must-never-be-written" not in json.dumps(payload)
 
     generated = materialize_opencode_config(cfg)
     assert generated == cfg.opencode_generated_config_path
     assert "must-never-be-written" not in generated.read_text(encoding="utf-8")
+
+
+def test_request_body_cannot_override_orchestrator_safety_fields(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["agents"]["builder"]["request_body"] = {"permission": {"bash": "allow"}}
+    cfg = ProjectConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="safety fields"):
+        build_opencode_config(cfg)
+
+
+def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: Path) -> None:
+    cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
+    adapter = OpenCodeAdapter(cfg)
+    fake_result = type("Result", (), {"returncode": 0, "stdout": "ok"})()
+
+    with patch("converge_orchestrator.opencode.run", return_value=fake_result) as runner:
+        result = adapter.invoke("builder", "Implement task", cfg.repo_path)
+
+    assert result.ok
+    call = runner.call_args
+    env = call.kwargs["env"]
+    inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+    assert env["OPENCODE_CONFIG"] == str(cfg.opencode_generated_config_path)
+    assert inline["agent"]["converge-builder"]["permission"]["bash"]["gh *"] == "deny"
+    command = call.args[0]
+    assert "--auto" in command
+    assert command[command.index("--agent") + 1] == "converge-builder"
 
 
 def test_legacy_flat_configuration_remains_supported(tmp_path: Path) -> None:
@@ -145,5 +194,6 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     source = Path("examples/converge.yaml").read_text(encoding="utf-8")
     raw = yaml.safe_load(source)
     assert raw["project"]["repo_path"]
+    assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
     assert set(raw["agents"]) == {"planner", "builder", "reviewer"}
