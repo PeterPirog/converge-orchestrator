@@ -10,6 +10,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from .config import load_config
+from .graph import build_graph
 from .inspector import inspect_repository
 from .model_gateway import (
     ModelGatewayError,
@@ -23,7 +24,6 @@ from .opencode_config import (
 )
 from .quality import effective_quality_gates
 from .spec import compile_contract, is_read_only, sha256_file
-from .workflow import build_graph
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
