@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from enum import StrEnum
+import enum
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field, model_validator
 
+_REVIEW_AGENT_ROLES = {
+    "reviewer",
+    "correctness_reviewer",
+    "architecture_reviewer",
+    "security_reviewer",
+}
 
-class RequirementStatus(StrEnum):
+
+class RequirementStatus(enum.StrEnum):
     PASS = "pass"
     FAIL = "fail"
     PARTIAL = "partial"
@@ -129,6 +136,8 @@ class ProjectConfig(BaseModel):
     max_replans: int = 2
     max_iterations: int = 50
     max_diff_lines_hard: int = 1000
+    review_roles: list[str] = Field(default_factory=list)
+    max_parallel_reviews: int = Field(default=3, ge=1, le=16)
     ci_poll_seconds: int = 15
     ci_timeout_seconds: int = 1800
     auto_merge: bool = False
@@ -193,6 +202,8 @@ class ProjectConfig(BaseModel):
             "max_replans",
             "max_iterations",
             "max_diff_lines_hard",
+            "review_roles",
+            "max_parallel_reviews",
         ):
             copy_value(key, workflow, key)
         return data
@@ -219,6 +230,29 @@ class ProjectConfig(BaseModel):
         )
         if missing_profiles:
             raise ValueError(f"agents reference unknown model profiles: {missing_profiles}")
+
+        agent_ids = [agent.agent for agent in self.agents.values()]
+        duplicate_agent_ids = sorted(
+            {agent_id for agent_id in agent_ids if agent_ids.count(agent_id) > 1}
+        )
+        if duplicate_agent_ids:
+            raise ValueError(
+                f"OpenCode agent IDs must be unique across roles: {duplicate_agent_ids}"
+            )
+
+        if len(self.review_roles) != len(set(self.review_roles)):
+            raise ValueError("workflow.review_roles must not contain duplicates")
+        invalid_review_roles = sorted(set(self.review_roles) - _REVIEW_AGENT_ROLES)
+        if invalid_review_roles:
+            raise ValueError(
+                f"unsupported review roles: {invalid_review_roles}; allowed: "
+                f"{sorted(_REVIEW_AGENT_ROLES)}"
+            )
+        missing_review_roles = sorted(set(self.review_roles) - set(self.agents))
+        if missing_review_roles:
+            raise ValueError(
+                f"workflow.review_roles reference unconfigured agents: {missing_review_roles}"
+            )
         return self
 
 
@@ -264,12 +298,14 @@ class ReviewFinding(BaseModel):
     requirement_id: str | None = None
     file: str | None = None
     line: int | None = None
+    reviewer: str | None = None
 
 
 class ReviewResult(BaseModel):
     verdict: Literal["pass", "reject"]
     findings: list[ReviewFinding] = Field(default_factory=list)
     confidence: float | None = Field(default=None, ge=0, le=1)
+    reviewers: dict[str, Literal["pass", "reject"]] = Field(default_factory=dict)
 
 
 class PullRequestInfo(BaseModel):

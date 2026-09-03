@@ -4,6 +4,9 @@ The roadmap follows the architecture contract: immutable intent, deterministic p
 writers, independent review, durable state, evidence, reusable project configuration and
 exception-based HITL.
 
+See [CONVERGENCE_AUDIT.md](CONVERGENCE_AUDIT.md) for the current gap analysis against the reference
+autonomous-agent architecture.
+
 ## v0.1 — executable local core — complete
 
 - immutable requirement hash guard;
@@ -51,7 +54,10 @@ Implemented:
 - normalized missing-tool and timeout failures;
 - stable OpenCode read-only Planner/Reviewer and bounded Builder permissions;
 - high-precedence runtime role config so target-repo OpenCode settings cannot weaken role boundaries;
-- exact target requirement statements/source anchors injected into Builder/repair prompts.
+- exact target requirement statements/source anchors injected into Builder/repair prompts;
+- parallel independent review coordinator with correctness, architecture and security lanes;
+- deterministic review aggregation: any lane rejection or lane execution failure blocks integration;
+- reviewer findings stamped with the responsible lane for repair evidence.
 
 Remaining:
 
@@ -59,7 +65,6 @@ Remaining:
 - explicit public-API compatibility adapters;
 - destructive migration / secret / public-API risk classifier;
 - stronger OS/container sandbox profiles;
-- security reviewer and parallel read-only review fan-out;
 - fault-recovery tests for killed orchestrator/OpenCode/CI failures.
 
 ## v0.4 — reusable configuration and service/control plane — in progress
@@ -74,8 +79,10 @@ Implemented:
 - backward-compatible legacy flat configuration;
 - OpenWebUI/OpenAI-compatible generated stable OpenCode provider;
 - reusable model profiles and per-agent runtime properties;
-- quality-first default routing: DeepSeek V4 Pro Planner, Kimi K2.7 Code Builder, GLM 5.3 Flash Reviewer;
+- quality-first default routing: DeepSeek V4 Pro Planner/architecture review, Kimi K2.7 Code Builder,
+  GLM 5.3 Flash correctness review and gpt-oss 120B security review;
 - model-family diversity documented as a review-quality invariant;
+- bounded configurable review parallelism with legacy single-reviewer compatibility;
 - `converge models` model-catalog discovery;
 - model gateway live validation in `converge doctor`;
 - OpenCode MCP configuration embedded in the project YAML;
@@ -84,11 +91,10 @@ Implemented:
 
 Next priorities:
 
-- parallel independent review coordinator: correctness, architecture and security;
-- use an independent model family for security review (reference candidate: `gpt-oss:120b`);
 - fast read-only Repo Scout/Triage role (reference candidate: `deepseek-v4-flash:cloud`);
 - provider/model fallback policy with bounded retries and evidence;
-- OpenWebUI operator/control dashboard bridge on top of the existing FastAPI API;
+- OpenWebUI operator/control Function bridge on top of the existing FastAPI API;
+- context-budget/session-rotation policy for long-running projects;
 - sandboxed execution runner with filesystem/network policy;
 - PostgreSQL checkpointer/control registry for multi-worker deployment;
 - structured metrics and OpenTelemetry/LangSmith integration;

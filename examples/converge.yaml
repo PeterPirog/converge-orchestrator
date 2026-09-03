@@ -90,8 +90,8 @@ models:
     api_key_env: OPENWEBUI_API_KEY
 
   # Quality-first routing for the model catalog used by the reference installation.
-  # Keep Builder and Reviewer on DIFFERENT model families. This reduces correlated mistakes:
-  # deterministic gates remain authoritative, but independent model families improve review value.
+  # Builder and all review lanes deliberately use independent model families where practical.
+  # Deterministic gates remain authoritative; model diversity improves semantic review value.
   #
   # context_tokens are copied to stable OpenCode's provider.models.*.limit.context, so OpenCode can
   # manage compaction against the actual custom-gateway context window rather than an unknown limit.
@@ -100,12 +100,11 @@ models:
   # and replace only the affected profile. The LangGraph workflow does not need to change.
   profiles:
     planner:
-      # Frontier reasoning + 1M context. Used for architecture gap selection and bounded planning.
+      # Frontier reasoning + 1M context. Used for architecture gap selection and architecture review.
       model: deepseek-v4-pro:cloud
-      name: DeepSeek V4 Pro - architecture planner
+      name: DeepSeek V4 Pro - architecture reasoning
       context_tokens: 1048576
       variant: null
-      # Empty means provider/model defaults. Avoid speculative tuning of reasoning modes here.
       request_body: {}
 
     builder:
@@ -114,24 +113,30 @@ models:
       name: Kimi K2.7 Code - implementation builder
       context_tokens: 262144
       variant: null
-      # Provider defaults are intentional. Determinism comes from tests/gates, not low temperature.
       request_body: {}
 
     reviewer:
-      # Independent family from Builder, 1M context, strong coding/agentic reasoning.
+      # Correctness review lane. Independent family from Builder, 1M context.
       model: glm-5.3-flash:cloud
-      name: GLM 5.3 Flash - independent reviewer
+      name: GLM 5.3 Flash - correctness reviewer
       context_tokens: 1048576
+      variant: null
+      request_body: {}
+
+    security:
+      # Independent local reasoning family for security review.
+      model: gpt-oss:120b
+      name: gpt-oss 120B - security reviewer
+      context_tokens: 131072
       variant: null
       request_body: {}
 
   # Recommended alternatives from the same OpenWebUI catalog:
   # - deepseek-v4-flash:cloud      -> fast scout/triage, context 1048576
-  # - gpt-oss:120b                -> independent local reasoning/security reviewer, context 131072
   # - laguna-s-2.1:latest         -> local long-horizon fallback, context 262144; very large memory
   # - qwen3-coder-next:cloud      -> coding fallback, context 262144
   #
-  # Do not switch Reviewer to the same family as Builder merely to reduce latency. Review model
+  # Do not collapse all review lanes onto the Builder model merely to reduce latency. Review model
   # diversity is part of the quality policy, not just a performance preference.
 
 agents:
@@ -141,7 +146,6 @@ agents:
     model_profile: planner
     timeout_seconds: 1800
     steps: 18
-    # Optional exact OpenCode/MCP tool permission overrides. Keep empty unless needed.
     tool_permissions: {}
 
   builder:
@@ -149,12 +153,26 @@ agents:
     model_profile: builder
     timeout_seconds: 3600
     steps: 60
-    # Builder already has edit + local shell access, while git push/gh/external paths stay denied.
+    # Builder has edit + local shell access, while git push/gh/external paths stay denied.
     tool_permissions: {}
 
-  reviewer:
-    agent: converge-reviewer
+  correctness_reviewer:
+    agent: converge-correctness-reviewer
     model_profile: reviewer
+    timeout_seconds: 1800
+    steps: 24
+    tool_permissions: {}
+
+  architecture_reviewer:
+    agent: converge-architecture-reviewer
+    model_profile: planner
+    timeout_seconds: 1800
+    steps: 24
+    tool_permissions: {}
+
+  security_reviewer:
+    agent: converge-security-reviewer
+    model_profile: security
     timeout_seconds: 1800
     steps: 24
     tool_permissions: {}
@@ -190,3 +208,11 @@ workflow:
   max_replans: 2
   max_iterations: 50
   max_diff_lines_hard: 1000
+
+  # Explicit independent review fan-out. Every lane is read-only. One reject blocks integration.
+  # Older configs may omit review_roles and keep using a single `reviewer` agent.
+  review_roles:
+    - correctness_reviewer
+    - architecture_reviewer
+    - security_reviewer
+  max_parallel_reviews: 3
