@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,8 +30,18 @@ class ControlRegistry:
         db.execute("PRAGMA foreign_keys = ON")
         return db
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Commit/rollback transaction scope and always release the SQLite handle."""
+        db = self._connect()
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
     def _initialize(self) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute("PRAGMA journal_mode = WAL")
             db.executescript(
                 """
@@ -71,7 +83,7 @@ class ControlRegistry:
     def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
         now = _now()
         resolved = str(config_path.expanduser().resolve())
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute(
                 """
                 INSERT INTO projects(id, config_path, created_at, updated_at)
@@ -85,7 +97,7 @@ class ControlRegistry:
         return self.get_project(project_id)
 
     def set_requirements_hash(self, project_id: str, requirements_hash: str) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 "UPDATE projects SET requirements_hash = ?, updated_at = ? WHERE id = ?",
                 (requirements_hash, _now(), project_id),
@@ -94,19 +106,19 @@ class ControlRegistry:
                 raise KeyError(project_id)
 
     def get_project(self, project_id: str) -> dict[str, Any]:
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         if row is None:
             raise KeyError(project_id)
         return dict(row)
 
     def list_projects(self) -> list[dict[str, Any]]:
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute("SELECT * FROM projects ORDER BY id").fetchall()
         return [dict(row) for row in rows]
 
     def create_run(self, run_id: str, project_id: str, thread_id: str) -> dict[str, Any]:
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute(
                 """
                 INSERT INTO runs(id, project_id, thread_id, status, started_at)
@@ -121,7 +133,7 @@ class ControlRegistry:
             raise ValueError("ttl_seconds must be positive")
         now = _utcnow()
         expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat()
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 "SELECT finished_at, lease_owner, lease_expires_at FROM runs WHERE id = ?",
@@ -146,7 +158,7 @@ class ControlRegistry:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
         expires_at = (_utcnow() + timedelta(seconds=ttl_seconds)).isoformat()
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 """
                 UPDATE runs
@@ -158,7 +170,7 @@ class ControlRegistry:
         return cursor.rowcount == 1
 
     def release_run_lease(self, run_id: str, owner: str) -> bool:
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 """
                 UPDATE runs
@@ -205,7 +217,7 @@ class ControlRegistry:
         if not fields:
             return
         values.append(run_id)
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 f"UPDATE runs SET {', '.join(fields)} WHERE id = ?",  # noqa: S608
                 values,
@@ -214,14 +226,14 @@ class ControlRegistry:
                 raise KeyError(run_id)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(run_id)
         return dict(row)
 
     def runs_for_project(self, project_id: str) -> list[dict[str, Any]]:
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute(
                 "SELECT * FROM runs WHERE project_id = ? ORDER BY started_at DESC",
                 (project_id,),
