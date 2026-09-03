@@ -23,6 +23,7 @@ from .opencode_config import (
     resolve_agent_variant,
 )
 from .quality import effective_quality_gates
+from .sandbox import ExecutionSandbox, SandboxPreflightError
 from .spec import compile_contract, is_read_only, sha256_file
 
 app = typer.Typer(no_args_is_help=True)
@@ -76,7 +77,13 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
             f"architecture requirements must be read-only: {cfg.requirements_path}"
         )
 
-    _require_executable(cfg.opencode_binary, "OpenCode")
+    if cfg.sandbox.mode == "host":
+        _require_executable(cfg.opencode_binary, "OpenCode")
+    else:
+        try:
+            ExecutionSandbox(cfg).preflight()
+        except SandboxPreflightError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     if cfg.github_repo:
         _require_executable(cfg.github_binary, "GitHub CLI")
 
@@ -127,6 +134,11 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
     console.print(f"quality gates: {', '.join(gate.name for gate in gates) or 'none'}")
     console.print(f"deterministic requirement verifiers: {len(cfg.requirement_verifiers)}")
     console.print(f"github: {cfg.github_repo or 'disabled'}")
+    console.print(f"sandbox: {cfg.sandbox.mode}")
+    if cfg.sandbox.mode == "container":
+        console.print(f"sandbox image: {cfg.sandbox.image}")
+        console.print(f"agent network: {cfg.sandbox.agent_network}")
+        console.print(f"quality network: {cfg.sandbox.quality_network}")
     console.print(f"OpenCode binary: {cfg.opencode_binary}")
     console.print(f"model gateway: {cfg.model_gateway.kind}")
     if gateway_models:
