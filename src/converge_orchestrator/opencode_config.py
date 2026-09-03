@@ -8,6 +8,15 @@ from typing import Any
 from .models import AgentConfig, ModelProfile, ProjectConfig
 
 _ROLE_DEFINITIONS: dict[str, dict[str, str]] = {
+    "scout": {
+        "description": "Builds a fast read-only map of the current repository before planning.",
+        "prompt": (
+            "You are a fast repository scout. Inspect the current repository without modifying "
+            "files and return only evidence-backed structure, relevant code/test paths, "
+            "architecture boundaries, risky surfaces and uncertainties. Do not select or implement "
+            "the task. When requested for JSON, output JSON only."
+        ),
+    },
     "planner": {
         "description": "Plans one minimal architecture-convergence task without modifying code.",
         "prompt": (

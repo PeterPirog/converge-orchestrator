@@ -13,8 +13,9 @@ from langgraph.types import Command
 from .config import load_config
 from .control import ControlSignals
 from .evidence import EvidenceStore
+from .graph import build_graph
 from .registry import ControlRegistry
-from .workflow import bootstrap, build_graph
+from .workflow import bootstrap
 
 _TERMINAL_STATUSES = {
     "completed",
