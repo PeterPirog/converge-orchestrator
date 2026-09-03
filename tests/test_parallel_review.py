@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 import json
-from pathlib import Path
-from threading import Barrier
-from types import SimpleNamespace
-from unittest.mock import patch
+import pathlib
+import threading
+import types
+import unittest.mock
 
 from converge_orchestrator.models import ProjectConfig, ReviewResult
 from converge_orchestrator.opencode import OpenCodeAdapter
@@ -18,7 +16,7 @@ REVIEW_ROLES = [
 ]
 
 
-def _config(tmp_path: Path) -> ProjectConfig:
+def _config(tmp_path: pathlib.Path) -> ProjectConfig:
     repo = tmp_path / "repo"
     repo.mkdir()
     requirements = tmp_path / "architecture.md"
@@ -46,7 +44,7 @@ def _config(tmp_path: Path) -> ProjectConfig:
     )
 
 
-def test_parallel_review_uses_read_only_specialized_agents(tmp_path: Path) -> None:
+def test_parallel_review_uses_read_only_specialized_agents(tmp_path: pathlib.Path) -> None:
     payload = build_opencode_config(_config(tmp_path))
 
     for agent_id in (
@@ -61,10 +59,12 @@ def test_parallel_review_uses_read_only_specialized_agents(tmp_path: Path) -> No
         assert agent["permission"]["external_directory"] == "deny"
 
 
-def test_parallel_review_runs_concurrently_and_one_reject_blocks(tmp_path: Path) -> None:
+def test_parallel_review_runs_concurrently_and_one_reject_blocks(
+    tmp_path: pathlib.Path,
+) -> None:
     cfg = _config(tmp_path)
     adapter = OpenCodeAdapter(cfg)
-    barrier = Barrier(3)
+    barrier = threading.Barrier(3)
     payloads = {
         "converge-correctness-reviewer": {
             "verdict": "pass",
@@ -94,12 +94,15 @@ def test_parallel_review_runs_concurrently_and_one_reject_blocks(tmp_path: Path)
         del kwargs
         agent_id = command[command.index("--agent") + 1]
         barrier.wait(timeout=2)
-        return SimpleNamespace(
+        return types.SimpleNamespace(
             returncode=0,
             stdout=json.dumps(payloads[agent_id]),
         )
 
-    with patch("converge_orchestrator.opencode.run", side_effect=fake_run) as runner:
+    with unittest.mock.patch(
+        "converge_orchestrator.opencode.run",
+        side_effect=fake_run,
+    ) as runner:
         result = adapter.invoke("reviewer", "Review this diff", cfg.repo_path)
 
     assert result.ok
@@ -116,7 +119,9 @@ def test_parallel_review_runs_concurrently_and_one_reject_blocks(tmp_path: Path)
     assert aggregate.findings[0].reviewer == "architecture_reviewer"
 
 
-def test_failed_review_process_becomes_deterministic_rejection(tmp_path: Path) -> None:
+def test_failed_review_process_becomes_deterministic_rejection(
+    tmp_path: pathlib.Path,
+) -> None:
     cfg = _config(tmp_path)
     adapter = OpenCodeAdapter(cfg)
 
@@ -124,13 +129,19 @@ def test_failed_review_process_becomes_deterministic_rejection(tmp_path: Path) -
         del kwargs
         agent_id = command[command.index("--agent") + 1]
         if agent_id == "converge-security-reviewer":
-            return SimpleNamespace(returncode=2, stdout="security model unavailable")
-        return SimpleNamespace(
+            return types.SimpleNamespace(
+                returncode=2,
+                stdout="security model unavailable",
+            )
+        return types.SimpleNamespace(
             returncode=0,
             stdout=json.dumps({"verdict": "pass", "findings": [], "confidence": 0.9}),
         )
 
-    with patch("converge_orchestrator.opencode.run", side_effect=fake_run):
+    with unittest.mock.patch(
+        "converge_orchestrator.opencode.run",
+        side_effect=fake_run,
+    ):
         result = adapter.invoke("reviewer", "Review this diff", cfg.repo_path)
 
     aggregate = ReviewResult.model_validate_json(result.output)
