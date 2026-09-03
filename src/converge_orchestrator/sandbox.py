@@ -71,10 +71,23 @@ class ExecutionSandbox:
     def __init__(self, config: ProjectConfig):
         self.config = config
 
+    def _validate_network_policy(self) -> None:
+        policy = self.config.sandbox
+        if (
+            policy.mode == "container"
+            and policy.require_internal_agent_network
+            and policy.agent_network in {"none", "host"}
+        ):
+            raise SandboxPreflightError(
+                "sandbox requires a named internal agent network when "
+                "require_internal_agent_network=true"
+            )
+
     def preflight(self) -> None:
         policy = self.config.sandbox
         if policy.mode == "host":
             return
+        self._validate_network_policy()
         if shutil.which(policy.engine) is None:
             raise SandboxPreflightError(
                 f"sandbox engine executable not found on PATH: {policy.engine}"
@@ -124,6 +137,7 @@ class ExecutionSandbox:
                 shell=shell,
                 env=env,
             )
+        self._validate_network_policy()
         return self._run_container(
             command,
             cwd=cwd,
@@ -167,6 +181,8 @@ class ExecutionSandbox:
             "--rm",
             "--init",
             "--pull=never",
+            "--entrypoint",
+            "",
             "--cap-drop=ALL",
             "--security-opt",
             "no-new-privileges:true",
