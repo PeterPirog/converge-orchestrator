@@ -1,62 +1,157 @@
-repo_path: /absolute/path/to/project/repository
-requirements_path: /absolute/path/to/project/architecture.md
-github_repo: owner/repository
-base_branch: main
-branch_prefix: converge/
+# Converge project configuration
+#
+# Copy this file OUTSIDE the target repository, edit the CHANGE_ME values, then run:
+#   converge doctor --config /absolute/path/to/converge.yaml
+#
+# Secrets never belong in this file. Put API keys in environment variables.
+version: 1
 
-# Requirements are expected to be immutable at OS level (for example chmod 444).
-require_spec_read_only: true
+project:
+  # Human-readable label only. It does not change the GitHub repository name.
+  name: CHANGE_ME_PROJECT_NAME
 
-# OpenCode can run as CLI or attach to a long-running server.
-opencode_binary: opencode
-# opencode_attach_url: http://127.0.0.1:4096
+  # Local clone that Converge is allowed to evolve. This must be the repository root.
+  repo_path: /absolute/path/to/target-project/repository
 
-# GitHub transport uses authenticated `gh api`. Credentials stay outside prompts/config.
-github_binary: gh
-ci_poll_seconds: 15
-ci_timeout_seconds: 1800
-auto_merge: false
-merge_method: squash
+  # Immutable architecture/requirements Markdown. Keep it OUTSIDE repo_path.
+  requirements_path: /absolute/path/to/target-project/architecture.md
+
+  # null => defaults to <repo-parent>/.converge
+  state_dir: null
+
+  # null => defaults to <state_dir>/worktrees
+  worktree_dir: null
+
+  # Recommended and enforced by `converge doctor`.
+  # Example on Linux/macOS: chmod 444 /path/to/architecture.md
+  require_spec_read_only: true
+
+github:
+  # Set null to disable GitHub PR/CI integration for local-only development.
+  repo: owner/repository
+  cli: gh
+  base_branch: main
+  branch_prefix: converge/
+  auto_merge: false
+  merge_method: squash
+  ci_poll_seconds: 15
+  ci_timeout_seconds: 1800
+
+opencode:
+  # OpenCode V2 CLI. Override only if the binary has a different name/path.
+  binary: opencode
+
+  # null => invoke OpenCode locally for every agent call.
+  # For a persistent server use e.g. http://127.0.0.1:4096.
+  # If attach_url is set, start that server with the generated OPENCODE_CONFIG described in docs.
+  attach_url: null
+
+  # Converts non-denied OpenCode permission prompts into automatic approval.
+  # Explicit denies in .opencode/agents remain denies.
+  auto_approve: true
+
+  # null => defaults to <state_dir>/opencode.generated.json
+  # This file is GENERATED from this YAML. Do not edit it by hand.
+  generated_config_path: null
+
+  # Optional OpenCode V2 MCP configuration. Keep only servers useful to coding/review roles.
+  # Secrets should use OpenCode's {env:VARIABLE_NAME} substitution.
+  mcp:
+    timeout:
+      startup: 45000
+      catalog: 30000
+      execution: 600000
+    servers: {}
+    # Example remote MCP:
+    # servers:
+    #   docs:
+    #     type: remote
+    #     url: https://mcp.example.com/mcp
+    #     oauth: false
+    #     headers:
+    #       X-API-Key: "{env:DOCS_MCP_API_KEY}"
+
+models:
+  # Recommended setup when OpenWebUI is your model gateway.
+  # OpenCode appends /chat/completions to this base URL, therefore OpenWebUI uses /api here.
+  gateway:
+    kind: openwebui
+    provider_id: openwebui
+    name: OpenWebUI
+    base_url: http://127.0.0.1:3000/api
+    api_key_env: OPENWEBUI_API_KEY
+
+  # Profiles are reusable. Agents below refer to them by name.
+  # Replace each CHANGE_ME_* value with an exact model ID shown by OpenWebUI /api/models.
+  profiles:
+    planner:
+      model: CHANGE_ME_REASONING_MODEL
+      name: Planner reasoning model
+      variant: null
+      request_body:
+        temperature: 0.1
+
+    builder:
+      model: CHANGE_ME_CODING_MODEL
+      name: Builder coding model
+      variant: null
+      request_body:
+        temperature: 0.1
+
+    reviewer:
+      model: CHANGE_ME_REVIEW_MODEL
+      name: Independent review model
+      variant: null
+      request_body:
+        temperature: 0.0
 
 agents:
   planner:
+    # ID of the checked-in OpenCode role under .opencode/agents/.
     agent: converge-planner
-    model: null
+    model_profile: planner
     timeout_seconds: 1200
+    steps: 12
+
   builder:
     agent: converge-builder
-    model: null
+    model_profile: builder
     timeout_seconds: 2400
+    steps: 40
+
   reviewer:
     agent: converge-reviewer
-    model: null
+    model_profile: reviewer
     timeout_seconds: 1200
+    steps: 16
 
-# Conservative stack discovery recognizes Python/Node/Go/Rust manifests and only selects
-# commands supported by repository metadata. Set false for fully explicit policy.
-auto_discover_quality: true
+quality:
+  # Detect safe deterministic commands from Python/Node/Go/Rust project metadata.
+  auto_discover: true
 
-# Explicit categories override auto-discovered gates of the same kind.
-quality_gates:
-  - name: tests
-    command: [pytest, -q]
-    required: true
-  - name: lint
-    command: [ruff, check, .]
-    required: true
+  # Add explicit gates when the repository has a canonical command that discovery cannot infer.
+  # Explicit commands are authoritative and duplicate discovered commands are suppressed.
+  gates: []
+  # Example:
+  # gates:
+  #   - name: project-test-suite
+  #     command: [make, test]
+  #     required: true
+  #     timeout_seconds: 1800
 
-# Optional deterministic evidence bound to concrete requirement IDs.
-# Existing baseline failures are tolerated while a task is being repaired, but a previously
-# passing mandatory verifier may never regress. If the active task targets a configured verifier,
-# at least one targeted verifier must improve from non-PASS to PASS before integration.
-requirement_verifiers:
-  ARCH-017:
-    - name: architecture-boundary
-      command: [pytest, -q, tests/architecture/test_payment_boundary.py]
-      required: true
-      timeout_seconds: 600
+  # Optional machine-verifiable evidence mapped to immutable requirement IDs.
+  # Do not invent IDs: use IDs emitted into <state_dir>/contract.json after bootstrap.
+  requirement_verifiers: {}
+  # Example:
+  # requirement_verifiers:
+  #   ARCH-017:
+  #     - name: architecture-boundary
+  #       command: [pytest, -q, tests/architecture/test_payment_boundary.py]
+  #       required: true
+  #       timeout_seconds: 600
 
-max_repair_attempts: 3
-max_replans: 2
-max_iterations: 50
-max_diff_lines_hard: 1000
+workflow:
+  max_repair_attempts: 3
+  max_replans: 2
+  max_iterations: 50
+  max_diff_lines_hard: 1000
