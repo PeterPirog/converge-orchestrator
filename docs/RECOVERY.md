@@ -52,22 +52,28 @@ Automatic recovery must never:
 - delete a worktree merely because it is old;
 - assume that an expired process lease makes the worktree disposable.
 
-## Remaining crash-hardening work
+## Process-level crash coverage
 
-Stale-resource garbage collection now uses durable ownership records and only removes resources whose
+Stale-resource garbage collection uses durable ownership records and only removes resources whose
 recorded path/branch still match Git and whose owner run is terminal. Active, paused, interrupted,
 recoverable and `ci_wait` runs remain protected. Ambiguous or foreign resources fail closed.
 
-The process-level chaos suite now proves two real at-least-once boundaries with separate OS processes:
+The process-level chaos suite now exercises four critical recovery boundaries with separate OS
+processes:
 
-1. the service is killed after worktree creation and an uncommitted candidate write but before the
-   node output checkpoint; restart adopts the exact owned worktree and preserves the candidate with
-   no duplicate branch or worktree;
-2. the service is killed after candidate commit and remote branch push but before LangGraph can
-   checkpoint the node result; restart re-enters the same node, recovers the existing commit, retries
-   the push idempotently and proves that neither an extra commit nor a duplicate worktree/branch was
-   created.
+1. **Worktree creation** — the service is killed after worktree creation and an uncommitted candidate
+   write but before the node output checkpoint. Restart adopts the exact owned worktree, preserves the
+   candidate and creates no duplicate branch or worktree.
+2. **Commit and push** — the service is killed after candidate commit and remote branch push but before
+   LangGraph checkpoints the node result. Restart recovers the exact commit and retries the push
+   idempotently without another commit, worktree or task branch.
+3. **Pull request creation** — the service is killed after the external PR exists but before the PR
+   node result is checkpointed. Restart re-enters the same node and `ensure` semantics reuse the exact
+   existing PR instead of creating a duplicate.
+4. **Machine-managed CI wait** — the service is killed after a durable `ci_wait` interrupt has released
+   the worker and lease while its wake timer exists only in process memory. A fresh controller restores
+   the original `wake_at`, automatically resumes the same run/thread and reaches the next node without
+   a human `/resume` or `/decision` call.
 
-Remaining end-to-end chaos tests should cover PR creation, CI-wait restoration and explicit
-OpenCode/provider process death, then verify that the same run and task converge without losing
-candidate changes or duplicating side effects.
+Remaining end-to-end chaos work should focus on explicit OpenCode/provider process death and any newly
+discovered external side-effect boundary that lacks an equivalent retry-safe process-level proof.
