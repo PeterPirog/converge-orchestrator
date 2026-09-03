@@ -24,7 +24,7 @@ osłabienia immutable Source of Truth, deterministic policy albo zasady one-writ
 | Niezmienny Markdown jako Source of Truth | **STRONGER** | plik poza repo, OS read-only, SHA-256 pin, ponowne sprawdzanie przed zmianami i bezpośrednio przed integration | brak krytycznej luki |
 | Przeciwdziałanie architectural drift | **STRONGER** | traceable `contract.json`, source anchors, exact target requirement injection, compliance i monotonic verifier policy | semantic-only requirements nadal wymagają LLM review |
 | Deterministyczny kontroler nad LLM | **ALIGNED** | LangGraph + Pydantic state/policy; LLM nie steruje merge ani nie może anulować failing gate | brak krytycznej luki |
-| Planner / Worker / Reviewer | **STRONGER** | Planner RO, Builder jako jedyny writer, trzy niezależne review lanes RO | Repo Scout jeszcze nieaktywny |
+| Planner / Worker / Reviewer | **STRONGER** | Scout RO mapuje dokładny base commit, Planner RO wybiera task, Builder jest jedynym writerem, trzy niezależne review lanes są RO | dalsze specialty analyzers są opcjonalnym rozszerzeniem |
 | Autonomiczny TDD / repair loop | **PARTIAL** | Builder ma obowiązek testów, deterministic quality gates i bounded repair/replan | brak deterministycznego wymogu red-before-green dla zmian, gdzie TDD jest możliwe |
 | Izolacja Git | **STRONGER** | osobny `git worktree` per task zamiast przełączania/stash/reset w głównym checkout | cleanup po crash wymaga dalszego hardeningu |
 | Code review jako bariera przed dryfem | **STRONGER** | correctness + architecture + security wykonywane równolegle; jeden reject albo reviewer failure blokuje integration | future specialty lanes mogą zostać dodane później |
@@ -34,7 +34,7 @@ osłabienia immutable Source of Truth, deterministic policy albo zasady one-writ
 | Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/quality/workflow | brak GUI Valves; konfiguracja jest obecnie file-first |
 | Minimalny HITL | **STRONGER** | przerwanie tylko dla risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate | polityka klasyfikacji ryzyka wymaga dalszego rozszerzenia |
 | Least privilege / sandbox | **PARTIAL** | role OpenCode mają deny-by-default; Builder nie może push/gh/reset/clean/external directory | permission model nie jest kernel boundary; potrzebny container/OS sandbox |
-| Dual-memory / context rotation | **PARTIAL** | małe Task Envelopes, fresh review sessions, jawne context limits, brak chat history jako durable state | brak automatycznego token-budget monitoringu, session rotation i kompresora working memory |
+| Dual-memory / context rotation | **PARTIAL** | małe Task Envelopes, fresh review sessions, bounded Scout snapshot, jawne context limits, brak chat history jako durable state | brak automatycznego token-budget monitoringu, session rotation i kompresora working memory |
 | Evidence + compliance | **STRONGER** | SQLite checkpoints, evidence bundles, events, compliance snapshot, requirement verifiers, baseline/candidate regression policy | docelowo metrics/tracing i storage dla multi-worker |
 
 ## Świadome odejście od OpenWebUI Pipelines
@@ -65,6 +65,23 @@ OpenWebUI Function / operator UI
 Taki układ zachowuje pojedynczy wygodny punkt wejścia w OpenWebUI, ale stan, checkpointy, retry policy,
 locks i dowody pozostają w serwisie zaprojektowanym do długotrwałego procesu.
 
+## Repo Scout/Triage
+
+Aktywny LangGraph dodaje Scouta bezpośrednio przed Plannerem:
+
+```text
+guard_plan -> pause_plan -> scout -> plan -> prepare_worktree
+```
+
+Scout jest read-only i działa na świeżo odświeżonym canonical base. Zapisuje dokładny SHA base commit,
+krótką mapę stosu i ważnych ścieżek, uwagi o granicach architektury, ryzykowne powierzchnie oraz
+wskazówki requirement-ID -> code paths. Wynik jest ograniczany rozmiarem i utrwalany jako
+`baseline.repo_scout` oraz `evidence/<run>/run/repo-scout.json`.
+
+Snapshot nie staje się nowym Source of Truth. Planner dostaje go jako advisory context i nadal może
+weryfikować szczegóły w repo. Nieznane requirement IDs są odrzucane. Brak konfiguracji Scouta, błąd
+modelu albo malformed JSON daje jawny fallback i nie zatrzymuje autonomicznego planowania.
+
 ## Parallel Review Coordinator
 
 Aktywny preset używa trzech lane'ów:
@@ -89,13 +106,12 @@ lane'a jest niezależny, a failure-to-review jest traktowane jako rejection, nie
 
 Kolejność prac powinna maksymalizować autonomię bez zwiększania blast radius:
 
-1. **Repo Scout/Triage** — szybka rola read-only budująca aktualną mapę repo przed planowaniem.
-2. **OpenWebUI Function bridge** — start/status/pause/resume/decision i compliance przez istniejące FastAPI.
-3. **Context budget + session rotation** — limity tokenów, świeże sesje i jawne summary artifacts zamiast rosnącej historii.
-4. **Sandbox runner** — filesystem/network/process policy poniżej poziomu permissions OpenCode.
-5. **TDD evidence policy** — opcjonalny verifier red-before-green dla tasków modyfikujących zachowanie.
-6. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako deterministyczne/przedintegracyjne sygnały ryzyka.
-7. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
+1. **OpenWebUI Function bridge** — start/status/pause/resume/decision i compliance przez istniejące FastAPI/LangGraph.
+2. **Context budget + session rotation** — limity tokenów, świeże sesje i jawne summary artifacts zamiast rosnącej historii.
+3. **Sandbox runner** — filesystem/network/process policy poniżej poziomu permissions OpenCode.
+4. **TDD evidence policy** — opcjonalny verifier red-before-green dla tasków modyfikujących zachowanie.
+5. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako deterministyczne/przedintegracyjne sygnały ryzyka.
+6. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
 
 ## Kryterium docelowe
 
