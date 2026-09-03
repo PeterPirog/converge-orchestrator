@@ -40,6 +40,13 @@ def _tiny_graph(checkpointer=None):
     return graph.compile(checkpointer=checkpointer)
 
 
+def test_postgres_checkpoint_setup_is_safe_under_concurrent_startup() -> None:
+    assert DSN is not None
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda _: setup_checkpoint_storage(DSN), range(4)))
+    assert results == [None, None, None, None]
+
+
 def test_postgres_registry_is_shared_and_lease_claim_is_atomic(tmp_path: Path) -> None:
     from converge_orchestrator.registry_postgres import PostgresControlRegistry
 
