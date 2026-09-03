@@ -1,24 +1,67 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from .models import AgentConfig, ModelProfile, ProjectConfig
 
+_ROLE_DEFINITIONS: dict[str, dict[str, str]] = {
+    "planner": {
+        "description": "Plans one minimal architecture-convergence task without modifying code.",
+        "prompt": (
+            "You are a conservative software architect. Inspect the repository and choose one "
+            "small, verifiable change that improves compliance with the supplied immutable "
+            "requirements. Never modify architecture requirements. Never write code. Prefer work "
+            "that can be accepted by deterministic tests. When requested for JSON, output JSON only."
+        ),
+    },
+    "builder": {
+        "description": "Implements one bounded task with tests inside an isolated worktree.",
+        "prompt": (
+            "You are the sole writer for the current git worktree. Implement only the assigned "
+            "task. Architecture requirements are immutable. Inspect before editing, keep diffs "
+            "minimal, add meaningful tests, and preserve observable behavior unless the task "
+            "explicitly requires a change. Never push, merge, reset the base branch, or edit the "
+            "requirements file."
+        ),
+    },
+    "reviewer": {
+        "description": "Independent read-only architecture and quality reviewer.",
+        "prompt": (
+            "You are independent from the implementation agent. Review the actual diff and "
+            "repository context against the immutable requirements. Reject architectural drift, "
+            "unnecessary scope, weak tests, unsafe behavior, and accidental API changes. Do not "
+            "modify files. When requested for JSON, output JSON only."
+        ),
+    },
+}
+
+_RESERVED_AGENT_OPTIONS = {
+    "description",
+    "disable",
+    "hidden",
+    "mode",
+    "model",
+    "permission",
+    "prompt",
+    "steps",
+    "tools",
+}
+
 
 def resolve_profile_model(config: ProjectConfig, profile: ModelProfile) -> str:
-    """Resolve a profile to OpenCode's provider/model reference."""
-    if "/" in profile.model and profile.provider is None:
+    """Resolve a model profile to stable OpenCode's provider/model reference."""
+    if profile.provider:
+        return f"{profile.provider}/{profile.model}"
+    if config.model_gateway.kind != "existing":
+        return f"{config.model_gateway.provider_id}/{profile.model}"
+    if "/" in profile.model:
         return profile.model
-    provider = profile.provider
-    if provider is None and config.model_gateway.kind != "existing":
-        provider = config.model_gateway.provider_id
-    if not provider:
-        raise ValueError(
-            f"model {profile.model!r} needs provider or a configured model gateway"
-        )
-    return f"{provider}/{profile.model}"
+    raise ValueError(
+        f"model {profile.model!r} needs provider or a configured model gateway"
+    )
 
 
 def resolve_agent_model(config: ProjectConfig, agent: AgentConfig) -> str | None:
@@ -35,26 +78,111 @@ def resolve_agent_variant(config: ProjectConfig, agent: AgentConfig) -> str | No
     return None
 
 
-def _agent_request(config: ProjectConfig, agent: AgentConfig) -> dict[str, Any]:
+def _agent_model_options(config: ProjectConfig, agent: AgentConfig) -> dict[str, Any]:
     body: dict[str, Any] = {}
-    headers: dict[str, str] = {}
     if agent.model_profile:
-        profile = config.model_profiles[agent.model_profile]
-        body.update(profile.request_body)
-        headers.update(profile.request_headers)
+        body.update(config.model_profiles[agent.model_profile].request_body)
     body.update(agent.request_body)
-    headers.update(agent.request_headers)
+    reserved = sorted(_RESERVED_AGENT_OPTIONS.intersection(body))
+    if reserved:
+        raise ValueError(
+            "agent request_body may not override orchestrator safety fields: "
+            f"{reserved}"
+        )
+    return body
 
-    request: dict[str, Any] = {}
-    if body:
-        request["body"] = body
-    if headers:
-        request["headers"] = headers
-    return request
+
+def _read_only_permission(agent: AgentConfig) -> dict[str, Any]:
+    permission: dict[str, Any] = {
+        "*": "deny",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "todowrite": "allow",
+        "edit": "deny",
+        "bash": {
+            "*": "deny",
+            "git status": "allow",
+            "git status *": "allow",
+            "git diff": "allow",
+            "git diff *": "allow",
+            "git log": "allow",
+            "git log *": "allow",
+        },
+        "task": "deny",
+        "external_directory": "deny",
+        "question": "deny",
+    }
+    permission.update(agent.tool_permissions)
+    return permission
+
+
+def _builder_permission(agent: AgentConfig) -> dict[str, Any]:
+    permission: dict[str, Any] = {
+        "*": "deny",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "todowrite": "allow",
+        "edit": "allow",
+        "bash": {
+            "*": "allow",
+            "git push": "deny",
+            "git push *": "deny",
+            "git reset --hard": "deny",
+            "git reset --hard *": "deny",
+            "git clean": "deny",
+            "git clean *": "deny",
+            "gh": "deny",
+            "gh *": "deny",
+        },
+        "task": "deny",
+        "external_directory": "deny",
+        "question": "deny",
+    }
+    permission.update(agent.tool_permissions)
+    return permission
+
+
+def _role_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
+    if role == "builder":
+        return _builder_permission(agent)
+    return _read_only_permission(agent)
+
+
+def _stable_mcp_config(raw: dict[str, Any]) -> dict[str, Any]:
+    """Accept the neutral documented `mcp.servers` shape and emit stable OpenCode MCP."""
+    if not raw:
+        return {}
+    servers = raw.get("servers") if isinstance(raw.get("servers"), dict) else raw
+    output: dict[str, Any] = {}
+    for name, configured in servers.items():
+        if not isinstance(configured, dict):
+            raise ValueError(f"MCP server {name!r} must be an object")
+        server = deepcopy(configured)
+        if "disabled" in server:
+            server["enabled"] = not bool(server.pop("disabled"))
+        server.setdefault("enabled", True)
+        timeout = server.get("timeout")
+        if isinstance(timeout, dict):
+            catalog = timeout.get("catalog")
+            if catalog is not None:
+                server["timeout"] = catalog
+            else:
+                server.pop("timeout", None)
+        server.pop("codemode", None)
+        output[str(name)] = server
+    return output
 
 
 def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
-    """Build OpenCode V2 config without materializing any secret value."""
+    """Build stable OpenCode config without materializing any secret value."""
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
     gateway = config.model_gateway
 
@@ -70,39 +198,61 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
                 {"name": profile.name or model_id},
             )
 
+        options: dict[str, Any] = {"baseURL": gateway.base_url}
+        if gateway.api_key_env:
+            options["apiKey"] = f"{{env:{gateway.api_key_env}}}"
+        if gateway.headers:
+            options["headers"] = gateway.headers
         provider: dict[str, Any] = {
+            "npm": gateway.package,
             "name": gateway.name,
-            "package": gateway.package,
-            "settings": {"baseURL": gateway.base_url},
+            "options": options,
             "models": provider_models,
         }
-        if gateway.api_key_env:
-            provider["env"] = [gateway.api_key_env]
-        if gateway.headers:
-            provider["headers"] = gateway.headers
-        payload["providers"] = {gateway.provider_id: provider}
+        payload["provider"] = {gateway.provider_id: provider}
 
-    if config.mcp:
-        payload["mcp"] = config.mcp
+    mcp = _stable_mcp_config(config.mcp)
+    if mcp:
+        payload["mcp"] = mcp
 
     agent_overrides: dict[str, dict[str, Any]] = {}
     for role, agent in config.agents.items():
-        model = resolve_agent_model(config, agent)
-        variant = resolve_agent_variant(config, agent)
-        override: dict[str, Any] = {}
-        if model:
-            override["model"] = f"{model}#{variant}" if variant else model
-        if agent.steps:
-            override["steps"] = agent.steps
-        request = _agent_request(config, agent)
-        if request:
-            override["request"] = request
-        if override:
-            agent_overrides[agent.agent] = override
         if not agent.agent:
             raise ValueError(f"agent role {role!r} has empty OpenCode agent id")
+        role_definition = _ROLE_DEFINITIONS.get(role)
+        if role_definition is None:
+            raise ValueError(
+                f"unsupported agent role {role!r}; built-in roles are "
+                f"{sorted(_ROLE_DEFINITIONS)}"
+            )
+        model = resolve_agent_model(config, agent)
+        variant = resolve_agent_variant(config, agent)
+        override: dict[str, Any] = {
+            "description": role_definition["description"],
+            "mode": "all",
+            "prompt": role_definition["prompt"],
+            "permission": _role_permission(role, agent),
+        }
+        if model:
+            override["model"] = model
+        if agent.steps:
+            override["steps"] = agent.steps
+        override.update(_agent_model_options(config, agent))
+        if variant:
+            # Stable OpenCode applies variants through the CLI flag. Keep it out of agent model IDs
+            # so providers with slash-containing model IDs remain unambiguous.
+            override["convergeVariant"] = variant
+        agent_overrides[agent.agent] = override
     if agent_overrides:
-        payload["agents"] = agent_overrides
+        payload["agent"] = agent_overrides
+    return payload
+
+
+def runtime_opencode_config(config: ProjectConfig) -> dict[str, Any]:
+    """Return the highest-precedence runtime config without internal-only metadata."""
+    payload = build_opencode_config(config)
+    for agent in payload.get("agent", {}).values():
+        agent.pop("convergeVariant", None)
     return payload
 
 
@@ -110,7 +260,7 @@ def materialize_opencode_config(config: ProjectConfig) -> Path:
     """Write deterministic generated config under state_dir, never into the target repo."""
     target = config.opencode_generated_config_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_opencode_config(config)
+    payload = runtime_opencode_config(config)
     target.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
