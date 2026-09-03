@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -60,7 +61,7 @@ def test_lease_can_be_renewed_and_released_only_by_owner(tmp_path: Path) -> None
 
 def test_existing_registry_schema_is_migrated_with_lease_columns(tmp_path: Path) -> None:
     path = tmp_path / "legacy.sqlite"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(
             """
             CREATE TABLE projects (
@@ -86,7 +87,7 @@ def test_existing_registry_schema_is_migrated_with_lease_columns(tmp_path: Path)
 
     ControlRegistry(path)
 
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(runs)").fetchall()}
     assert "lease_owner" in columns
     assert "lease_expires_at" in columns
