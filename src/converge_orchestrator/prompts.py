@@ -102,6 +102,9 @@ The architecture requirements are immutable. The orchestrator has supplied the e
 requirement statements and source anchors below. Do not modify or reinterpret them.
 Inspect existing code first. Make the smallest coherent change. Stay inside allowed_paths.
 Add or update meaningful tests for changed behavior. Do not push, merge, or modify the base branch.
+Preserve existing public entry points. For Node packages, keep existing package.json exports, bin
+commands and legacy main/module/type targets; prefer an additive compatibility shim over replacing a
+consumer-visible entry point unless the immutable requirement explicitly demands a breaking change.
 {tdd_context}
 TARGET REQUIREMENTS:
 {contract_excerpt(relevant, limit=len(relevant))}
@@ -160,7 +163,8 @@ Review against immutable requirements and acceptance criteria. Do not trust the 
 narrative as evidence. Reject architectural drift, unnecessary scope, weak tests, security
 regressions, hidden behavior changes, violations of the Task Envelope, and dishonest change_kind/TDD
 classification. For behavior tasks, reject changes that weaken/remove the RED test instead of making
-it pass through the intended implementation.
+it pass through the intended implementation. Reject unexplained removals or retargeting of existing
+Node package exports, CLI commands, or legacy main/module/type entry points.
 Return ONLY JSON matching this shape: {json.dumps(schema)}
 
 TASK:
@@ -185,6 +189,8 @@ def repair_prompt(
 Keep requirements unchanged. Fix all required quality-gate or review failures and rerun relevant
 tests. Stay inside the original Task Envelope. If the task has verified TDD RED evidence, preserve
 the frozen RED test exactly; do not weaken/delete/skip it to obtain GREEN. Do not push or merge.
+When repairing a Node compatibility finding, retain the old consumer-visible entry point as a shim
+and add the new path separately whenever that satisfies the immutable requirement.
 TARGET REQUIREMENTS:
 {contract_excerpt(relevant, limit=len(relevant))}
 TASK: {task.model_dump_json(indent=2)}

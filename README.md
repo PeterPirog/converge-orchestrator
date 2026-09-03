@@ -41,6 +41,7 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 - configured target verifier must improve from non-PASS to PASS before integration;
 - bounded repair and replan loops;
 - risk approval that cannot waive failed deterministic gates, review or CI;
+- deterministic Python API and Node package-entry compatibility protection;
 - parallel read-only correctness, architecture and security review lanes;
 - deterministic review aggregation where one reject or reviewer execution failure blocks integration;
 - evidence artifacts, durable compliance snapshot and JSONL event stream;

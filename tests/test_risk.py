@@ -157,6 +157,134 @@ def test_python_explicit_exports_limit_public_surface(tmp_path: Path) -> None:
     assert "forbidden_public_api_change" not in report.flags
 
 
+def test_node_removed_subpath_export_interrupts(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base=(
+            '{"name":"payments","exports":{'
+            '".":"./dist/index.js","./testing":"./dist/testing.js"}}\n'
+        ),
+        candidate='{"name":"payments","exports":{".":"./dist/index.js"}}\n',
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    assert any(
+        item.evidence == "public Node package contract removed: package.json:exports:./testing"
+        for item in report.findings
+    )
+
+
+def test_node_retargeted_conditional_export_is_observed_without_hitl(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "packages/client/package.json",
+        base=(
+            '{"name":"@example/client","exports":{'
+            '"import":"./dist/index.mjs","require":"./dist/index.cjs"}}\n'
+        ),
+        candidate=(
+            '{"name":"@example/client","exports":{'
+            '"import":"./dist/v2.mjs","require":"./dist/index.cjs"}}\n'
+        ),
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+    finding = next(item for item in report.findings if "exports:.#import" in item.evidence)
+    assert finding.disposition == "observe"
+
+
+def test_node_removed_conditional_export_interrupts(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base=(
+            '{"name":"payments","exports":{'
+            '"import":"./dist/index.mjs","require":"./dist/index.cjs"}}\n'
+        ),
+        candidate=(
+            '{"name":"payments","exports":{'
+            '"import":"./dist/index.mjs"}}\n'
+        ),
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    assert any("exports:.#require" in item.evidence for item in report.findings)
+
+
+def test_node_removed_cli_interrupts_and_retargeted_cli_is_observed(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base='{"name":"converge","bin":{"converge":"./bin/cli.js","cv":"./bin/cli.js"}}\n',
+        candidate='{"name":"converge","bin":{"converge":"./bin/v2.js"}}\n',
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    evidence = {item.evidence for item in report.findings}
+    assert "public Node package target changed: package.json:bin:converge" in evidence
+    assert "public Node package contract removed: package.json:bin:cv" in evidence
+
+
+def test_node_additive_exports_do_not_interrupt(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base='{"name":"payments","exports":{".":"./dist/index.js"}}\n',
+        candidate=(
+            '{"name":"payments","exports":{'
+            '".":"./dist/index.js","./testing":"./dist/testing.js"}}\n'
+        ),
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+
+
+def test_node_legacy_entrypoint_change_is_observed_without_hitl(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base=(
+            '{"name":"payments","main":"./dist/index.js",'
+            '"types":"./dist/index.d.ts"}\n'
+        ),
+        candidate=(
+            '{"name":"payments","main":"./dist/v2.js",'
+            '"types":"./dist/index.d.ts"}\n'
+        ),
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+    finding = next(item for item in report.findings if item.evidence.endswith("package.json:main"))
+    assert finding.disposition == "observe"
+
+
+def test_node_package_name_change_interrupts(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base='{"name":"payments","main":"./index.js"}\n',
+        candidate='{"name":"payments-v2","main":"./index.js"}\n',
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    assert any("package name changed" in item.evidence for item in report.findings)
+
+
+def test_unrelated_node_manifest_changes_do_not_interrupt(tmp_path: Path) -> None:
+    report = _classify(
+        tmp_path,
+        "package.json",
+        base='{"name":"payments","main":"./index.js","scripts":{"test":"vitest"}}\n',
+        candidate=(
+            '{"name":"payments","main":"./index.js",'
+            '"scripts":{"test":"vitest run","lint":"eslint ."}}\n'
+        ),
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+
+
 def test_auth_weakening_interrupts_but_test_changes_do_not(tmp_path: Path) -> None:
     report = _classify(
         tmp_path,

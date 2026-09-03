@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import json
 import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -111,6 +112,8 @@ _AUTH_WEAKENING = re.compile(
 )
 
 _TEST_SEGMENTS = {"test", "tests", "spec", "specs", "__tests__"}
+
+_NODE_ENTRYPOINT_FIELDS = ("main", "module", "types", "typings", "browser")
 
 
 def _read_candidate(cwd: Path, path: str) -> str | None:
@@ -467,6 +470,117 @@ def _python_public_api_findings(
     return findings[:20]
 
 
+def _flatten_node_export_target(
+    contract: dict[str, str],
+    entry: str,
+    target: object,
+) -> None:
+    if target is None:
+        return
+    if isinstance(target, dict):
+        for condition, nested in target.items():
+            if isinstance(condition, str):
+                _flatten_node_export_target(contract, f"{entry}#{condition}", nested)
+        return
+    contract[entry] = json.dumps(target, sort_keys=True, separators=(",", ":"))
+
+
+def _node_package_contract(source: str | None) -> dict[str, str]:
+    """Return only the stable, consumer-visible contract declared by package.json.
+
+    The manifest is parsed as JSON instead of trying to infer JavaScript/TypeScript exports with a
+    lossy regex parser. Additive entries are compatible; existing public names are pinned while
+    target changes remain review evidence instead of automatic HITL.
+    """
+    if source is None:
+        return {}
+    try:
+        payload = json.loads(source)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    contract: dict[str, str] = {}
+    name = payload.get("name")
+    if isinstance(name, str):
+        contract["name"] = name
+
+    for field in _NODE_ENTRYPOINT_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, str) or isinstance(value, dict):
+            contract[field] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    exports = payload.get("exports")
+    if isinstance(exports, str) or isinstance(exports, list):
+        _flatten_node_export_target(contract, "exports:.", exports)
+    elif isinstance(exports, dict):
+        # A mapping whose keys start with '.' declares subpath exports. Otherwise the whole object
+        # is the conditional root export (for example import/require/default).
+        if any(isinstance(key, str) and key.startswith(".") for key in exports):
+            for key, value in exports.items():
+                if isinstance(key, str) and key.startswith("."):
+                    _flatten_node_export_target(contract, f"exports:{key}", value)
+        else:
+            _flatten_node_export_target(contract, "exports:.", exports)
+
+    binary = payload.get("bin")
+    if isinstance(binary, str):
+        command = name if isinstance(name, str) else "<package-name>"
+        contract[f"bin:{command}"] = binary
+    elif isinstance(binary, dict):
+        for command, target in binary.items():
+            if isinstance(command, str) and isinstance(target, str):
+                contract[f"bin:{command}"] = target
+    return contract
+
+
+def _node_package_contract_findings(
+    path: str,
+    base: str | None,
+    candidate: str | None,
+) -> list[RiskFinding]:
+    if PurePosixPath(path).name != "package.json":
+        return []
+    baseline = _node_package_contract(base)
+    if not baseline:
+        return []
+    current = _node_package_contract(candidate)
+    findings: list[RiskFinding] = []
+    for entry, target in baseline.items():
+        if entry not in current:
+            findings.append(
+                RiskFinding(
+                    kind="public_api_break",
+                    disposition="interrupt",
+                    flag="forbidden_public_api_change",
+                    path=path,
+                    evidence=f"public Node package contract removed: {path}:{entry}",
+                )
+            )
+        elif current[entry] != target:
+            if entry == "name":
+                findings.append(
+                    RiskFinding(
+                        kind="public_api_break",
+                        disposition="interrupt",
+                        flag="forbidden_public_api_change",
+                        path=path,
+                        evidence=f"public Node package name changed: {path}:name",
+                    )
+                )
+            else:
+                findings.append(
+                    RiskFinding(
+                        kind="public_api_break",
+                        disposition="observe",
+                        path=path,
+                        evidence=f"public Node package target changed: {path}:{entry}",
+                    )
+                )
+    return findings[:20]
+
+
 def classify_repository_risk(
     config: ProjectConfig,
     cwd: Path,
@@ -483,6 +597,7 @@ def classify_repository_risk(
         findings.extend(_migration_findings(path, added, removed, candidate))
         findings.extend(_auth_findings(path, added, removed))
         findings.extend(_python_public_api_findings(path, base, candidate))
+        findings.extend(_node_package_contract_findings(path, base, candidate))
 
     deduped: list[RiskFinding] = []
     seen: set[tuple] = set()
