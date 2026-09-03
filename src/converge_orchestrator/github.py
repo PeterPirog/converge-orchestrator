@@ -169,7 +169,9 @@ class GitHubAdapter:
                     authoritative=True,
                     source="branch_summary",
                 )
-            if isinstance(summary, dict):
+            if isinstance(summary, dict) and (
+                "contexts" in summary or "checks" in summary
+            ):
                 return RemotePolicy(
                     base_branch=base_branch,
                     protected=True,
