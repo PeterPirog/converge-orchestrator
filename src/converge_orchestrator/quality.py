@@ -5,6 +5,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from .architecture import run_architecture_gate
 from .compliance import ComplianceEngine
 from .git import GitError, changed_files, current_head, diff_line_count, paths_within_allowlist
 from .inspector import inspect_repository
@@ -96,10 +97,14 @@ def _execute_quality_gate(
 
 
 def run_quality_gates(config: ProjectConfig, cwd: Path) -> list[GateResult]:
-    return [
+    results = [
         _execute_quality_gate(config, gate, cwd)
         for gate in effective_quality_gates(config, cwd)
     ]
+    architecture = run_architecture_gate(config, cwd)
+    if architecture is not None:
+        results.append(architecture)
+    return results
 
 
 def _baseline_requirement_verifiers(config: ProjectConfig, contract):  # type: ignore[no-untyped-def]
