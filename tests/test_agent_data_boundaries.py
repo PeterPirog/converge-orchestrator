@@ -55,6 +55,12 @@ def _config(tmp_path: Path, *, mode: str = "host") -> ProjectConfig:
                     "url": "https://deploy.invalid/mcp",
                     "headers": {"Authorization": "Bearer {env:DEPLOY_MCP_KEY}"},
                 },
+                "disabled_docs": {
+                    "type": "remote",
+                    "url": "https://disabled.invalid/mcp",
+                    "enabled": False,
+                    "headers": {"X-API-Key": "{env:DISABLED_MCP_KEY}"},
+                },
             }
         },
         sandbox=sandbox,
@@ -62,7 +68,10 @@ def _config(tmp_path: Path, *, mode: str = "host") -> ProjectConfig:
             "planner": {
                 "agent": "converge-planner",
                 "model_profile": "planner",
-                "tool_permissions": {"docs_*": "allow"},
+                "tool_permissions": {
+                    "docs_*": "allow",
+                    "disabled_docs_*": "allow",
+                },
             },
             "builder": {
                 "agent": "converge-builder",
@@ -79,6 +88,7 @@ def test_runtime_config_enables_only_role_assigned_mcp_and_skills(tmp_path: Path
     planner = runtime_opencode_config(cfg, active_role="planner")
     assert planner["mcp"]["docs"]["enabled"] is True
     assert planner["mcp"]["deploy"]["enabled"] is False
+    assert planner["mcp"]["disabled_docs"]["enabled"] is False
     planner_permissions = planner["agent"]["converge-planner"]["permission"]
     assert planner_permissions["docs_*"] == "allow"
     assert planner_permissions["skill"] == {
@@ -90,6 +100,7 @@ def test_runtime_config_enables_only_role_assigned_mcp_and_skills(tmp_path: Path
     builder = runtime_opencode_config(cfg, active_role="builder")
     assert builder["mcp"]["docs"]["enabled"] is False
     assert builder["mcp"]["deploy"]["enabled"] is True
+    assert builder["mcp"]["disabled_docs"]["enabled"] is False
     builder_skills = builder["agent"]["converge-builder"]["permission"]["skill"]
     assert builder_skills == {
         "*": "deny",
@@ -116,6 +127,7 @@ def test_host_agent_environment_excludes_other_role_and_unrelated_secrets(
     monkeypatch.setenv("OPENWEBUI_API_KEY", "gateway-secret")
     monkeypatch.setenv("DOCS_MCP_KEY", "docs-secret")
     monkeypatch.setenv("DEPLOY_MCP_KEY", "deploy-secret")
+    monkeypatch.setenv("DISABLED_MCP_KEY", "disabled-secret")
     monkeypatch.setenv("UNRELATED_PARENT_SECRET", "must-not-leak")
     completed = types.SimpleNamespace(returncode=0, stdout="ok")
 
@@ -134,6 +146,7 @@ def test_host_agent_environment_excludes_other_role_and_unrelated_secrets(
     assert passed["OPENWEBUI_API_KEY"] == "gateway-secret"
     assert passed["DOCS_MCP_KEY"] == "docs-secret"
     assert "DEPLOY_MCP_KEY" not in passed
+    assert "DISABLED_MCP_KEY" not in passed
     assert "UNRELATED_PARENT_SECRET" not in passed
 
 
@@ -159,3 +172,4 @@ def test_adapter_does_not_mount_full_state_into_agent_runtime(tmp_path: Path) ->
     inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     assert inline["mcp"]["docs"]["enabled"] is True
     assert inline["mcp"]["deploy"]["enabled"] is False
+    assert inline["mcp"]["disabled_docs"]["enabled"] is False
