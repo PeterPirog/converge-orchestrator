@@ -23,6 +23,7 @@ _PRECHECKPOINT_RECOVERY_STATUSES = {
     "pause_requested",
     "recoverable",
 }
+_INITIAL_INPUT_KEYS = {"project_id", "config_path", "run_id", "thread_id"}
 
 
 def _wake_datetime(value: str) -> datetime:
@@ -55,6 +56,25 @@ def _terminal_checkpoint_status(snapshot: dict[str, Any]) -> str | None:
         return None
     status = values.get("status")
     return str(status) if status in _TERMINAL_STATUSES else None
+
+
+def _is_initial_input_checkpoint(
+    snapshot: dict[str, Any],
+    record: dict[str, Any],
+) -> bool:
+    """Recognize only the exact durable input envelope written before the first graph node."""
+    if snapshot.get("interrupt") or snapshot.get("next"):
+        return False
+    values = snapshot.get("values")
+    if not isinstance(values, dict) or set(values) != _INITIAL_INPUT_KEYS:
+        return False
+    return (
+        values.get("project_id") == record.get("project_id")
+        and values.get("run_id") == record.get("id")
+        and values.get("thread_id") == record.get("thread_id")
+        and isinstance(values.get("config_path"), str)
+        and bool(values.get("config_path"))
+    )
 
 
 class ScheduledRunController(RunController):
@@ -128,6 +148,15 @@ class ScheduledRunController(RunController):
                 status="recoverable",
                 node=str(result["next"][0]),
             )
+            result["status"] = "recoverable"
+            self._schedule_recoverable(run_id)
+        elif (
+            not result.get("worker_alive")
+            and not result.get("finished_at")
+            and result.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+            and _is_initial_input_checkpoint(result, result)
+        ):
+            self.registry.update_run(run_id, status="recoverable", node="start")
             result["status"] = "recoverable"
             self._schedule_recoverable(run_id)
         return result
@@ -240,8 +269,11 @@ class ScheduledRunController(RunController):
             if snapshot.get("next"):
                 node = str(snapshot["next"][0])
             elif (
-                not snapshot.get("values")
-                and record.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+                record.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+                and (
+                    not snapshot.get("values")
+                    or _is_initial_input_checkpoint(snapshot, record)
+                )
             ):
                 node = "start"
             else:
@@ -356,8 +388,11 @@ class ScheduledRunController(RunController):
         if snapshot.get("next"):
             input_value: Any = None
         elif (
-            not snapshot.get("values")
-            and record.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+            record.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+            and (
+                not snapshot.get("values")
+                or _is_initial_input_checkpoint(snapshot, record)
+            )
         ):
             input_value = self._initial_recovery_input(record)
         else:
