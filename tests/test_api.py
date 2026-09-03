@@ -113,6 +113,30 @@ def test_api_bootstrap_compliance_evidence_and_pause(tmp_path: Path) -> None:
     assert response.json()["status"] == "pause_requested"
 
 
+def test_api_bearer_token_protects_control_plane(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "control.sqlite", api_token="top-secret")
+    client = TestClient(app)
+
+    assert client.get("/health").status_code == 200
+
+    response = client.get("/projects")
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+    response = client.get(
+        "/projects",
+        headers={"Authorization": "Bearer wrong-secret"},
+    )
+    assert response.status_code == 401
+
+    response = client.get(
+        "/projects",
+        headers={"Authorization": "Bearer top-secret"},
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
 def test_openapi_exposes_required_mvp_control_routes(tmp_path: Path) -> None:
     app = create_app(tmp_path / "control.sqlite")
     routes = set(app.openapi()["paths"])

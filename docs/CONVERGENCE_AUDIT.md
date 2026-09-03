@@ -10,12 +10,14 @@ legacy dependency wyłącznie dla literalnej zgodności.
 
 ## Stan ogólny
 
-Aktualnie 10 z 15 obszarów jest zgodnych albo zaimplementowanych mocniej niż w referencji, 4 są
-częściowe, a 1 jest świadomym odejściem technologicznym przy zachowaniu celu funkcjonalnego.
+Aktualnie 11 z 15 obszarów jest zgodnych albo zaimplementowanych mocniej niż w referencji, a 4 są
+częściowe. Nie ma już funkcjonalnej luki wymagającej osobnej kategorii technologicznego odejścia:
+OpenWebUI pełni rolę operatorskiego punktu wejścia przez wspierany Workspace Tool, podczas gdy
+LangGraph pozostaje trwałym silnikiem procesu.
 
-Największe pozostałe luki operacyjne to sandbox na poziomie OS/container, zarządzanie długim kontekstem,
-OpenWebUI operator bridge i bardziej rygorystyczne wymuszanie TDD. Nie ma obecnie luki, która wymagałaby
-osłabienia immutable Source of Truth, deterministic policy albo zasady one-writer-per-worktree.
+Największe pozostałe luki operacyjne to sandbox na poziomie OS/container, zarządzanie długim kontekstem
+i bardziej rygorystyczne wymuszanie TDD. Nie ma obecnie luki, która wymagałaby osłabienia immutable
+Source of Truth, deterministic policy albo zasady one-writer-per-worktree.
 
 ## Macierz zbieżności
 
@@ -30,40 +32,47 @@ osłabienia immutable Source of Truth, deterministic policy albo zasady one-writ
 | Code review jako bariera przed dryfem | **STRONGER** | correctness + architecture + security wykonywane równolegle; jeden reject albo reviewer failure blokuje integration | future specialty lanes mogą zostać dodane później |
 | GitHub PR + CI | **ALIGNED** | deterministic integrator, branch push, PR, bounded CI wait, opcjonalny merge po PASS | required-check/branch-protection discovery jeszcze niepełne |
 | MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do stable OpenCode | Converge nie wymusza konkretnego katalogu git/github/pytest/desktop MCP; część funkcji realizuje bezpieczniej deterministycznym kodem lokalnym |
-| OpenWebUI jako punkt wejścia operatora | **INTENTIONAL DEVIATION** | OpenWebUI jest gatewayem modeli; trwały workflow należy do FastAPI/LangGraph | potrzebny OpenWebUI Function/Pipe operator bridge |
-| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/quality/workflow | brak GUI Valves; konfiguracja jest obecnie file-first |
+| OpenWebUI jako punkt wejścia operatora | **ALIGNED** | natywny Workspace Tool nad Bearer-authenticated FastAPI; read-only status/compliance/evidence oraz confirmation-gated register/bootstrap/start/pause/resume/decision; durable state pozostaje w LangGraph | docelowy dashboard może poprawić ergonomię, ale nie jest wymagany do kontroli workflow |
+| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/quality/workflow oraz Valves dla operator bridge | pełny GUI editor projektu pozostaje opcjonalny |
 | Minimalny HITL | **STRONGER** | przerwanie tylko dla risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate | polityka klasyfikacji ryzyka wymaga dalszego rozszerzenia |
 | Least privilege / sandbox | **PARTIAL** | role OpenCode mają deny-by-default; Builder nie może push/gh/reset/clean/external directory | permission model nie jest kernel boundary; potrzebny container/OS sandbox |
 | Dual-memory / context rotation | **PARTIAL** | małe Task Envelopes, fresh review sessions, bounded Scout snapshot, jawne context limits, brak chat history jako durable state | brak automatycznego token-budget monitoringu, session rotation i kompresora working memory |
 | Evidence + compliance | **STRONGER** | SQLite checkpoints, evidence bundles, events, compliance snapshot, requirement verifiers, baseline/candidate regression policy | docelowo metrics/tracing i storage dla multi-worker |
 
-## Świadome odejście od OpenWebUI Pipelines
+## Wspierana implementacja zamiast legacy OpenWebUI Pipelines
 
 Materiał referencyjny zakłada OpenWebUI Pipelines/Manifold jako główny silnik orkiestracji. Dla nowego
 wdrożenia nie jest to już właściwy target. Aktualna dokumentacja OpenWebUI oznacza Pipelines jako
-**legacy** i zaleca Functions, Tools lub zewnętrzne serwisy MCP/OpenAPI:
+legacy i wskazuje wspierane mechanizmy Tools, Functions oraz zewnętrzne MCP/OpenAPI.
 
-- https://docs.openwebui.com/features/extensibility/pipelines/
-- https://docs.openwebui.com/features/extensibility/
-
-Dlatego Converge nie przenosi durable LangGraph state machine do legacy Pipeline. Docelowy model to:
+Converge realizuje funkcjonalny cel OpenWebUI w następującym układzie:
 
 ```text
-OpenWebUI Function / operator UI
-            |
-            v
-      Converge FastAPI
-            |
-            v
- LangGraph durable workflow
-      |            |
-   OpenCode      GitHub/CI
-      |
-    MCP/tools
+OpenWebUI Workspace Tool
+  |       |
+  |       +--> native confirmation for mutations
+  |
+  +--> authenticated FastAPI control requests
+              |
+              v
+        Converge FastAPI
+              |
+              v
+       LangGraph durable workflow
+          |              |
+       OpenCode        GitHub/CI
+          |
+        MCP/tools
 ```
 
-Taki układ zachowuje pojedynczy wygodny punkt wejścia w OpenWebUI, ale stan, checkpointy, retry policy,
-locks i dowody pozostają w serwisie zaprojektowanym do długotrwałego procesu.
+FastAPI może wymagać `CONVERGE_API_TOKEN`; poza `/health` żądania wymagają Bearer auth. Workspace Tool
+ma password-masked Valve na token i prosi operatora o natywne potwierdzenie przed register/bootstrap,
+start, pause, resume oraz decyzją HITL. Brak potwierdzenia, odmowa, disconnect lub event-call error
+kończy operację bez mutującego requestu.
+
+To zachowuje pojedynczy wygodny punkt wejścia w OpenWebUI, ale stan, checkpointy, retry policy, repair,
+compliance i dowody pozostają w serwisie/LangGraph zaprojektowanym do długotrwałego procesu. Chat nie
+jest durable state.
 
 ## Repo Scout/Triage
 
@@ -106,12 +115,11 @@ lane'a jest niezależny, a failure-to-review jest traktowane jako rejection, nie
 
 Kolejność prac powinna maksymalizować autonomię bez zwiększania blast radius:
 
-1. **OpenWebUI Function bridge** — start/status/pause/resume/decision i compliance przez istniejące FastAPI/LangGraph.
-2. **Context budget + session rotation** — limity tokenów, świeże sesje i jawne summary artifacts zamiast rosnącej historii.
-3. **Sandbox runner** — filesystem/network/process policy poniżej poziomu permissions OpenCode.
-4. **TDD evidence policy** — opcjonalny verifier red-before-green dla tasków modyfikujących zachowanie.
-5. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako deterministyczne/przedintegracyjne sygnały ryzyka.
-6. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
+1. **Context budget + session rotation** — limity tokenów, świeże sesje i jawne summary artifacts zamiast rosnącej historii.
+2. **Sandbox runner** — filesystem/network/process policy poniżej poziomu permissions OpenCode.
+3. **TDD evidence policy** — opcjonalny verifier red-before-green dla tasków modyfikujących zachowanie.
+4. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako deterministyczne/przedintegracyjne sygnały ryzyka.
+5. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
 
 ## Kryterium docelowe
 

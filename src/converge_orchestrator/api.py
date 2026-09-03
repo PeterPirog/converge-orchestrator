@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .runtime import RunController
@@ -39,17 +41,43 @@ def _run_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def create_app(registry_path: Path | None = None) -> FastAPI:
+def create_app(
+    registry_path: Path | None = None,
+    api_token: str | None = None,
+) -> FastAPI:
     path = registry_path or Path(
         os.environ.get("CONVERGE_CONTROL_DB", ".converge/control.sqlite")
     )
     controller = RunController(path)
+    token = api_token if api_token is not None else os.environ.get("CONVERGE_API_TOKEN")
     app = FastAPI(
         title="Converge Orchestrator API",
         version="0.3.0",
         description="Durable control plane for requirements-driven autonomous code convergence.",
     )
     app.state.controller = controller
+
+    if token:
+
+        @app.middleware("http")
+        async def require_bearer_token(request: Request, call_next):
+            if request.url.path == "/health":
+                return await call_next(request)
+            authorization = request.headers.get("Authorization", "")
+            scheme, separator, supplied = authorization.partition(" ")
+            valid = (
+                separator == " "
+                and scheme.lower() == "bearer"
+                and bool(supplied)
+                and secrets.compare_digest(supplied, token)
+            )
+            if not valid:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"detail": "Unauthorized"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return await call_next(request)
 
     @app.get("/health")
     def health() -> dict[str, str]:
