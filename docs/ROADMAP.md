@@ -100,12 +100,16 @@ Implemented:
   same LangGraph run/thread without HITL;
 - real subprocess proof that abrupt OpenCode/executor death is absorbed by a bounded primary retry
   with identical role/prompt/model and no hidden session continuation or HITL;
+- optional shared PostgreSQL control registry and LangGraph checkpoint backend selected by deployment
+  environment, with SQLite retained as the zero-configuration local default;
+- atomic PostgreSQL run leases and real PostgreSQL CI coverage for shared control/checkpoint state;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
-   backup and multi-worker deployment hardening.
+1. **Production deployment hardening** — connection pooling, backup/restore, structured metrics/tracing,
+   and explicit shared-filesystem or worker-affinity rules before claiming arbitrary multi-worker
+   execution.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
