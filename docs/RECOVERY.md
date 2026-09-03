@@ -54,11 +54,10 @@ Automatic recovery must never:
 
 ## Remaining crash-hardening work
 
-Worktree creation is already fail-closed and preserves ambiguous state, but stale-resource garbage
-collection still requires an explicit ownership protocol. The next hardening stage must only remove a
-worktree/branch after a deterministic cleanup intent exists and the recorded path/branch ownership
-matches Git. Active, paused, interrupted, recoverable and `ci_wait` runs must remain protected.
+Stale-resource garbage collection now uses durable ownership records and only removes resources whose
+recorded path/branch still match Git and whose owner run is terminal. Active, paused, interrupted,
+recoverable and `ci_wait` runs remain protected. Ambiguous or foreign resources fail closed.
 
-End-to-end chaos tests should additionally kill the service/OpenCode around worktree creation,
+Remaining end-to-end chaos tests should additionally kill the service/OpenCode/provider around worktree creation,
 integration, PR creation and CI waiting, then verify that the same run and task converge without
 losing candidate changes or duplicating side effects.

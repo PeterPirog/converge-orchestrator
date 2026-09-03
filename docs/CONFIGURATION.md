@@ -376,6 +376,8 @@ agents:
   builder:
     agent: converge-builder
     model_profile: builder
+    fallback_model_profiles: [builder_fallback]
+    provider_retries: 0
     timeout_seconds: 3600
     steps: 60
     tool_permissions: {}
@@ -409,6 +411,10 @@ Pola agenta:
 - `agent`: unikalny stable OpenCode runtime agent ID.
 - `model_profile`: nazwa z `models.profiles`.
 - `model`: alternatywa dla profilu; nie ustawiaj jednocześnie obu.
+- `fallback_model_profiles`: uporządkowana lista maksymalnie czterech jawnych profili. Każdy jest
+  próbowany raz po wyczerpaniu primary execution attempts.
+- `provider_retries`: liczba dodatkowych prób primary modelu (0–3). `0` minimalizuje latency i od
+  razu przechodzi do skonfigurowanego fallbacku.
 - `timeout_seconds`: twardy timeout pojedynczego agent call.
 - `steps`: maksymalny tool/model loop budget.
 - `request_body`: per-agent override profilu, bez chronionych safety fields.
@@ -422,6 +428,13 @@ Twarde role:
 
 Project YAML nie może nadpisać chronionych permissions takich jak `edit`, `bash`, `task`,
 `external_directory`, `read` czy `websearch`.
+
+Retry/fallback dotyczy wyłącznie failure wykonania OpenCode (non-zero exit, timeout lub exception).
+Poprawny proces z malformed JSON albo semantycznie odrzuconym wynikiem pozostaje w zwykłej polityce
+walidacji/replan/review i nie jest maskowany jako awaria providera. Każda próba używa świeżej sesji,
+tego samego role promptu i identycznych permissions; limity kontekstu oraz `request_body` są ponownie
+wyliczane dla wybranego profilu. Audyt bez raw output trafia do
+`<state_dir>/provider-health.jsonl`, a pełna lista prób do context evidence danej fazy.
 
 ---
 

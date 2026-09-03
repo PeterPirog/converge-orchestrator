@@ -38,10 +38,11 @@ Implemented:
 - unrelated check runs remain evidence but do not satisfy or fail an authoritative required-check
   policy;
 - CI matrix on Python 3.11–3.13.
+- ownership-aware stale worktree cleanup with durable resource records and protected active,
+  recoverable, interrupted and CI-wait runs.
 
 Remaining hardening:
 
-- stale worktree/branch garbage collection with explicit ownership checks;
 - explicit flaky-job classification before any selective CI retry;
 - optional issue/backlog synchronization.
 
@@ -63,10 +64,10 @@ Implemented:
 - deterministic final-diff risk classification for secrets, destructive migrations, public Python API
   changes and auth/authz weakening;
 - hard-block secret policy before semantic review and risk approval bound to the exact candidate diff.
+- monotonic Python AST/import boundary enforcement independent from project-provided scripts.
 
 Remaining:
 
-- deterministic AST/import architecture rules independent from custom project scripts;
 - broader cross-language compatibility adapters and safe shim/roll-forward strategies;
 - broader chaos suite covering killed service/OpenCode/provider processes and stale resources.
 
@@ -86,28 +87,30 @@ Implemented:
 - deterministic context budgets, authoritative-core no-truncation and advisory-only compaction;
 - bounded working-memory artifacts and per-invocation context evidence;
 - durable run lease, retry-safe side effects and checkpointable long CI waits;
+- bounded per-role provider retries and ordered model-profile fallback with fresh sessions, unchanged
+  permissions, profile-specific context budgets and a durable attempt ledger;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Ownership-aware crash/chaos completion** — stale worktree/branch GC plus end-to-end kill/restart
-   tests of service, OpenCode, integration checkpoint races and CI wait restoration.
-2. **Deterministic architecture analyzers** — AST/import/dependency rules that do not rely solely on
-   project-provided scripts or LLM review.
-3. **Cross-language compatibility adapters** — public API and migration safety beyond Python plus safe
+1. **Cross-language compatibility adapters** — public API and migration safety beyond Python plus safe
    shims/roll-forward strategies that reduce HITL.
-4. **Provider/model resilience** — bounded fallback/retry policy with evidence and per-role health.
-5. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
+2. **Crash/chaos completion** — end-to-end kill/restart tests of service, OpenCode/provider,
+   integration checkpoint races and CI wait restoration.
+3. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence.
+4. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
+5. **Cross-language architecture analyzers** — import/dependency rules beyond the implemented Python
+   AST boundary gate.
 
 ## v0.5 — production autonomous operation
 
 Planned:
 
-- stale worktree/branch garbage collection with explicit ownership and lease/checkpoint checks;
+- broader end-to-end stale resource and kill/restart chaos fixtures;
 - flake-aware CI retry only for explicitly classified flaky jobs;
 - cost/token/time budgets per project and run;
-- model routing/fallback audit trail and per-role health statistics;
+- provider-reported token/cost telemetry and aggregated per-role health statistics;
 - project-specific pinned sandbox images and deployment profile;
 - structured metrics/OpenTelemetry and optional LangSmith tracing without making external tracing the
   source of evidence;

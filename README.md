@@ -55,6 +55,8 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 - generated stable OpenCode config outside the target repository;
 - OpenWebUI or generic OpenAI-compatible model gateway support;
 - per-role model profile, step, timeout and provider-specific request configuration;
+- bounded per-role provider retries and ordered model-profile fallback with fresh sessions,
+  unchanged permissions and a durable attempt ledger;
 - OpenCode MCP configuration embedded in the same `converge.yaml`;
 - `converge models` for listing gateway model IDs;
 - `converge doctor` validation of paths, Source of Truth, stacks, gates and live gateway model IDs.
@@ -182,6 +184,12 @@ secret values are never serialized.
 For local `opencode run`, the same generated runtime configuration is also supplied through the
 highest-precedence inline configuration environment so a target repository's own `opencode.json` or
 `.opencode/` cannot weaken Converge's Builder/Reviewer permission boundaries.
+
+An agent may declare ordered `fallback_model_profiles` and a small `provider_retries` budget. Only
+OpenCode execution failures trigger this path. Every attempt is a fresh session with the same role
+prompt, tool permissions and worktree access; fallback-specific model limits/options are applied and
+re-checked. Attempts are recorded without raw model output in
+`<state_dir>/provider-health.jsonl` and in the stage context evidence.
 
 Do not edit this generated JSON. Edit `converge.yaml` and run `doctor` again.
 

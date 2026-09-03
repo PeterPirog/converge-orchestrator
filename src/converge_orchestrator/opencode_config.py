@@ -122,24 +122,39 @@ def resolve_profile_model(config: ProjectConfig, profile: ModelProfile) -> str:
     )
 
 
-def resolve_agent_model(config: ProjectConfig, agent: AgentConfig) -> str | None:
-    if agent.model_profile:
-        return resolve_profile_model(config, config.model_profiles[agent.model_profile])
+def resolve_agent_model(
+    config: ProjectConfig,
+    agent: AgentConfig,
+    model_profile: str | None = None,
+) -> str | None:
+    profile_name = model_profile or agent.model_profile
+    if profile_name:
+        return resolve_profile_model(config, config.model_profiles[profile_name])
     return agent.model
 
 
-def resolve_agent_variant(config: ProjectConfig, agent: AgentConfig) -> str | None:
+def resolve_agent_variant(
+    config: ProjectConfig,
+    agent: AgentConfig,
+    model_profile: str | None = None,
+) -> str | None:
     if agent.variant:
         return agent.variant
-    if agent.model_profile:
-        return config.model_profiles[agent.model_profile].variant
+    profile_name = model_profile or agent.model_profile
+    if profile_name:
+        return config.model_profiles[profile_name].variant
     return None
 
 
-def _agent_model_options(config: ProjectConfig, agent: AgentConfig) -> dict[str, Any]:
+def _agent_model_options(
+    config: ProjectConfig,
+    agent: AgentConfig,
+    model_profile: str | None = None,
+) -> dict[str, Any]:
     body: dict[str, Any] = {}
-    if agent.model_profile:
-        body.update(config.model_profiles[agent.model_profile].request_body)
+    profile_name = model_profile or agent.model_profile
+    if profile_name:
+        body.update(config.model_profiles[profile_name].request_body)
     body.update(agent.request_body)
     reserved = sorted(_RESERVED_AGENT_OPTIONS.intersection(body))
     if reserved:
@@ -287,7 +302,10 @@ def _runtime_gateway_base_url(config: ProjectConfig) -> str | None:
     return config.model_gateway.base_url
 
 
-def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
+def build_opencode_config(
+    config: ProjectConfig,
+    model_profile_overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Build stable OpenCode config without materializing any secret value."""
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
     gateway = config.model_gateway
@@ -328,7 +346,8 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
                 f"unsupported agent role {role!r}; built-in roles are "
                 f"{sorted(_ROLE_DEFINITIONS)}"
             )
-        model = resolve_agent_model(config, agent)
+        profile_override = (model_profile_overrides or {}).get(role)
+        model = resolve_agent_model(config, agent, profile_override)
         override: dict[str, Any] = {
             "description": role_definition["description"],
             "mode": "all",
@@ -339,16 +358,19 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
             override["model"] = model
         if agent.steps:
             override["steps"] = agent.steps
-        override.update(_agent_model_options(config, agent))
+        override.update(_agent_model_options(config, agent, profile_override))
         agent_overrides[agent.agent] = override
     if agent_overrides:
         payload["agent"] = agent_overrides
     return payload
 
 
-def runtime_opencode_config(config: ProjectConfig) -> dict[str, Any]:
+def runtime_opencode_config(
+    config: ProjectConfig,
+    model_profile_overrides: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Return the highest-precedence runtime config used for every local OpenCode call."""
-    return build_opencode_config(config)
+    return build_opencode_config(config, model_profile_overrides)
 
 
 def materialize_opencode_config(config: ProjectConfig) -> Path:

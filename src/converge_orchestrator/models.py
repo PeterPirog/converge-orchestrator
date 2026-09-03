@@ -82,6 +82,8 @@ class AgentConfig(BaseModel):
     agent: str
     model: str | None = None
     model_profile: str | None = None
+    fallback_model_profiles: list[str] = Field(default_factory=list, max_length=4)
+    provider_retries: int = Field(default=0, ge=0, le=3)
     variant: str | None = None
     timeout_seconds: int = 1800
     steps: int | None = Field(default=None, ge=1)
@@ -94,6 +96,10 @@ class AgentConfig(BaseModel):
     def model_source_is_unambiguous(self) -> AgentConfig:
         if self.model and self.model_profile:
             raise ValueError("agent may define either model or model_profile, not both")
+        if len(self.fallback_model_profiles) != len(set(self.fallback_model_profiles)):
+            raise ValueError("agent fallback_model_profiles must not contain duplicates")
+        if self.model_profile in self.fallback_model_profiles:
+            raise ValueError("agent fallback_model_profiles must not repeat the primary profile")
         return self
 
 
@@ -349,6 +355,12 @@ class ProjectConfig(BaseModel):
                 agent.model_profile
                 for agent in self.agents.values()
                 if agent.model_profile and agent.model_profile not in self.model_profiles
+            }
+            | {
+                profile
+                for agent in self.agents.values()
+                for profile in agent.fallback_model_profiles
+                if profile not in self.model_profiles
             }
         )
         if missing_profiles:

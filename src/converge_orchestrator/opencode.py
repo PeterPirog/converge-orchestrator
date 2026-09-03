@@ -1,5 +1,7 @@
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .context import (
@@ -14,9 +16,12 @@ from .opencode_config import (
     materialize_opencode_config,
     resolve_agent_model,
     resolve_agent_variant,
+    resolve_profile_model,
     runtime_opencode_config,
 )
 from .sandbox import ExecutionSandbox
+
+_PROVIDER_LEDGER_LOCK = threading.Lock()
 
 
 def _json_object(text: str) -> dict:
@@ -103,35 +108,126 @@ class OpenCodeAdapter:
 
     def invoke(self, role: str, prompt: str | PromptEnvelope, cwd: Path) -> AgentResult:
         generated_config = materialize_opencode_config(self.config)
-        runtime_config = json.dumps(
-            runtime_opencode_config(self.config),
-            separators=(",", ":"),
-        )
         if role == "reviewer" and self.config.review_roles:
             return self._invoke_review_fanout(
                 prompt,
                 cwd,
                 generated_config,
-                runtime_config,
             )
-        return self._invoke_single(
+        return self._invoke_with_resilience(
             role,
             prompt,
             cwd,
             generated_config,
-            runtime_config,
         )
 
-    def _invoke_single(
+    def _append_provider_health(self, cwd: Path, payload: dict) -> None:
+        target = self.config.state_dir / "provider-health.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "cwd": str(cwd.resolve()),
+            **payload,
+        }
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        with _PROVIDER_LEDGER_LOCK:
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+
+    def _invoke_with_resilience(
         self,
         role: str,
         prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
-        runtime_config: str,
+    ) -> AgentResult:
+        agent_cfg = self.config.agents[role]
+        profiles = [agent_cfg.model_profile, *agent_cfg.fallback_model_profiles]
+        attempts: list[dict] = []
+        final: AgentResult | None = None
+
+        for profile_index, profile_name in enumerate(profiles):
+            repeats = 1 + agent_cfg.provider_retries if profile_index == 0 else 1
+            for retry_index in range(repeats):
+                model = (
+                    resolve_profile_model(self.config, self.config.model_profiles[profile_name])
+                    if profile_name
+                    else resolve_agent_model(self.config, agent_cfg)
+                )
+                try:
+                    result = self._invoke_single_attempt(
+                        role,
+                        prompt,
+                        cwd,
+                        generated_config,
+                        profile_name,
+                    )
+                    failure_kind = (
+                        None
+                        if result.ok
+                        else "context_budget"
+                        if result.returncode == 78
+                        else "process_failure"
+                    )
+                except Exception as exc:
+                    result = AgentResult(
+                        role=role,
+                        ok=False,
+                        output=f"{role} execution raised {type(exc).__name__}: {exc}",
+                        returncode=70,
+                    )
+                    failure_kind = "execution_exception"
+
+                attempt = {
+                    "attempt": len(attempts) + 1,
+                    "model_profile": profile_name,
+                    "model": model,
+                    "primary": profile_index == 0,
+                    "retry": retry_index,
+                    "ok": result.ok,
+                    "returncode": result.returncode,
+                    "failure_kind": failure_kind,
+                }
+                attempts.append(attempt)
+                self._append_provider_health(cwd, {"role": role, **attempt})
+                final = result
+                if result.ok:
+                    return self._attach_attempts(result, attempts)
+                if result.returncode == 78:
+                    break
+
+        assert final is not None
+        return self._attach_attempts(final, attempts)
+
+    @staticmethod
+    def _attach_attempts(result: AgentResult, attempts: list[dict]) -> AgentResult:
+        context = dict(result.context or {})
+        selected = attempts[-1]
+        context.update(
+            {
+                "provider_attempts": attempts,
+                "selected_model": selected["model"],
+                "selected_model_profile": selected["model_profile"],
+                "fallback_used": not selected["primary"],
+            }
+        )
+        return result.model_copy(update={"context": context})
+
+    def _invoke_single_attempt(
+        self,
+        role: str,
+        prompt: str | PromptEnvelope,
+        cwd: Path,
+        generated_config: Path,
+        model_profile: str | None,
     ) -> AgentResult:
         try:
-            rendered_prompt, context_report = prepare_prompt(self.config, role, prompt)
+            rendered_prompt, context_report = prepare_prompt(
+                self.config,
+                role,
+                prompt,
+                model_profile=model_profile,
+            )
         except ContextBudgetExceeded as exc:
             append_context_ledger(self.config, exc.report, cwd)
             return AgentResult(
@@ -144,8 +240,8 @@ class OpenCodeAdapter:
 
         agent_cfg = self.config.agents[role]
         cmd = [self.config.opencode_binary, "run", "--agent", agent_cfg.agent]
-        model = resolve_agent_model(self.config, agent_cfg)
-        variant = resolve_agent_variant(self.config, agent_cfg)
+        model = resolve_agent_model(self.config, agent_cfg, model_profile)
+        variant = resolve_agent_variant(self.config, agent_cfg, model_profile)
         if model:
             cmd += ["--model", model]
         if variant:
@@ -157,6 +253,11 @@ class OpenCodeAdapter:
         # Fresh-session invariant: Converge never supplies --continue or --session. Long-running
         # continuity comes from LangGraph state and explicit evidence, not hidden model history.
         cmd += ["--dir", str(cwd), rendered_prompt]
+        profile_overrides = {role: model_profile} if model_profile else None
+        runtime_config = json.dumps(
+            runtime_opencode_config(self.config, profile_overrides),
+            separators=(",", ":"),
+        )
         try:
             result = ExecutionSandbox(self.config).run(
                 cmd,
@@ -191,7 +292,6 @@ class OpenCodeAdapter:
         prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
-        runtime_config: str,
     ) -> AgentResult:
         roles = list(self.config.review_roles)
         workers = min(self.config.max_parallel_reviews, len(roles))
@@ -204,12 +304,11 @@ class OpenCodeAdapter:
         ) as pool:
             futures = {
                 role: pool.submit(
-                    self._invoke_single,
+                    self._invoke_with_resilience,
                     role,
                     prompt,
                     cwd,
                     generated_config,
-                    runtime_config,
                 )
                 for role in roles
             }
