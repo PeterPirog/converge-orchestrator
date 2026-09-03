@@ -20,7 +20,7 @@ from converge_orchestrator.opencode_config import (
 
 def _nested_config(tmp_path: Path) -> dict:
     repo = tmp_path / "repository"
-    repo.mkdir()
+    repo.mkdir(exist_ok=True)
     requirements = tmp_path / "architecture.md"
     requirements.write_text("System must remain testable.\n", encoding="utf-8")
     return {
