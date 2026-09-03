@@ -29,25 +29,50 @@ def test_sqlite_remains_default_without_database_url(tmp_path: Path, monkeypatch
     assert (tmp_path / "langgraph.sqlite").is_file()
 
 
-def test_database_url_is_never_echoed_and_selects_postgres(tmp_path: Path, monkeypatch) -> None:
+def test_database_url_selects_postgres_without_materializing_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     database_url = "postgresql://user:secret@db.invalid/converge"
     monkeypatch.setenv("CONVERGE_DATABASE_URL", database_url)
     monkeypatch.delenv("LANGGRAPH_STRICT_MSGPACK", raising=False)
     registry = Mock()
 
-    with patch(
-        "converge_orchestrator.persistence.PostgresControlRegistry",
-        return_value=registry,
-    ) as registry_type:
+    with (
+        patch(
+            "converge_orchestrator.persistence.PostgresControlRegistry",
+            return_value=registry,
+        ) as registry_type,
+        patch("converge_orchestrator.persistence._verify_postgres_checkpoint_schema") as verify,
+    ):
         backend = PersistenceBackend(tmp_path / "unused.sqlite")
 
     assert configured_database_url() == database_url
     assert backend.kind == "postgres"
     assert backend.registry is registry
     registry_type.assert_called_once_with(database_url)
-    assert "secret" not in repr(backend.registry)
+    verify.assert_called_once_with(database_url)
     assert not (tmp_path / "unused.sqlite").exists()
     assert __import__("os").environ["LANGGRAPH_STRICT_MSGPACK"] == "true"
+
+
+def test_missing_postgres_checkpoint_schema_fails_before_controller_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_url = "postgresql://db.invalid/converge"
+    monkeypatch.setenv("CONVERGE_DATABASE_URL", database_url)
+    monkeypatch.delenv("LANGGRAPH_STRICT_MSGPACK", raising=False)
+
+    with (
+        patch("converge_orchestrator.persistence.PostgresControlRegistry"),
+        patch(
+            "converge_orchestrator.persistence._verify_postgres_checkpoint_schema",
+            side_effect=RuntimeError("run `converge persistence-setup`"),
+        ),
+        pytest.raises(RuntimeError, match="persistence-setup"),
+    ):
+        PersistenceBackend(tmp_path / "unused.sqlite")
 
 
 def test_unsafe_postgres_deserialization_setting_fails_closed(tmp_path: Path, monkeypatch) -> None:
