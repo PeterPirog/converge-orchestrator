@@ -3,8 +3,13 @@ from __future__ import annotations
 import fnmatch
 import re
 from pathlib import Path
+from typing import Any
 
 from .shell import run
+from .workspace_ownership import (
+    WorkspaceOwnershipError,
+    WorkspaceOwnershipStore,
+)
 
 
 class GitError(RuntimeError):
@@ -59,6 +64,11 @@ def _worktree_entries(repo: Path) -> dict[Path, str | None]:
     return entries
 
 
+def worktree_entries(repo: Path) -> dict[Path, str | None]:
+    """Return Git-registered worktree paths and their local branches."""
+    return _worktree_entries(repo)
+
+
 def _local_branch_exists(repo: Path, branch: str) -> bool:
     result = run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -70,15 +80,102 @@ def _local_branch_exists(repo: Path, branch: str) -> bool:
     return result.returncode == 0
 
 
-def cleanup_worktree(repo: Path, target: Path, branch: str) -> None:
-    listed = _git(repo, "worktree", "list", "--porcelain")
-    if str(target) in listed:
+def _validate_cleanup_registration(repo: Path, target: Path, branch: str) -> None:
+    target = target.expanduser().resolve()
+    entries = _worktree_entries(repo)
+    registered_branch = entries.get(target)
+    if target in entries and registered_branch != branch:
+        raise GitError(
+            f"Refusing cleanup: worktree {target} belongs to {registered_branch}, "
+            f"expected {branch}"
+        )
+    for registered_path, registered in entries.items():
+        if registered == branch and registered_path != target:
+            raise GitError(
+                f"Refusing cleanup: branch {branch} belongs to {registered_path}, "
+                f"not {target}"
+            )
+    if target.exists() and target not in entries:
+        raise GitError(
+            f"Refusing cleanup of unregistered filesystem path: {target}"
+        )
+
+
+def _remove_registered_worktree(repo: Path, target: Path, branch: str) -> None:
+    target = target.expanduser().resolve()
+    entries = _worktree_entries(repo)
+    if target in entries:
         _git(repo, "worktree", "remove", "--force", str(target))
     if target.exists():
         raise GitError(f"Unable to clean stale worktree: {target}")
     result = run(["git", "branch", "-D", branch], cwd=repo, timeout=60)
     if result.returncode not in (0, 1):
         raise GitError(result.stdout)
+
+
+def cleanup_worktree(
+    repo: Path,
+    target: Path,
+    branch: str,
+    *,
+    reason: str = "controlled_cleanup",
+) -> None:
+    """Remove a worktree only after persisting explicit cleanup intent."""
+    target = target.expanduser().resolve()
+    store = WorkspaceOwnershipStore(target.parent)
+    store.request_cleanup(target=target, branch=branch, reason=reason)
+    _validate_cleanup_registration(repo, target, branch)
+    _remove_registered_worktree(repo, target, branch)
+    store.mark_released(target=target, branch=branch)
+
+
+def garbage_collect_requested_worktrees(
+    repo: Path,
+    worktree_root: Path,
+    branch_prefix: str = "converge/",
+    *,
+    dry_run: bool = True,
+) -> list[dict[str, Any]]:
+    """Finish only cleanup operations that were explicitly requested before a crash."""
+    root = worktree_root.expanduser().resolve()
+    store = WorkspaceOwnershipStore(root)
+    results: list[dict[str, Any]] = []
+    try:
+        records = store.list_records()
+    except WorkspaceOwnershipError as exc:
+        return [{"status": "blocked", "reason": str(exc)}]
+
+    for record in records:
+        if record.status != "cleanup_requested":
+            continue
+        target = Path(record.path).expanduser().resolve()
+        item: dict[str, Any] = {
+            "task_id": record.task_id,
+            "path": str(target),
+            "branch": record.branch,
+        }
+        if not record.branch.startswith(branch_prefix):
+            item.update(
+                status="blocked",
+                reason=(
+                    f"owned branch does not match configured prefix {branch_prefix}: "
+                    f"{record.branch}"
+                ),
+            )
+            results.append(item)
+            continue
+        try:
+            _validate_cleanup_registration(repo, target, record.branch)
+            if dry_run:
+                item["status"] = "would_release"
+            else:
+                _remove_registered_worktree(repo, target, record.branch)
+                store.mark_released(target=target, branch=record.branch)
+                item["status"] = "released"
+        except (GitError, WorkspaceOwnershipError) as exc:
+            item.update(status="blocked", reason=str(exc))
+        results.append(item)
+    return results
 
 
 def create_worktree(
@@ -102,6 +199,19 @@ def create_worktree(
     if target.parent != root:
         raise GitError(f"Unsafe worktree target outside configured root: {target}")
 
+    store = WorkspaceOwnershipStore(root)
+    existing_owner = store.read(branch)
+    if existing_owner is not None:
+        if Path(existing_owner.path).resolve() != target:
+            raise GitError(
+                f"Workspace ownership for {branch} points to {existing_owner.path}, "
+                f"expected {target}"
+            )
+        if existing_owner.status == "cleanup_requested":
+            raise GitError(
+                f"Workspace {branch} has pending cleanup; finish GC before reactivation"
+            )
+
     entries = _worktree_entries(repo)
     registered_branch = entries.get(target)
     if target.exists() or target in entries:
@@ -115,6 +225,10 @@ def create_worktree(
             )
         if not target.exists():
             raise GitError(f"Git registers worktree but its path is missing: {target}")
+        try:
+            store.activate(task_id=task_id, target=target, branch=branch)
+        except WorkspaceOwnershipError as exc:
+            raise GitError(str(exc)) from exc
         return target, branch
 
     root.mkdir(parents=True, exist_ok=True)
@@ -122,6 +236,10 @@ def create_worktree(
         _git(repo, "worktree", "add", str(target), branch)
     else:
         _git(repo, "worktree", "add", "-b", branch, str(target), f"origin/{base_branch}")
+    try:
+        store.activate(task_id=task_id, target=target, branch=branch)
+    except WorkspaceOwnershipError as exc:
+        raise GitError(str(exc)) from exc
     return target, branch
 
 
