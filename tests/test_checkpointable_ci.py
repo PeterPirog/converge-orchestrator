@@ -52,7 +52,11 @@ def _state() -> dict:
 
 
 def _store():
-    return types.SimpleNamespace(write_json=Mock(), append_event=Mock())
+    return types.SimpleNamespace(
+        write_json=Mock(),
+        append_event=Mock(),
+        read_task_bundle=Mock(side_effect=FileNotFoundError("no retry ledger")),
+    )
 
 
 def test_ci_poll_observes_github_exactly_once(tmp_path: Path) -> None:
