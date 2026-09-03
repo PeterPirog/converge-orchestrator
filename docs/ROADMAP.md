@@ -52,7 +52,7 @@ Implemented:
 - compliance snapshot persisted across runs for unchanged Source of Truth;
 - stack-aware quality discovery for Python, Node, Go and Rust;
 - normalized missing-tool and timeout failures;
-- stable OpenCode read-only Planner/Reviewer and bounded Builder permissions;
+- stable OpenCode read-only Scout/Planner/Reviewer and bounded Builder permissions;
 - high-precedence runtime role config so target-repo OpenCode settings cannot weaken role boundaries;
 - exact target requirement statements/source anchors injected into Builder/repair prompts;
 - parallel independent review coordinator with correctness, architecture and security lanes;
@@ -72,6 +72,7 @@ Remaining:
 Implemented:
 
 - FastAPI project registration, bootstrap, run, status, pause/resume and decision endpoints;
+- optional Bearer authentication for all control API routes except liveness `/health`;
 - stable per-run LangGraph `thread_id` and checkpoint-aware resume;
 - autonomous post-merge next-task loop;
 - single user-maintained `converge.yaml` with documented sections;
@@ -85,18 +86,22 @@ Implemented:
 - fast read-only Repo Scout/Triage before Planner with exact-base-commit capture, bounded durable
   snapshot, requirement-hint validation and non-blocking fallback;
 - bounded configurable review parallelism with legacy single-reviewer compatibility;
+- OpenWebUI native Workspace Tool operator bridge over FastAPI/LangGraph;
+- fail-closed interactive confirmation for register/bootstrap/start/pause/resume/HITL decisions;
+- read-only OpenWebUI access to run status, compliance, evidence and pending interrupts;
 - `converge models` model-catalog discovery;
 - model gateway live validation in `converge doctor`;
 - OpenCode MCP configuration embedded in the project YAML;
 - generated `opencode.generated.json` outside the target repository;
-- detailed PyCharm/OpenWebUI/OpenCode onboarding, configuration and model-routing references.
+- detailed PyCharm/OpenWebUI/OpenCode onboarding, configuration, model-routing and operator references.
 
 Next priorities:
 
-- OpenWebUI operator/control Function bridge on top of the existing FastAPI/LangGraph API;
-- provider/model fallback policy with bounded retries and evidence;
 - context-budget/session-rotation policy for long-running projects;
-- sandboxed execution runner with filesystem/network policy;
+- sandboxed execution runner with filesystem/network/process policy;
+- deterministic TDD evidence policy for behavior-changing tasks;
+- risk classifier and public-API/data-migration compatibility adapters;
+- provider/model fallback policy with bounded retries and evidence;
 - PostgreSQL checkpointer/control registry for multi-worker deployment;
 - structured metrics and OpenTelemetry/LangSmith integration;
 - E2E fixture repositories and chaos/restart test suite.
