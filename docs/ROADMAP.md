@@ -29,17 +29,20 @@ Implemented:
 - durable run leases preventing concurrent execution of one LangGraph thread;
 - GitHub `origin` validation against configured `github.repo` before project registration and before
   real GitHub transport calls;
-- classic branch-protection required-check discovery with fail-closed fallback when the protected
-  policy is not authoritative;
-- required-check matching by context and, when configured by GitHub, GitHub App ID;
+- classic branch-protection required-check discovery;
+- active GitHub Rulesets `required_status_checks` discovery for the concrete base branch, including
+  organization-level effective rules returned by GitHub;
+- union of classic and Rulesets required checks with fail-closed policy discovery;
+- required-check matching by context and GitHub App/integration ID when GitHub binds the requirement
+  to a concrete producer;
 - unrelated check runs remain evidence but do not satisfy or fail an authoritative required-check
   policy;
 - CI matrix on Python 3.11–3.13.
 
 Remaining hardening:
 
-- GitHub Rulesets `required_status_checks` discovery in addition to classic branch protection;
-- stale worktree/branch garbage collection with ownership checks;
+- stale worktree/branch garbage collection with explicit ownership checks;
+- explicit flaky-job classification before any selective CI retry;
 - optional issue/backlog synchronization.
 
 ## v0.3 — compliance, stack portability and safety — substantially complete
@@ -65,7 +68,7 @@ Remaining:
 
 - deterministic AST/import architecture rules independent from custom project scripts;
 - broader cross-language compatibility adapters and safe shim/roll-forward strategies;
-- broader chaos suite covering killed OpenCode/provider processes and stale resources.
+- broader chaos suite covering killed service/OpenCode/provider processes and stale resources.
 
 ## v0.4 — reusable configuration and service/control plane — substantially complete
 
@@ -87,24 +90,22 @@ Implemented:
 
 Next priorities, in order:
 
-1. **GitHub Rulesets awareness** — read effective `required_status_checks` rules and keep fail-closed
-   semantics when policy cannot be resolved.
-2. **Crash/chaos completion** — stale worktree/branch GC plus end-to-end kill/restart tests of the
-   service, OpenCode and CI wait paths.
-3. **Deterministic architecture analyzers** — AST/import/dependency rules that do not rely solely on
+1. **Ownership-aware crash/chaos completion** — stale worktree/branch GC plus end-to-end kill/restart
+   tests of service, OpenCode, integration checkpoint races and CI wait restoration.
+2. **Deterministic architecture analyzers** — AST/import/dependency rules that do not rely solely on
    project-provided scripts or LLM review.
-4. **Cross-language compatibility adapters** — public API and migration safety beyond Python plus safe
+3. **Cross-language compatibility adapters** — public API and migration safety beyond Python plus safe
    shims/roll-forward strategies that reduce HITL.
-5. **Provider/model resilience** — bounded fallback/retry policy with evidence and per-role health.
-6. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
+4. **Provider/model resilience** — bounded fallback/retry policy with evidence and per-role health.
+5. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
 
 ## v0.5 — production autonomous operation
 
 Planned:
 
-- stale worktree/branch garbage collection with explicit ownership and lease checks;
-- GitHub Rulesets awareness and flake-aware CI retry only for explicitly classified flaky jobs;
+- stale worktree/branch garbage collection with explicit ownership and lease/checkpoint checks;
+- flake-aware CI retry only for explicitly classified flaky jobs;
 - cost/token/time budgets per project and run;
 - model routing/fallback audit trail and per-role health statistics;
 - project-specific pinned sandbox images and deployment profile;

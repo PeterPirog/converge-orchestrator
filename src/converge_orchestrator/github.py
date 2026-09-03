@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,12 @@ from .shell import run
 
 class GitHubError(RuntimeError):
     pass
+
+
+class GitHubHTTPError(GitHubError):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,53 @@ def _required_checks(payload: dict[str, Any]) -> tuple[RequiredCheck, ...]:
     return tuple(checks)
 
 
+def _ruleset_required_checks(
+    rules: list[dict[str, Any]],
+) -> tuple[tuple[RequiredCheck, ...], bool | None]:
+    checks: list[RequiredCheck] = []
+    strict_values: list[bool] = []
+    for rule in rules:
+        if rule.get("type") != "required_status_checks":
+            continue
+        parameters = rule.get("parameters")
+        if not isinstance(parameters, dict):
+            raise GitHubError("GitHub returned malformed required_status_checks ruleset")
+        raw_checks = parameters.get("required_status_checks")
+        if not isinstance(raw_checks, list):
+            raise GitHubError("GitHub ruleset is missing required_status_checks list")
+        for raw_check in raw_checks:
+            if not isinstance(raw_check, dict) or not raw_check.get("context"):
+                raise GitHubError("GitHub ruleset contains an invalid required status check")
+            integration_id = raw_check.get("integration_id")
+            check = RequiredCheck(
+                context=str(raw_check["context"]),
+                app_id=int(integration_id) if integration_id is not None else None,
+            )
+            if check not in checks:
+                checks.append(check)
+        strict = parameters.get("strict_required_status_checks_policy")
+        if strict is not None:
+            if not isinstance(strict, bool):
+                raise GitHubError("GitHub ruleset returned invalid strict status-check policy")
+            strict_values.append(strict)
+    strict_result = any(strict_values) if strict_values else None
+    return tuple(checks), strict_result
+
+
+def _merge_required_checks(*groups: tuple[RequiredCheck, ...]) -> tuple[RequiredCheck, ...]:
+    merged: list[RequiredCheck] = []
+    for group in groups:
+        for check in group:
+            if check not in merged:
+                merged.append(check)
+    return tuple(merged)
+
+
+def _http_status(output: str) -> int | None:
+    match = re.search(r"HTTP\s+(\d{3})", output, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def _check_run_app_id(check: dict[str, Any]) -> int | None:
     app = check.get("app")
     if not isinstance(app, dict) or app.get("id") is None:
@@ -116,7 +170,7 @@ class GitHubAdapter:
         working_dir = cwd or self.config.repo_path
         result = run([self.config.github_binary, *args], cwd=working_dir, timeout=timeout)
         if result.returncode != 0:
-            raise GitHubError(result.stdout)
+            raise GitHubHTTPError(result.stdout, _http_status(result.stdout))
         return result.stdout.strip()
 
     def _api_json(
@@ -138,6 +192,24 @@ class GitHubAdapter:
             raise GitHubError(f"GitHub endpoint returned a non-object payload: {endpoint}")
         return payload
 
+    def _api_paginated_list(self, endpoint: str, timeout: int = 300) -> list[dict[str, Any]]:
+        output = self._gh(
+            ["api", "--paginate", "--slurp", endpoint],
+            timeout=timeout,
+        )
+        pages = json.loads(output or "[]")
+        if not isinstance(pages, list):
+            raise GitHubError(f"GitHub endpoint returned invalid pagination: {endpoint}")
+        items: list[dict[str, Any]] = []
+        for page in pages:
+            if not isinstance(page, list):
+                raise GitHubError(f"GitHub endpoint returned an invalid page: {endpoint}")
+            for item in page:
+                if not isinstance(item, dict):
+                    raise GitHubError(f"GitHub endpoint returned an invalid item: {endpoint}")
+                items.append(item)
+        return items
+
     @staticmethod
     def _pull_info(response: dict[str, Any]) -> PullRequestInfo:
         return PullRequestInfo(
@@ -146,6 +218,34 @@ class GitHubAdapter:
             head_sha=response["head"]["sha"],
             state=response["state"],
         )
+
+    def _classic_required_policy(
+        self,
+        branch: dict[str, Any],
+        encoded_branch: str,
+    ) -> tuple[tuple[RequiredCheck, ...], bool | None, bool]:
+        protection = branch.get("protection")
+        if isinstance(protection, dict) and "required_status_checks" in protection:
+            summary = protection.get("required_status_checks")
+            if summary is None:
+                return (), None, True
+            if isinstance(summary, dict) and (
+                "contexts" in summary or "checks" in summary
+            ):
+                return _required_checks(summary), summary.get("strict"), True
+
+        try:
+            detailed = self._api_json(
+                f"repos/{self.repo}/branches/{encoded_branch}/"
+                "protection/required_status_checks"
+            )
+        except GitHubHTTPError as exc:
+            if exc.status_code == 404:
+                return (), None, True
+            return (), None, False
+        except GitHubError:
+            return (), None, False
+        return _required_checks(detailed), detailed.get("strict"), True
 
     def remote_policy(self, base_branch: str) -> RemotePolicy:
         encoded_branch = quote(base_branch, safe="")
@@ -159,40 +259,51 @@ class GitHubAdapter:
                 source="branch_unprotected",
             )
 
-        protection = branch.get("protection")
-        if isinstance(protection, dict) and "required_status_checks" in protection:
-            summary = protection.get("required_status_checks")
-            if isinstance(summary, dict) and (
-                "contexts" in summary or "checks" in summary
-            ):
-                return RemotePolicy(
-                    base_branch=base_branch,
-                    protected=True,
-                    authoritative=True,
-                    source="branch_summary",
-                    required_checks=_required_checks(summary),
-                    strict=summary.get("strict"),
-                )
-
         try:
-            detailed = self._api_json(
-                f"repos/{self.repo}/branches/{encoded_branch}/"
-                "protection/required_status_checks"
+            effective_rules = self._api_paginated_list(
+                f"repos/{self.repo}/rules/branches/{encoded_branch}?per_page=100"
             )
+            ruleset_checks, ruleset_strict = _ruleset_required_checks(effective_rules)
+            rulesets_authoritative = True
         except GitHubError:
+            ruleset_checks = ()
+            ruleset_strict = None
+            rulesets_authoritative = False
+
+        classic_checks, classic_strict, classic_authoritative = self._classic_required_policy(
+            branch,
+            encoded_branch,
+        )
+        if not rulesets_authoritative or not classic_authoritative:
             return RemotePolicy(
                 base_branch=base_branch,
                 protected=True,
                 authoritative=False,
                 source="protected_policy_unavailable",
             )
+
+        required = _merge_required_checks(classic_checks, ruleset_checks)
+        strict_values = [
+            value
+            for value in (classic_strict, ruleset_strict)
+            if value is not None
+        ]
+        strict = any(strict_values) if strict_values else None
+        if classic_checks and ruleset_checks:
+            source = "branch_protection+rulesets"
+        elif ruleset_checks:
+            source = "rulesets"
+        elif classic_checks:
+            source = "branch_protection"
+        else:
+            source = "protected_no_required_status_checks"
         return RemotePolicy(
             base_branch=base_branch,
             protected=True,
             authoritative=True,
-            source="branch_protection",
-            required_checks=_required_checks(detailed),
-            strict=detailed.get("strict"),
+            source=source,
+            required_checks=required,
+            strict=strict,
         )
 
     def find_open_pull_request(self, *, head: str, base: str) -> PullRequestInfo | None:
