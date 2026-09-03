@@ -105,7 +105,7 @@ def test_quality_adapter_normalizes_missing_tool_and_timeout(tmp_path: Path) -> 
     timeout_gate = QualityGate(name="timeout", command=["tool"], timeout_seconds=7)
     cfg = _config(tmp_path, quality_gates=[timeout_gate], auto_discover_quality=False)
     with patch(
-        "converge_orchestrator.quality.run_configured",
+        "converge_orchestrator.quality.ExecutionSandbox.run",
         side_effect=subprocess.TimeoutExpired(cmd=["tool"], timeout=7),
     ):
         result = run_quality_gates(cfg, tmp_path)[0]

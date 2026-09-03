@@ -10,10 +10,11 @@ from .models import (
     RequirementStatus,
     RequirementVerification,
 )
-from .shell import run_configured
+from .sandbox import ExecutionSandbox
 
 
 def _run_gate(
+    config: ProjectConfig,
     requirement_id: str,
     gate_name: str,
     command: str | list[str],
@@ -22,10 +23,18 @@ def _run_gate(
     timeout: int,
     shell: bool,
     required: bool,
+    writable_cwd: bool,
 ) -> GateResult:
     name = f"requirement:{requirement_id}:{gate_name}"
     try:
-        result = run_configured(command, cwd=cwd, timeout=timeout, shell=shell)
+        result = ExecutionSandbox(config).run(
+            command,
+            cwd=cwd,
+            timeout=timeout,
+            shell=shell,
+            scope="quality",
+            writable_cwd=writable_cwd,
+        )
     except subprocess.TimeoutExpired as exc:
         output = f"Verifier timed out after {timeout}s"
         if exc.stdout:
@@ -36,6 +45,14 @@ def _run_gate(
             required=required,
             returncode=124,
             output=output[-12000:],
+        )
+    except OSError as exc:
+        return GateResult(
+            name=name,
+            ok=False,
+            required=required,
+            returncode=127,
+            output=f"Unable to execute verifier: {exc}"[-12000:],
         )
     return GateResult(
         name=name,
@@ -50,6 +67,8 @@ def run_requirement_verifiers(
     config: ProjectConfig,
     cwd: Path,
     requirements: list[Requirement],
+    *,
+    writable_cwd: bool = True,
 ) -> list[RequirementVerification]:
     """Evaluate configured deterministic evidence without inventing missing verifiers."""
     results: list[RequirementVerification] = []
@@ -72,6 +91,7 @@ def run_requirement_verifiers(
 
         gates = [
             _run_gate(
+                config,
                 requirement.id,
                 rule.name,
                 rule.command,
@@ -79,6 +99,7 @@ def run_requirement_verifiers(
                 timeout=rule.timeout_seconds,
                 shell=rule.shell,
                 required=rule.required,
+                writable_cwd=writable_cwd,
             )
             for rule in rules
         ]

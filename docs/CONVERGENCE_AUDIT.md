@@ -10,15 +10,17 @@ legacy dependency wyłącznie dla literalnej zgodności.
 
 ## Stan ogólny
 
-Aktualnie 12 z 15 obszarów jest zgodnych albo zaimplementowanych mocniej niż w referencji, a 3 są
+Aktualnie 13 z 15 obszarów jest zgodnych albo zaimplementowanych mocniej niż w referencji, a 2 są
 częściowe. OpenWebUI pełni rolę operatorskiego punktu wejścia przez wspierany Workspace Tool, podczas
 gdy LangGraph pozostaje trwałym silnikiem procesu. Długotrwała ciągłość pracy także nie zależy już od
 ukrytej historii modelu: każdy agent call jest świeżą sesją, a continuity pochodzi z LangGraph state i
 jawnych artefaktów evidence.
 
-Największe pozostałe luki operacyjne to sandbox na poziomie OS/container i bardziej rygorystyczne
-wymuszanie TDD. Nie ma obecnie luki, która wymagałaby osłabienia immutable Source of Truth,
-deterministic policy albo zasady one-writer-per-worktree.
+Największą pozostałą luką jakościową jest deterministyczne evidence red-before-green dla tasków, w
+których TDD jest rzeczywiście stosowalne. Następne ryzyka operacyjne to deterministyczna klasyfikacja
+public API/migracji/sekretów/auth oraz crash/chaos recovery. OS/container execution boundary nie jest
+już luką architektoniczną: model-controlled i repo-controlled procesy mogą działać za niezależną
+granicą filesystem/network/process, a Git/GitHub integration pozostaje na hostowym control plane.
 
 ## Macierz zbieżności
 
@@ -29,14 +31,14 @@ deterministic policy albo zasady one-writer-per-worktree.
 | Deterministyczny kontroler nad LLM | **ALIGNED** | LangGraph + Pydantic state/policy; LLM nie steruje merge ani nie może anulować failing gate | brak krytycznej luki |
 | Planner / Worker / Reviewer | **STRONGER** | Scout RO mapuje dokładny base commit, Planner RO wybiera task, Builder jest jedynym writerem, trzy niezależne review lanes są RO | dalsze specialty analyzers są opcjonalnym rozszerzeniem |
 | Autonomiczny TDD / repair loop | **PARTIAL** | Builder ma obowiązek testów, deterministic quality gates i bounded repair/replan | brak deterministycznego wymogu red-before-green dla zmian, gdzie TDD jest możliwe |
-| Izolacja Git | **STRONGER** | osobny `git worktree` per task zamiast przełączania/stash/reset w głównym checkout | cleanup po crash wymaga dalszego hardeningu |
+| Izolacja Git | **STRONGER** | osobny `git worktree` per task; w container sandbox shared `.git` i worktree `.git` pointer są dodatkowo read-only | cleanup po crash wymaga dalszego hardeningu |
 | Code review jako bariera przed dryfem | **STRONGER** | correctness + architecture + security wykonywane równolegle; jeden reject albo reviewer failure blokuje integration; reviewer otrzymuje pełny diff zamiast cichego tail-only truncation | future specialty lanes mogą zostać dodane później |
 | GitHub PR + CI | **ALIGNED** | deterministic integrator, branch push, PR, bounded CI wait, opcjonalny merge po PASS | required-check/branch-protection discovery jeszcze niepełne |
 | MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do stable OpenCode | Converge nie wymusza konkretnego katalogu git/github/pytest/desktop MCP; część funkcji realizuje bezpieczniej deterministycznym kodem lokalnym |
 | OpenWebUI jako punkt wejścia operatora | **ALIGNED** | natywny Workspace Tool nad Bearer-authenticated FastAPI; read-only status/compliance/evidence oraz confirmation-gated register/bootstrap/start/pause/resume/decision; durable state pozostaje w LangGraph | docelowy dashboard może poprawić ergonomię, ale nie jest wymagany do kontroli workflow |
-| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/quality/workflow oraz Valves dla operator bridge | pełny GUI editor projektu pozostaje opcjonalny |
-| Minimalny HITL | **STRONGER** | przerwanie tylko dla risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate | polityka klasyfikacji ryzyka wymaga dalszego rozszerzenia |
-| Least privilege / sandbox | **PARTIAL** | role OpenCode mają deny-by-default; Builder nie może push/gh/reset/clean/external directory | permission model nie jest kernel boundary; potrzebny container/OS sandbox |
+| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/sandbox/quality/workflow oraz Valves dla operator bridge | pełny GUI editor projektu pozostaje opcjonalny |
+| Minimalny HITL | **STRONGER** | przerwanie tylko dla risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate | klasyfikacja public API/migracji/sekretów/auth wymaga dalszego rozszerzenia |
+| Least privilege / sandbox | **STRONGER** | deny-by-default role permissions + niezależny container boundary: RO Scout/Planner/Reviewers, RW tylko active Builder worktree, RO Git metadata/pointer, read-only root, cap-drop, no-new-privileges, resource limits, allowlisted ENV, rozdzielone sieci, internal-agent-network validation, timeout cleanup i host-only GitHub integration | production image hardening i konkretne sieci/toolchainy pozostają deployment-specific |
 | Dual-memory / context rotation | **ALIGNED** | każda inwokacja OpenCode jest świeżą sesją bez `--continue`/`--session`; continuity pochodzi z LangGraph/evidence; deterministyczny bounded working memory jest advisory-only; context budget failuje przed model call, jeśli pełny authoritative core się nie mieści | token usage jest obecnie konserwatywnie estymowany; provider-reported cost/token telemetry pozostaje późniejszym hardeningiem |
 | Evidence + compliance | **STRONGER** | SQLite checkpoints, evidence bundles, events, compliance snapshot, requirement verifiers, baseline/candidate regression policy oraz per-invocation context ledger | docelowo metrics/tracing i storage dla multi-worker |
 
@@ -142,14 +144,45 @@ quality gates -> fanout +--> architecture_reviewer (DeepSeek V4 Pro)
 Współbieżność jest tylko read-only. Nie wprowadza wielowriterowego dostępu do worktree. Wynik każdego
 lane'a jest niezależny, a failure-to-review jest traktowane jako rejection, nie jako PASS.
 
+## Execution sandbox
+
+`ExecutionSandbox` jest wspólną granicą dla OpenCode, quality gates i requirement verifiers. W
+hardened `container` mode utrzymuje deterministic control plane poza kontenerem, a niezaufane wykonanie
+przenosi do ograniczonego runtime:
+
+```text
+host: requirements / LangGraph / Git worktrees / commit / push / PR / merge
+                         |
+                    controlled mounts
+                         v
+container: Scout / Planner / Reviewers / Builder / tests / verifiers
+```
+
+Read-only role dostają wyłącznie RO repo. Builder jest jedynym writerem aktywnego worktree; shared
+`.git` oraz sam `worktree/.git` pointer pozostają RO. Kontener ma read-only root, tmpfs scratch,
+`cap-drop=ALL`, `no-new-privileges`, PID/RAM/CPU limits i selektywne ENV. Obrazy nie są pobierane
+implicit, a timeout powoduje jawne `docker rm -f` nazwanej instancji.
+
+Agent network może być wymagany jako rzeczywista Docker `Internal=true` network. Host-visible model
+gateway i agent-visible gateway mają osobne endpointy, dzięki czemu host może używać loopbacku, ale
+sandbox nie dostaje błędnej/pozornej ścieżki przez `127.0.0.1`. `opencode.attach_url` jest w container
+mode zakazany, bo external server obchodziłby granicę wykonawczą.
+
+Repo-controlled quality commands i verifiers działają przed finalnym scope gate; dopiero po nich
+Converge mierzy zmienione pliki i diff budget. Pełny model operacyjny opisuje
+[`EXECUTION_SANDBOX.md`](EXECUTION_SANDBOX.md).
+
 ## Priorytety dalszej zbieżności
 
 Kolejność prac powinna maksymalizować autonomię bez zwiększania blast radius:
 
-1. **Sandbox runner** — filesystem/network/process policy poniżej poziomu permissions OpenCode.
-2. **TDD evidence policy** — opcjonalny verifier red-before-green dla tasków modyfikujących zachowanie.
-3. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako deterministyczne/przedintegracyjne sygnały ryzyka.
-4. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
+1. **TDD evidence policy** — deterministyczny, stosowany tylko tam gdzie ma sens, dowód
+   red-before-green zamiast narracji Buildera.
+2. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako
+   deterministyczne/przedintegracyjne sygnały ryzyka.
+3. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
+4. **Remote policy/observability hardening** — branch protection/required checks, model fallback,
+   metrics/tracing i multi-worker state.
 
 ## Kryterium docelowe
 

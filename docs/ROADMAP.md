@@ -57,14 +57,24 @@ Implemented:
 - exact target requirement statements/source anchors injected into Builder/repair prompts;
 - parallel independent review coordinator with correctness, architecture and security lanes;
 - deterministic review aggregation: any lane rejection or lane execution failure blocks integration;
-- reviewer findings stamped with the responsible lane for repair evidence.
+- reviewer findings stamped with the responsible lane for repair evidence;
+- common OS/container execution sandbox for OpenCode, quality gates and requirement verifiers;
+- read-only Scout/Planner/Reviewer mounts and single writable Builder worktree with read-only shared Git
+  metadata and worktree `.git` pointer;
+- read-only container root, capability drop, no-new-privileges, PID/RAM/CPU limits, tmpfs scratch and
+  allowlisted environment forwarding;
+- separate agent/quality networks with optional mandatory Docker `Internal=true` agent network;
+- no implicit sandbox image pulls, deterministic preflight and forced container cleanup after timeout;
+- host-visible versus agent-visible model-gateway endpoints and fail-closed rejection of loopback or
+  `opencode.attach_url` configurations that would bypass the execution boundary;
+- final diff/scope measurement after repository-controlled quality commands and requirement verifiers.
 
 Remaining:
 
 - deterministic AST/import architecture rules independent from custom project scripts;
 - explicit public-API compatibility adapters;
-- destructive migration / secret / public-API risk classifier;
-- stronger OS/container sandbox profiles;
+- destructive migration / secret / public-API / auth risk classifier;
+- deterministic red-before-green evidence for behavior-changing tasks where TDD is applicable;
 - fault-recovery tests for killed orchestrator/OpenCode/CI failures.
 
 ## v0.4 — reusable configuration and service/control plane — in progress
@@ -100,14 +110,18 @@ Implemented:
 - model gateway live validation in `converge doctor`;
 - OpenCode MCP configuration embedded in the project YAML;
 - generated `opencode.generated.json` outside the target repository;
+- configurable host/container execution mode with a hardened reference sandbox profile;
+- dedicated sandbox documentation covering trust boundary, runtime image, internal network,
+  host/container gateway routing, mount policy, environment policy and preflight;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding, configuration, model-routing and operator references.
 
 Next priorities:
 
-- sandboxed execution runner with filesystem/network/process policy;
 - deterministic TDD evidence policy for behavior-changing tasks;
-- risk classifier and public-API/data-migration compatibility adapters;
+- risk classifier and public-API/data-migration/secret/auth compatibility adapters;
+- crash/chaos hardening including stale worktree cleanup and killed-process recovery;
 - provider/model fallback policy with bounded retries and evidence;
+- branch-protection/required-check discovery and stronger remote-origin validation;
 - PostgreSQL checkpointer/control registry for multi-worker deployment;
 - structured metrics and OpenTelemetry/LangSmith integration;
 - E2E fixture repositories and chaos/restart test suite.
@@ -122,6 +136,6 @@ Planned:
 - flake-aware CI retry policy without hiding deterministic failures;
 - cost/token/time budgets per project and per run;
 - model routing/fallback policy with audit trail and per-role health statistics;
-- container images and hardened deployment profile;
+- project-specific pinned container images and hardened deployment profile;
 - multi-project dashboard and operator audit views;
 - bounded parallel builders only for scheduler-proven non-overlapping write sets.

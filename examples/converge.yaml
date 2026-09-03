@@ -40,11 +40,12 @@ github:
   ci_timeout_seconds: 1800
 
 opencode:
-  # Current stable OpenCode CLI.
+  # Current stable OpenCode CLI. In container sandbox mode this binary must exist INSIDE the image.
   binary: opencode
 
-  # null => invoke `opencode run` locally for every agent call.
-  # For a persistent server use e.g. http://127.0.0.1:4096.
+  # null => invoke a fresh `opencode run` for every agent call.
+  # A persistent attach server is supported only in host sandbox mode; container mode rejects it
+  # because the remote server would execute tools outside Converge's container boundary.
   attach_url: null
 
   # Converts OpenCode permission prompts into automatic approval, but explicit deny rules remain deny.
@@ -78,8 +79,57 @@ opencode:
     #     environment:
     #       API_KEY: "{env:LOCAL_MCP_API_KEY}"
 
+sandbox:
+  # Backward-compatible default. For autonomous/untrusted execution, switch to `container` after
+  # preparing a project runtime image and an internal agent network as described below.
+  mode: host
+  engine: docker
+
+  # Required when mode=container. The image is never pulled implicitly by Converge and should be
+  # pinned/managed by your deployment. It must contain OpenCode AND the target project's build/test
+  # toolchain (for example Python/Node/Go/Rust, package managers, linters and test runners).
+  image: null
+
+  # Hardened container mode requires a named Docker network with Internal=true for agent calls.
+  # Example setup: docker network create --internal converge-ai
+  # OpenWebUI/model gateway and any required remote MCP proxy must be reachable on this network.
+  agent_network: none
+
+  # Deterministic quality gates/verifiers default to no network in a hardened profile. Change this
+  # only when the project's tests genuinely require a deliberately provisioned network.
+  quality_network: none
+
+  # Host Converge uses models.gateway.base_url below. A sandboxed OpenCode process cannot use the
+  # host loopback address, so set this to the gateway address resolvable from agent_network.
+  # Hardened example: http://open-webui:8080/api
+  agent_gateway_base_url: null
+
+  require_internal_agent_network: true
+  read_only_root: true
+  pids_limit: 512
+  memory: 8g
+  cpus: 4.0
+  tmpfs_size: 2g
+
+  # Extra environment variable NAMES to forward. Values stay in the host environment. Gateway/MCP
+  # {env:...} references are detected automatically; do not copy secret values into this file.
+  pass_env: []
+
+  # `host` maps the current uid/gid on POSIX. Use `image` only when the image deliberately owns the
+  # writable worktree paths with an appropriate non-root user.
+  user: host
+
+  # Minimal hardened override example:
+  # mode: container
+  # image: ghcr.io/acme/payments-converge-runtime@sha256:...
+  # agent_network: converge-ai
+  # quality_network: none
+  # agent_gateway_base_url: http://open-webui:8080/api
+
 models:
   # Recommended setup when OpenWebUI is your model gateway.
+  # This is the HOST-visible endpoint used by `converge models` / `converge doctor`.
+  # In container sandbox mode use sandbox.agent_gateway_base_url for the agent-visible endpoint.
   # Stable OpenCode's OpenAI-compatible provider appends /chat/completions to this base URL,
   # therefore OpenWebUI uses /api here.
   gateway:

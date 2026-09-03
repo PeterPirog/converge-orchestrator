@@ -110,6 +110,42 @@ class StackProfile(BaseModel):
     package_manager: str | None = None
 
 
+class SandboxConfig(BaseModel):
+    """OS/container boundary around model-controlled and repository-controlled execution."""
+
+    mode: Literal["host", "container"] = "host"
+    engine: str = "docker"
+    image: str | None = None
+    agent_network: str = "none"
+    quality_network: str = "none"
+    agent_gateway_base_url: str | None = None
+    require_internal_agent_network: bool = True
+    read_only_root: bool = True
+    pids_limit: int = Field(default=512, ge=32)
+    memory: str | None = "8g"
+    cpus: float | None = Field(default=4.0, gt=0)
+    tmpfs_size: str = "2g"
+    pass_env: list[str] = Field(default_factory=list)
+    user: Literal["host", "image"] = "host"
+
+    @model_validator(mode="after")
+    def validate_container_policy(self) -> SandboxConfig:
+        if self.mode == "container" and not self.image:
+            raise ValueError("sandbox.image is required when sandbox.mode=container")
+        if (
+            self.mode == "container"
+            and self.require_internal_agent_network
+            and self.agent_network in {"none", "host"}
+        ):
+            raise ValueError(
+                "sandbox requires a named agent_network when "
+                "require_internal_agent_network=true"
+            )
+        if len(self.pass_env) != len(set(self.pass_env)):
+            raise ValueError("sandbox.pass_env must not contain duplicates")
+        return self
+
+
 class ProjectConfig(BaseModel):
     version: Literal[1] = 1
     project_name: str | None = None
@@ -128,6 +164,7 @@ class ProjectConfig(BaseModel):
     model_gateway: ModelGatewayConfig = Field(default_factory=ModelGatewayConfig)
     model_profiles: dict[str, ModelProfile] = Field(default_factory=dict)
     mcp: dict[str, Any] = Field(default_factory=dict)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     agents: dict[str, AgentConfig]
     quality_gates: list[QualityGate] = Field(default_factory=list)
     requirement_verifiers: dict[str, list[QualityGate]] = Field(default_factory=dict)
@@ -274,6 +311,7 @@ class GateResult(BaseModel):
     required: bool
     returncode: int
     output: str
+    execution: dict[str, Any] | None = None
 
 
 class RequirementVerification(BaseModel):

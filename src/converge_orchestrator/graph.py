@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -13,6 +14,7 @@ from .git import update_base
 from .models import Requirement, TaskEnvelope, WorkflowState
 from .opencode import OpenCodeAdapter
 from .prompts import contract_excerpt
+from .quality import run_quality_gates, run_scope_gate
 
 
 class RepoScoutPayload(BaseModel):
@@ -271,6 +273,18 @@ def plan(state: WorkflowState) -> WorkflowState:
     return next_state
 
 
+def quality(state: WorkflowState) -> WorkflowState:
+    """Run repo-controlled commands before the final deterministic scope measurement."""
+    cfg = load_config(state["config_path"])
+    task = TaskEnvelope.model_validate(state["task"])
+    worktree = Path(state["worktree"])
+    results = [*run_quality_gates(cfg, worktree), run_scope_gate(cfg, worktree, task)]
+    payload = [item.model_dump(mode="json") for item in results]
+    store = wf._evidence(state)
+    store.write_json(state["run_id"], task.id, "quality.json", payload)
+    return {**state, "quality_results": payload, "status": "quality_checked"}
+
+
 def build_graph(checkpointer: Any = None):
     """Compose the durable LangGraph with a read-only scout immediately before planning."""
     graph = StateGraph(WorkflowState)
@@ -289,7 +303,7 @@ def build_graph(checkpointer: Any = None):
         ("plan", plan),
         ("prepare_worktree", wf.prepare_worktree),
         ("build", wf.build),
-        ("quality", wf.quality),
+        ("quality", quality),
         ("review", wf.review),
         ("repair", wf.repair),
         ("replan", wf.replan),
