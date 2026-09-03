@@ -11,6 +11,7 @@ from .context import (
     finalize_report,
     prepare_prompt,
 )
+from .managed_skills import materialize_managed_skills
 from .models import AgentResult, ProjectConfig, ReviewFinding, ReviewResult
 from .opencode_config import (
     materialize_opencode_config,
@@ -255,9 +256,14 @@ class OpenCodeAdapter:
         cmd += ["--dir", str(cwd), rendered_prompt]
         profile_overrides = {role: model_profile} if model_profile else None
         runtime_config = json.dumps(
-            runtime_opencode_config(self.config, profile_overrides),
+            runtime_opencode_config(
+                self.config,
+                profile_overrides,
+                active_role=role,
+            ),
             separators=(",", ":"),
         )
+        managed_config_dir = materialize_managed_skills(self.config)
         try:
             result = ExecutionSandbox(self.config).run(
                 cmd,
@@ -265,6 +271,7 @@ class OpenCodeAdapter:
                 timeout=agent_cfg.timeout_seconds,
                 env={
                     "OPENCODE_CONFIG": str(generated_config),
+                    "OPENCODE_CONFIG_DIR": str(managed_config_dir),
                     # Stable OpenCode loads inline config after project config and `.opencode`.
                     # This keeps orchestrator safety policy authoritative even for a target
                     # repository that contains its own OpenCode configuration.
@@ -272,7 +279,9 @@ class OpenCodeAdapter:
                 },
                 scope="agent",
                 writable_cwd=role == "builder",
-                include_state=True,
+                include_state=False,
+                agent_role=role,
+                readonly_paths=(generated_config, managed_config_dir),
             )
         except Exception:
             append_context_ledger(self.config, context_report, cwd)
