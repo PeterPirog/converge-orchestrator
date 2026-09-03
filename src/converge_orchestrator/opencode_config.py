@@ -279,7 +279,8 @@ def role_mcp_config(config: ProjectConfig, role: str | None) -> dict[str, Any]:
     agent = config.agents.get(role)
     for name, server in servers.items():
         permission = agent.tool_permissions.get(f"{name}_*") if agent else None
-        server["enabled"] = permission in {"allow", "ask"}
+        configured_enabled = server.get("enabled") is not False
+        server["enabled"] = configured_enabled and permission in {"allow", "ask"}
     return servers
 
 
