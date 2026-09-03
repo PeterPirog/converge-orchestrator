@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from .config import load_config
@@ -22,6 +20,7 @@ from .opencode_config import (
     resolve_agent_model,
     resolve_agent_variant,
 )
+from .persistence import configured_database_url, open_checkpointer, setup_postgres
 from .quality import effective_quality_gates
 from .sandbox import ExecutionSandbox, SandboxPreflightError
 from .spec import compile_contract, is_read_only, sha256_file
@@ -60,6 +59,20 @@ def list_models(config: ConfigOption) -> None:
     console.print(f"gateway: {cfg.model_gateway.base_url}")
     for model_id in visible:
         console.print(model_id)
+
+
+@app.command("persistence-setup")
+def persistence_setup() -> None:
+    """Initialize the shared PostgreSQL control and LangGraph checkpoint schema."""
+    if not configured_database_url():
+        raise typer.BadParameter(
+            "CONVERGE_DATABASE_URL is not configured; SQLite needs no setup command"
+        )
+    try:
+        setup_postgres()
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print("PostgreSQL persistence schema is ready.")
 
 
 @app.command()
@@ -141,6 +154,10 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
         console.print(f"quality network: {cfg.sandbox.quality_network}")
     console.print(f"OpenCode binary: {cfg.opencode_binary}")
     console.print(f"model gateway: {cfg.model_gateway.kind}")
+    console.print(
+        "persistence: "
+        + ("PostgreSQL (shared)" if configured_database_url() else "SQLite (local)")
+    )
     if gateway_models:
         console.print(f"gateway models visible: {len(gateway_models)}")
     for role, model in agent_models.items():
@@ -155,13 +172,16 @@ def run(
 ) -> None:
     """Run the autonomous convergence loop until a terminal state or interrupt."""
     cfg = load_config(config)
-    db = sqlite3.connect(cfg.state_dir / "langgraph.sqlite", check_same_thread=False)
-    graph = build_graph(checkpointer=SqliteSaver(db))
-    graph_config = {"configurable": {"thread_id": thread_id}}
-    result = graph.invoke(
-        {"config_path": str(config.resolve()), "thread_id": thread_id},
-        config=graph_config,
-    )
+    checkpointer, db = open_checkpointer(cfg.state_dir)
+    try:
+        graph = build_graph(checkpointer=checkpointer)
+        graph_config = {"configurable": {"thread_id": thread_id}}
+        result = graph.invoke(
+            {"config_path": str(config.resolve()), "thread_id": thread_id},
+            config=graph_config,
+        )
+    finally:
+        db.close()
     console.print_json(data=result)
 
 

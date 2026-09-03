@@ -26,3 +26,32 @@ jobs:
       - run: python -m compileall -q src tests
       - run: pytest --cov=converge_orchestrator --cov-report=term-missing
       - run: pip check
+
+  postgres-persistence:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: converge
+          POSTGRES_PASSWORD: converge-test
+          POSTGRES_DB: converge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U converge -d converge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CONVERGE_TEST_POSTGRES_URL: postgresql://converge:converge-test@127.0.0.1:5432/converge
+      LANGGRAPH_STRICT_MSGPACK: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev,postgres]'
+      - run: pytest -q tests/test_postgres_persistence.py
+      - run: pip check

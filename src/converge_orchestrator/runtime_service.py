@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from .config import load_config
@@ -41,13 +39,6 @@ def _is_contention_error(exc: RuntimeError) -> bool:
     )
 
 
-def _is_transient_checkpoint_error(exc: Exception) -> bool:
-    if not isinstance(exc, sqlite3.OperationalError):
-        return False
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
-
-
 def _terminal_checkpoint_status(snapshot: dict[str, Any]) -> str | None:
     if snapshot.get("interrupt") or snapshot.get("next"):
         return None
@@ -80,8 +71,12 @@ def _is_initial_input_checkpoint(
 class ScheduledRunController(RunController):
     """Durable LangGraph controller with machine-managed wait and crash recovery."""
 
-    def __init__(self, registry_path: Path):
-        super().__init__(registry_path)
+    def __init__(
+        self,
+        registry_path: Path,
+        database_url: str | None = None,
+    ):
+        super().__init__(registry_path, database_url=database_url)
         self._timers: dict[str, threading.Timer] = {}
         self._timer_generations: dict[str, int] = {}
         self._restore_ci_waits()
@@ -187,18 +182,16 @@ class ScheduledRunController(RunController):
             self._cancel_timer(run_id)
 
     def _open_graph(self, record: dict[str, Any]):
+        """Open the canonical service graph with the selected persistence backend."""
         project = self.registry.get_project(record["project_id"])
         cfg = load_config(project["config_path"])
-        db = sqlite3.connect(
-            cfg.state_dir / "langgraph.sqlite",
-            check_same_thread=False,
-        )
-        graph = build_graph(checkpointer=SqliteSaver(db))
+        checkpointer, db = self.persistence.open_checkpointer(cfg.state_dir)
+        graph = build_graph(checkpointer=checkpointer)
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}
         return graph, db, graph_config
 
     def _recovery_snapshot(self, record: dict[str, Any]) -> dict[str, Any] | None:
-        """Read restart state, retrying only transient SQLite lock/busy failures."""
+        """Read restart state and retry only backend-classified transient failures."""
         try:
             graph, db, graph_config = self._open_graph(record)
             try:
@@ -213,7 +206,7 @@ class ScheduledRunController(RunController):
                     f"{type(exc).__name__}: {exc}"
                 ),
             )
-            if _is_transient_checkpoint_error(exc):
+            if self.persistence.is_transient_error(exc):
                 self._schedule_recoverable(
                     record["id"],
                     _CHECKPOINT_INSPECTION_RETRY_SECONDS,

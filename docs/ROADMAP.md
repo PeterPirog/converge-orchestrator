@@ -10,7 +10,7 @@ autonomous-agent architecture.
 ## v0.1 — executable local core — complete
 
 - immutable requirement hash guard and traceable Markdown contract extraction;
-- LangGraph workflow with SQLite checkpoints;
+- LangGraph workflow with durable SQLite checkpoints by default;
 - isolated Git worktrees and one-writer-per-worktree discipline;
 - OpenCode Scout/Planner/Builder/Reviewer roles;
 - deterministic quality gates, bounded repair/replan and HITL;
@@ -60,6 +60,8 @@ Implemented:
 - read-only Scout/Planner/Reviewers and the active Builder as the only worktree writer;
 - read-only Git metadata, read-only container root, dropped capabilities, no-new-privileges, resource
   limits, tmpfs, allowlisted environment forwarding and controlled networks;
+- role-scoped MCP credentials/tools and physically separated Converge-managed Skills, preventing
+  unrelated agent roles from inheriting another role's tool instructions or MCP secrets;
 - deterministic TDD baseline, test-only RED, novel failure marker, frozen test hashes and GREEN for
   behavior-changing tasks;
 - deterministic final-diff risk classification for secrets, destructive migrations, public Python
@@ -100,12 +102,16 @@ Implemented:
   same LangGraph run/thread without HITL;
 - real subprocess proof that abrupt OpenCode/executor death is absorbed by a bounded primary retry
   with identical role/prompt/model and no hidden session continuation or HITL;
+- optional shared PostgreSQL production persistence for both LangGraph checkpoints and the control/run
+  registry, with cross-worker atomic leases, strict checkpoint deserialization and focused real-DB CI;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
-   backup and multi-worker deployment hardening.
+1. **Production observability and multi-node hardening** — metrics/tracing, backup/restore automation,
+   and external/shared evidence/workspace storage or explicit workload affinity. Shared PostgreSQL
+   control/checkpoint state is implemented; filesystem artifacts are the remaining distribution
+   boundary.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
