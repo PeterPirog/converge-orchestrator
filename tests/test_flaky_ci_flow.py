@@ -62,16 +62,32 @@ def _failed_ci(name: str = "CI") -> CIResult:
     )
 
 
-def _store():
-    return types.SimpleNamespace(write_json=Mock(), append_event=Mock())
+def _store(bundle: dict | None = None):
+    if bundle is None:
+        read_task_bundle = Mock(side_effect=FileNotFoundError("no retry ledger"))
+    else:
+        read_task_bundle = Mock(return_value=bundle)
+    return types.SimpleNamespace(
+        write_json=Mock(),
+        append_event=Mock(),
+        read_task_bundle=read_task_bundle,
+    )
 
 
-def _invoke(tmp_path: Path, state: dict, adapter: Mock, policy: FlakyCIPolicy) -> dict:
+def _invoke(
+    tmp_path: Path,
+    state: dict,
+    adapter: Mock,
+    policy: FlakyCIPolicy,
+    *,
+    store=None,
+) -> dict:
     cfg = _config(tmp_path)
+    evidence = store or _store()
     with (
         patch("converge_orchestrator.ci.load_config", return_value=cfg),
         patch("converge_orchestrator.ci.load_flaky_ci_policy", return_value=policy),
-        patch("converge_orchestrator.ci.wf._evidence", return_value=_store()),
+        patch("converge_orchestrator.ci.wf._evidence", return_value=evidence),
         patch("converge_orchestrator.ci.GitHubAdapter", return_value=adapter),
     ):
         return ci_poll(state)
@@ -122,14 +138,52 @@ def test_new_candidate_head_resets_flaky_retry_ledger(tmp_path: Path) -> None:
     assert result["ci_flaky_retries"] == {"CI": 1}
 
 
-def test_rerun_transport_failure_escalates_without_wasting_builder_repair(tmp_path: Path) -> None:
+def test_uncheckpointed_retry_reservation_is_not_duplicated_after_restart(tmp_path: Path) -> None:
     adapter = Mock()
     adapter.ci_status.return_value = _failed_ci()
-    adapter.rerun_failed_actions_check.side_effect = GitHubError("actions rerun forbidden")
     policy = FlakyCIPolicy(checks=["CI"], max_retries_per_check=1)
+    store = _store(
+        {
+            "run_id": "run-1",
+            "task_id": "ARCH-001-1",
+            "artifacts": {
+                "ci-flaky-retries.json": {
+                    "head_sha": "abc",
+                    "counts": {"CI": 1},
+                }
+            },
+        }
+    )
 
-    result = _invoke(tmp_path, _state(), adapter, policy)
+    result = _invoke(tmp_path, _state(), adapter, policy, store=store)
+
+    adapter.rerun_failed_actions_check.assert_not_called()
+    assert result["ci"]["status"] == "pending"
+    assert result["ci_flaky_retries"] == {"CI": 1}
+    assert route_after_ci(result) == "wait"
+    assert any(
+        call.args[1] == "ci_flaky_recovery_wait"
+        for call in store.append_event.call_args_list
+    )
+
+
+def test_rerun_transport_failure_preserves_reservation_before_escalation(tmp_path: Path) -> None:
+    adapter = Mock()
+    adapter.ci_status.return_value = _failed_ci()
+    policy = FlakyCIPolicy(checks=["CI"], max_retries_per_check=1)
+    store = _store()
+
+    def fail_after_reservation(*_args):
+        ledger_write = store.write_json.call_args_list[0]
+        assert ledger_write.args[2] == "ci-flaky-retries.json"
+        assert ledger_write.args[3] == {"head_sha": "abc", "counts": {"CI": 1}}
+        raise GitHubError("actions rerun forbidden")
+
+    adapter.rerun_failed_actions_check.side_effect = fail_after_reservation
+
+    result = _invoke(tmp_path, _state(), adapter, policy, store=store)
 
     assert result["ci"]["status"] == "fail"
+    assert result["ci_flaky_retries"] == {"CI": 1}
     assert "actions rerun forbidden" in result["ci_flaky_retry_error"]
     assert route_after_ci(result) == "human"
