@@ -42,9 +42,10 @@ _SECRET_MATERIAL_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
 )
 _LITERAL_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?P<name>api[_-]?key|access[_-]?token|secret|client[_-]?secret|password|passwd)"
+    r"(?i)\b(?P<name>api[_-]?key|access[_-]?token|token|secret|client[_-]?secret|password|passwd)"
     r"\b\s*[:=]\s*[\"'](?P<value>[^\"']{8,})[\"']"
 )
 _SECRET_DEPENDENCY = re.compile(
@@ -85,6 +86,8 @@ _DESTRUCTIVE_MIGRATION = re.compile(
 
 _AUTH_SEGMENTS = {
     "auth",
+    "authn",
+    "authz",
     "authentication",
     "authorization",
     "security",
@@ -161,11 +164,10 @@ def _migration_path(path: str) -> bool:
 
 
 def _auth_path(path: str) -> bool:
-    parts = [part.lower() for part in PurePosixPath(path).parts]
-    stem = PurePosixPath(path).stem.lower()
-    return any(part in _AUTH_SEGMENTS for part in parts) or any(
-        token in stem for token in _AUTH_SEGMENTS
-    )
+    normalized = PurePosixPath(path)
+    parts = [part.lower() for part in normalized.parts[:-1]]
+    stem_tokens = set(re.split(r"[^a-z0-9]+", normalized.stem.lower()))
+    return bool(set(parts).intersection(_AUTH_SEGMENTS) or stem_tokens.intersection(_AUTH_SEGMENTS))
 
 
 def _redact_secret_evidence(path: str, line: int | None, kind: str) -> str:
@@ -230,10 +232,8 @@ def _migration_findings(
                 evidence=f"existing migration file deleted: {path}",
             )
         ]
-    matches = [
-        (line_no, line.strip())
-        for line_no, line in added
-        if _DESTRUCTIVE_MIGRATION.search(line)
+    match_lines = [
+        line_no for line_no, line in added if _DESTRUCTIVE_MIGRATION.search(line)
     ]
     removed_match = any(_DESTRUCTIVE_MIGRATION.search(line) for line in removed)
     findings = [
@@ -243,9 +243,9 @@ def _migration_findings(
             flag="destructive_data_migration",
             path=path,
             line=line_no,
-            evidence=f"destructive migration operation in {path}:{line_no}: {text[:160]}",
+            evidence=f"destructive migration operation detected in {path}:{line_no}",
         )
-        for line_no, text in matches[:5]
+        for line_no in match_lines[:5]
     ]
     if removed_match and not findings:
         findings.append(
@@ -267,13 +267,23 @@ def _auth_findings(
 ) -> list[RiskFinding]:
     if _is_test_path(path) or not _auth_path(path):
         return []
-    added_security = [(line_no, line) for line_no, line in added if _AUTH_PRIMITIVE.search(line)]
+    added_security = [
+        (line_no, line) for line_no, line in added if _AUTH_PRIMITIVE.search(line)
+    ]
     removed_security = [line for line in removed if _AUTH_PRIMITIVE.search(line)]
     weakening = [(line_no, line) for line_no, line in added if _AUTH_WEAKENING.search(line)]
     changed_security_lines = len(added_security) + len(removed_security)
     if weakening or removed_security or changed_security_lines >= 8:
-        line_no = weakening[0][0] if weakening else (added_security[0][0] if added_security else None)
-        reason = "explicit auth weakening" if weakening else "authorization/authentication contract changed"
+        line_no = (
+            weakening[0][0]
+            if weakening
+            else (added_security[0][0] if added_security else None)
+        )
+        reason = (
+            "explicit auth weakening"
+            if weakening
+            else "authorization/authentication contract changed"
+        )
         return [
             RiskFinding(
                 kind="auth_security_change",
@@ -338,7 +348,11 @@ def _module_public_api(source: str | None) -> dict[str, tuple]:
     explicit_exports: set[str] | None = None
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            target = node.targets[0] if isinstance(node, ast.Assign) and node.targets else node.target
+            target = (
+                node.targets[0]
+                if isinstance(node, ast.Assign) and node.targets
+                else node.target
+            )
             if isinstance(target, ast.Name) and target.id == "__all__":
                 value = node.value
                 if isinstance(value, (ast.List, ast.Tuple)) and all(
@@ -415,6 +429,7 @@ def classify_repository_risk(
     task: TaskEnvelope,
 ) -> RiskReport:
     """Classify final candidate diff without trusting Planner-provided risk flags."""
+    del task  # Reserved for future task-aware adapters; diff evidence remains authoritative.
     findings: list[RiskFinding] = []
     for path in changed_files(cwd, config.base_branch):
         base = _read_base(cwd, config.base_branch, path)
