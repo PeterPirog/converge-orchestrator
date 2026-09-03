@@ -44,11 +44,15 @@ def _run_payload(raw: dict[str, Any]) -> dict[str, Any]:
 def create_app(
     registry_path: Path | None = None,
     api_token: str | None = None,
+    postgres_dsn: str | None = None,
 ) -> FastAPI:
     path = registry_path or Path(
         os.environ.get("CONVERGE_CONTROL_DB", ".converge/control.sqlite")
     )
-    controller = ScheduledRunController(path)
+    resolved_postgres_dsn = (
+        postgres_dsn if postgres_dsn is not None else os.environ.get("CONVERGE_POSTGRES_DSN")
+    )
+    controller = ScheduledRunController(path, postgres_dsn=resolved_postgres_dsn)
     token = api_token if api_token is not None else os.environ.get("CONVERGE_API_TOKEN")
     app = FastAPI(
         title="Converge Orchestrator API",
