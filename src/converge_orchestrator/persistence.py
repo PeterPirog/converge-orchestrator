@@ -43,6 +43,30 @@ def _postgres_modules():
     return psycopg, PostgresSaver, dict_row
 
 
+def open_checkpointer(
+    state_dir: Path,
+    database_url: str | None = None,
+) -> tuple[Any, Any]:
+    """Return `(checkpointer, closeable_connection)` for SQLite or shared PostgreSQL."""
+    resolved = database_url or configured_database_url()
+    if not resolved:
+        db = sqlite3.connect(
+            state_dir / "langgraph.sqlite",
+            check_same_thread=False,
+        )
+        return SqliteSaver(db), db
+
+    _require_strict_msgpack()
+    psycopg, PostgresSaver, dict_row = _postgres_modules()
+    db = psycopg.connect(
+        resolved,
+        autocommit=True,
+        prepare_threshold=0,
+        row_factory=dict_row,
+    )
+    return PostgresSaver(db), db
+
+
 class PersistenceBackend:
     """Select durable control/checkpoint storage without changing LangGraph workflow semantics."""
 
@@ -64,23 +88,7 @@ class PersistenceBackend:
         return "postgres" if self.database_url else "sqlite"
 
     def open_checkpointer(self, state_dir: Path) -> tuple[Any, Any]:
-        """Return `(checkpointer, closeable_connection)` for one graph operation."""
-        if not self.database_url:
-            db = sqlite3.connect(
-                state_dir / "langgraph.sqlite",
-                check_same_thread=False,
-            )
-            return SqliteSaver(db), db
-
-        _require_strict_msgpack()
-        psycopg, PostgresSaver, dict_row = _postgres_modules()
-        db = psycopg.connect(
-            self.database_url,
-            autocommit=True,
-            prepare_threshold=0,
-            row_factory=dict_row,
-        )
-        return PostgresSaver(db), db
+        return open_checkpointer(state_dir, self.database_url)
 
     def is_database_error(self, exc: Exception) -> bool:
         if isinstance(exc, sqlite3.DatabaseError):
