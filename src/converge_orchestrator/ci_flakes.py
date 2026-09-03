@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from .github import GitHubAdapter, GitHubError
-from .models import CIResult, ProjectConfig
+from .models import CIResult
 
 _PASSING_CHECK_CONCLUSIONS = {"success", "neutral", "skipped"}
 _ACTIONS_JOB_PATH = re.compile(r"^/([^/]+)/([^/]+)/actions/runs/\d+/job/(\d+)(?:/)?$")
