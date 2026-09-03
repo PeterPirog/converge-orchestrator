@@ -32,12 +32,23 @@ def _ci_interrupt() -> dict:
     }
 
 
+def _unfinished_record() -> dict:
+    return {
+        "id": "run-1",
+        "project_id": "project",
+        "thread_id": "thread-1",
+        "finished_at": None,
+    }
+
+
+def _one_unfinished_run(controller: ScheduledRunController) -> None:
+    controller.registry.list_projects.return_value = [{"id": "project"}]
+    controller.registry.runs_for_project.return_value = [_unfinished_record()]
+
+
 def test_restore_ci_waits_rehydrates_timer_from_checkpoint() -> None:
     controller = _controller()
-    controller.registry.list_projects.return_value = [{"id": "project"}]
-    controller.registry.runs_for_project.return_value = [
-        {"id": "run-1", "finished_at": None}
-    ]
+    _one_unfinished_run(controller)
     controller._snapshot = Mock(  # type: ignore[method-assign]
         return_value={"interrupt": _ci_interrupt()}
     )
@@ -51,6 +62,72 @@ def test_restore_ci_waits_rehydrates_timer_from_checkpoint() -> None:
     controller._schedule_ci_wait.assert_called_once_with(
         "run-1", "2026-09-03T10:00:20+00:00"
     )
+
+
+def test_restore_recoverable_run_schedules_automatic_langgraph_resume() -> None:
+    controller = _controller()
+    _one_unfinished_run(controller)
+    controller._snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"interrupt": None, "next": ["quality"]}
+    )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
+
+    controller._restore_recoverable_runs()
+
+    controller.registry.update_run.assert_called_once_with(
+        "run-1", status="recoverable", node="quality"
+    )
+    controller._schedule_recoverable.assert_called_once_with("run-1")
+
+
+def test_restore_does_not_resume_human_or_controlled_interrupt() -> None:
+    controller = _controller()
+    _one_unfinished_run(controller)
+    controller._snapshot = Mock(  # type: ignore[method-assign]
+        return_value={
+            "interrupt": {"kind": "risk_policy"},
+            "next": ["human"],
+        }
+    )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
+
+    controller._restore_recoverable_runs()
+
+    controller._schedule_recoverable.assert_not_called()
+    controller.registry.update_run.assert_not_called()
+
+
+def test_automatic_recovery_resumes_existing_thread_without_new_input() -> None:
+    controller = _controller()
+    record = _unfinished_record()
+    controller.registry.get_run.return_value = record
+    controller._timer_generations["run-1"] = 3
+    controller._snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"interrupt": None, "next": ["quality"]}
+    )
+    controller._submit = Mock()  # type: ignore[method-assign]
+
+    controller._resume_recoverable("run-1", 3)
+
+    controller._submit.assert_called_once_with("run-1", None)
+
+
+def test_automatic_recovery_retries_when_another_controller_holds_lease() -> None:
+    controller = _controller()
+    controller.registry.get_run.return_value = _unfinished_record()
+    controller._timer_generations["run-1"] = 4
+    controller._snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"interrupt": None, "next": ["integrate"]}
+    )
+    controller._submit = Mock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("Run is leased by another active controller")
+    )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
+
+    controller._resume_recoverable("run-1", 4)
+
+    controller._schedule_recoverable.assert_called_once_with("run-1", 5.0)
+    controller.registry.update_run.assert_not_called()
 
 
 def test_machine_ci_wait_cannot_be_decided_as_hitl() -> None:
