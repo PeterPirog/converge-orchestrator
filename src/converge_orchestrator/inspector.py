@@ -20,7 +20,11 @@ def _declared_python_dependency(data: dict[str, Any], package: str) -> bool:
 
 
 def _python_gates(root: Path) -> tuple[list[str], list[QualityGate]]:
-    indicators = [name for name in ("pyproject.toml", "requirements.txt") if (root / name).is_file()]
+    indicators = [
+        name
+        for name in ("pyproject.toml", "requirements.txt")
+        if (root / name).is_file()
+    ]
     if not indicators:
         return [], []
 
