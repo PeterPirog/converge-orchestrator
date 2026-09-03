@@ -161,6 +161,7 @@ def test_recovery_inspection_failure_never_restarts_from_empty_state() -> None:
     controller._open_graph = Mock(  # type: ignore[method-assign]
         side_effect=sqlite3.DatabaseError("corrupt checkpoint")
     )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
 
     snapshot = controller._recovery_snapshot(record)
 
@@ -169,6 +170,25 @@ def test_recovery_inspection_failure_never_restarts_from_empty_state() -> None:
     update = controller.registry.update_run.call_args
     assert update.args[0] == "run-1"
     assert "checkpoint inspection failed" in update.kwargs["error"]
+    controller._schedule_recoverable.assert_not_called()
+
+
+def test_transient_checkpoint_lock_schedules_automatic_inspection_retry() -> None:
+    controller = _controller()
+    record = _unfinished_record()
+    controller._open_graph = Mock(  # type: ignore[method-assign]
+        side_effect=sqlite3.OperationalError("database is locked")
+    )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
+
+    snapshot = controller._recovery_snapshot(record)
+
+    assert snapshot is None
+    controller.registry.update_run.assert_called_once()
+    update = controller.registry.update_run.call_args
+    assert update.args[0] == "run-1"
+    assert "database is locked" in update.kwargs["error"]
+    controller._schedule_recoverable.assert_called_once_with("run-1", 1.0)
 
 
 def test_automatic_recovery_retries_when_another_controller_holds_lease() -> None:
