@@ -55,7 +55,7 @@ def _store():
     return types.SimpleNamespace(
         write_json=Mock(),
         append_event=Mock(),
-        read_task_bundle=Mock(side_effect=FileNotFoundError("no retry ledger")),
+        read_json=Mock(return_value=None),
     )
 
 
