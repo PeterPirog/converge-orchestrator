@@ -41,6 +41,26 @@ def _require_executable(binary: str, label: str) -> None:
         raise typer.BadParameter(f"{label} executable not found on PATH: {binary}")
 
 
+@app.command("models")
+def list_models(config: ConfigOption) -> None:
+    """List model IDs visible through the configured OpenWebUI/OpenAI-compatible gateway."""
+    cfg = load_config(config)
+    if cfg.model_gateway.kind == "existing":
+        console.print("model gateway: existing OpenCode providers")
+        console.print("Run `opencode models` to inspect models from native OpenCode providers.")
+        return
+    try:
+        visible = sorted(gateway_model_ids(cfg))
+    except ModelGatewayError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if not visible:
+        console.print("No models returned by the configured gateway.")
+        return
+    console.print(f"gateway: {cfg.model_gateway.base_url}")
+    for model_id in visible:
+        console.print(model_id)
+
+
 @app.command()
 def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
     """Validate one project config before the autonomous run starts."""
@@ -70,7 +90,10 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
 
     profile = inspect_repository(cfg.repo_path)
     gates = effective_quality_gates(cfg, cfg.repo_path)
-    generated_config = materialize_opencode_config(cfg)
+    try:
+        generated_config = materialize_opencode_config(cfg)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     agent_models: dict[str, str] = {}
     for role, agent in cfg.agents.items():
@@ -93,6 +116,7 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
                 f"configured models are not visible in the gateway: {sorted(missing_models)}"
             )
 
+    console.print(f"configuration version: {cfg.version}")
     console.print(f"project: {cfg.project_name or config.stem}")
     console.print(f"repo: {cfg.repo_path}")
     console.print(f"requirements: {cfg.requirements_path}")
@@ -103,6 +127,7 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
     console.print(f"quality gates: {', '.join(gate.name for gate in gates) or 'none'}")
     console.print(f"deterministic requirement verifiers: {len(cfg.requirement_verifiers)}")
     console.print(f"github: {cfg.github_repo or 'disabled'}")
+    console.print(f"OpenCode binary: {cfg.opencode_binary}")
     console.print(f"model gateway: {cfg.model_gateway.kind}")
     if gateway_models:
         console.print(f"gateway models visible: {len(gateway_models)}")
