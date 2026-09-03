@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from converge_orchestrator.registry import ControlRegistry
 
 
@@ -83,9 +85,12 @@ def _worker_environment() -> dict[str, str]:
     return environment
 
 
+@pytest.mark.parametrize("_race_attempt", range(3))
 def test_service_process_recovers_uncheckpointed_worktree_without_duplication(
     tmp_path: Path,
+    _race_attempt: int,
 ) -> None:
+    del _race_attempt
     repo = _repository(tmp_path)
     config_path, state_dir, worktree_dir = _config(tmp_path, repo)
     registry_path = state_dir / "control.sqlite"

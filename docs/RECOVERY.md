@@ -14,17 +14,19 @@ checkpoint from the project's `state_dir/langgraph.sqlite`.
 | human risk/TDD/budget interrupt | remain interrupted; operator decision is still required |
 | controlled pause | remain paused; never auto-resume |
 | `next` node and no interrupt | mark `recoverable` and automatically resume the same LangGraph `thread_id` |
-| no first checkpoint yet | reconstruct only the original minimal run input and restart the same thread |
+| no first checkpoint yet | reconstruct only the original minimal run input from the control registry and re-enter the same thread |
 | terminal checkpoint | no recovery action |
 
-A recovered graph is resumed with no new task input once a checkpoint exists. If the service dies before
-the first LangGraph checkpoint is durable, the control registry still contains the immutable run/thread
-identity and project configuration reference. Converge reconstructs only that original minimal input and
-re-enters the same thread; it does not invent a task or reuse chat/model history.
+A recovered graph with a durable checkpoint is resumed with no new task input. The already checkpointed
+state remains authoritative. Only the narrow crash window before the first checkpoint is allowed to
+reconstruct input, and that reconstruction contains only `project_id`, `config_path`, `run_id` and
+`thread_id` from the durable control registry.
 
-Checkpoint inspection errors are deliberately different from an absent first checkpoint. A database or
-configuration read failure is recorded and fails closed; it is never treated as permission to restart
-from an empty state.
+Checkpoint inspection failures are fail-closed. Corrupt or unreadable checkpoint storage is recorded as
+an error and is never interpreted as an empty run. A transient SQLite `locked`/`busy` error is different:
+it does not change graph state or approve work, so the controller schedules a short automatic inspection
+retry. This prevents a temporary database lock during process handover from stranding an otherwise
+recoverable run or creating unnecessary HITL.
 
 ## Single-writer guarantee during recovery
 
@@ -48,8 +50,7 @@ Therefore recovery assumes that a side-effect node may be executed more than onc
 - CI polling performs one observation per `ci_poll`; waiting is represented by a durable machine
   interrupt rather than a sleeping worker.
 
-These invariants are required for safe automatic restart recovery, including the pre-first-checkpoint
-window where the first node may be re-entered after process death.
+These invariants are required for safe automatic restart recovery.
 
 ## What recovery must not do
 
@@ -60,7 +61,7 @@ Automatic recovery must never:
 - create a new LangGraph thread for an existing run;
 - delete a worktree merely because it is old;
 - assume that an expired process lease makes the worktree disposable;
-- confuse unreadable/corrupt checkpoint storage with a legitimately absent first checkpoint.
+- interpret checkpoint corruption as an absent checkpoint.
 
 ## Process-level crash coverage
 
@@ -73,8 +74,7 @@ processes:
 
 1. **Worktree creation** — the service is killed after worktree creation and an uncommitted candidate
    write but before the node output checkpoint. Restart adopts the exact owned worktree, preserves the
-   candidate and creates no duplicate branch or worktree. Recovery also handles the narrower race in
-   which the service dies before even the first LangGraph checkpoint becomes durable.
+   candidate and creates no duplicate branch or worktree.
 2. **Commit and push** — the service is killed after candidate commit and remote branch push but before
    LangGraph checkpoints the node result. Restart recovers the exact commit and retries the push
    idempotently without another commit, worktree or task branch.
