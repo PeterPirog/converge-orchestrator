@@ -9,7 +9,6 @@ from .ci import ci_poll, ci_wait, route_after_ci
 from .graph import (
     build,
     pause_before_tdd_red_repair,
-    plan,
     quality,
     route_after_build_pause,
     route_after_tdd_baseline,
@@ -22,6 +21,7 @@ from .graph import (
     tdd_red_gate,
 )
 from .models import WorkflowState
+from .targeting import route_after_targeted_plan, targeted_plan
 
 
 def build_graph(checkpointer: Any = None):
@@ -40,7 +40,7 @@ def build_graph(checkpointer: Any = None):
         ("pause_pr", wf.pause_before_pr),
         ("pause_merge", wf.pause_before_merge),
         ("scout", scout),
-        ("plan", plan),
+        ("plan", targeted_plan),
         ("prepare_worktree", wf.prepare_worktree),
         ("tdd_baseline", tdd_baseline),
         ("tdd_red_build", tdd_red_build),
@@ -75,7 +75,11 @@ def build_graph(checkpointer: Any = None):
         {"continue": "scout", "end": END},
     )
     graph.add_edge("scout", "plan")
-    graph.add_edge("plan", "prepare_worktree")
+    graph.add_conditional_edges(
+        "plan",
+        route_after_targeted_plan,
+        {"prepare": "prepare_worktree", "human": "human", "end": END},
+    )
     graph.add_edge("prepare_worktree", "tdd_baseline")
     graph.add_conditional_edges(
         "tdd_baseline",
