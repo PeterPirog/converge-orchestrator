@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from .compliance import ComplianceEngine
-from .git import changed_files, current_head, diff_line_count, paths_within_allowlist
+from .git import GitError, changed_files, current_head, diff_line_count, paths_within_allowlist
 from .inspector import inspect_repository
 from .models import GateResult, ProjectConfig, QualityGate, RequirementStatus, TaskEnvelope
 from .sandbox import ExecutionSandbox
@@ -103,7 +103,20 @@ def run_quality_gates(config: ProjectConfig, cwd: Path) -> list[GateResult]:
 
 
 def _baseline_requirement_verifiers(config: ProjectConfig, contract):  # type: ignore[no-untyped-def]
-    base_commit = current_head(config.repo_path)
+    try:
+        base_commit = current_head(config.repo_path)
+    except GitError:
+        # Some embedders/tests use a filesystem baseline without Git metadata. Cache identity cannot
+        # be proven there, so execute deterministic evidence normally instead of guessing a key.
+        return (
+            run_requirement_verifiers(
+                config,
+                config.repo_path,
+                contract.requirements,
+                writable_cwd=False,
+            ),
+            False,
+        )
     cached = load_baseline_verification_cache(
         config,
         base_commit=base_commit,
