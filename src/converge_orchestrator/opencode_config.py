@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .managed_skills import effective_role_skills
 from .models import AgentConfig, ModelProfile, ProjectConfig
 
 _ROLE_DEFINITIONS: dict[str, dict[str, str]] = {
@@ -175,7 +176,13 @@ def _safe_tool_overrides(agent: AgentConfig) -> dict[str, str]:
     return dict(agent.tool_permissions)
 
 
-def _read_only_permission(agent: AgentConfig) -> dict[str, Any]:
+def _skill_permission(role: str) -> dict[str, str]:
+    permission = {"*": "deny"}
+    permission.update({name: "allow" for name in effective_role_skills(role)})
+    return permission
+
+
+def _read_only_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
     permission: dict[str, Any] = {
         "*": "deny",
         "read": "allow",
@@ -183,7 +190,7 @@ def _read_only_permission(agent: AgentConfig) -> dict[str, Any]:
         "grep": "allow",
         "list": "allow",
         "lsp": "allow",
-        "skill": "allow",
+        "skill": _skill_permission(role),
         "todowrite": "allow",
         "edit": "deny",
         "bash": {
@@ -203,7 +210,7 @@ def _read_only_permission(agent: AgentConfig) -> dict[str, Any]:
     return permission
 
 
-def _builder_permission(agent: AgentConfig) -> dict[str, Any]:
+def _builder_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
     permission: dict[str, Any] = {
         "*": "deny",
         "read": "allow",
@@ -211,7 +218,7 @@ def _builder_permission(agent: AgentConfig) -> dict[str, Any]:
         "grep": "allow",
         "list": "allow",
         "lsp": "allow",
-        "skill": "allow",
+        "skill": _skill_permission(role),
         "todowrite": "allow",
         "edit": "allow",
         "bash": {
@@ -235,8 +242,8 @@ def _builder_permission(agent: AgentConfig) -> dict[str, Any]:
 
 def _role_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
     if role == "builder":
-        return _builder_permission(agent)
-    return _read_only_permission(agent)
+        return _builder_permission(role, agent)
+    return _read_only_permission(role, agent)
 
 
 def _stable_mcp_config(raw: dict[str, Any]) -> dict[str, Any]:
@@ -262,6 +269,27 @@ def _stable_mcp_config(raw: dict[str, Any]) -> dict[str, Any]:
         server.pop("codemode", None)
         output[str(name)] = server
     return output
+
+
+def role_mcp_config(config: ProjectConfig, role: str | None) -> dict[str, Any]:
+    """Disable configured MCP servers unless the active role explicitly grants `<server>_*`."""
+    servers = _stable_mcp_config(config.mcp)
+    if not servers:
+        return {}
+    agent = config.agents.get(role) if role else None
+    for name, server in servers.items():
+        permission = agent.tool_permissions.get(f"{name}_*") if agent else None
+        server["enabled"] = permission in {"allow", "ask"}
+    return servers
+
+
+def role_mcp_env_source(config: ProjectConfig, role: str | None) -> dict[str, Any]:
+    """Return only MCP definitions assigned to a role for environment-secret discovery."""
+    return {
+        name: server
+        for name, server in role_mcp_config(config, role).items()
+        if server.get("enabled") is True
+    }
 
 
 def _provider_model_entry(profile: ModelProfile, model_id: str) -> dict[str, Any]:
@@ -305,6 +333,8 @@ def _runtime_gateway_base_url(config: ProjectConfig) -> str | None:
 def build_opencode_config(
     config: ProjectConfig,
     model_profile_overrides: dict[str, str] | None = None,
+    *,
+    active_role: str | None = None,
 ) -> dict[str, Any]:
     """Build stable OpenCode config without materializing any secret value."""
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
@@ -332,7 +362,7 @@ def build_opencode_config(
         }
         payload["provider"] = {gateway.provider_id: provider}
 
-    mcp = _stable_mcp_config(config.mcp)
+    mcp = role_mcp_config(config, active_role)
     if mcp:
         payload["mcp"] = mcp
 
@@ -368,16 +398,22 @@ def build_opencode_config(
 def runtime_opencode_config(
     config: ProjectConfig,
     model_profile_overrides: dict[str, str] | None = None,
+    *,
+    active_role: str | None = None,
 ) -> dict[str, Any]:
     """Return the highest-precedence runtime config used for every local OpenCode call."""
-    return build_opencode_config(config, model_profile_overrides)
+    return build_opencode_config(
+        config,
+        model_profile_overrides,
+        active_role=active_role,
+    )
 
 
 def materialize_opencode_config(config: ProjectConfig) -> Path:
-    """Write deterministic generated config under state_dir, never into the target repo."""
+    """Write a safe baseline config; role-specific MCP enablement is inline at invocation time."""
     target = config.opencode_generated_config_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = runtime_opencode_config(config)
+    payload = runtime_opencode_config(config, active_role=None)
     target.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
