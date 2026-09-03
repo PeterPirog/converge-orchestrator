@@ -6,11 +6,11 @@ from typing import Any, Literal
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from . import workflow as wf
 from .config import load_config
 from .git import update_base
 from .models import Requirement, TaskEnvelope, WorkflowState
 from .opencode import OpenCodeAdapter
-from . import workflow as wf
 
 
 class RepoScoutPayload(BaseModel):
