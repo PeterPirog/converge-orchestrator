@@ -6,8 +6,8 @@ from typing import Any
 from langgraph.types import interrupt
 
 from . import workflow as wf
+from .ci_flakes import GitHubFlakyCIAdapter as GitHubAdapter
 from .ci_flakes import (
-    GitHubFlakyCIAdapter as GitHubAdapter,
     choose_flaky_retry,
     load_flaky_ci_policy,
     retry_error_text,
