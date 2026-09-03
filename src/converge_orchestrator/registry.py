@@ -48,6 +48,7 @@ class ControlRegistry:
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
                     config_path TEXT NOT NULL,
+                    workspace_id TEXT,
                     requirements_hash TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -71,29 +72,66 @@ class ControlRegistry:
                 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(active_task_id);
                 """
             )
-            columns = {
+            project_columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            if "workspace_id" not in project_columns:
+                db.execute("ALTER TABLE projects ADD COLUMN workspace_id TEXT")
+
+            run_columns = {
                 str(row["name"])
                 for row in db.execute("PRAGMA table_info(runs)").fetchall()
             }
-            if "lease_owner" not in columns:
+            if "lease_owner" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN lease_owner TEXT")
-            if "lease_expires_at" not in columns:
+            if "lease_expires_at" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN lease_expires_at TEXT")
 
-    def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
+    def register_project(
+        self,
+        project_id: str,
+        config_path: Path,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
         now = _now()
         resolved = str(config_path.expanduser().resolve())
         with self._connection() as db:
-            db.execute(
-                """
-                INSERT INTO projects(id, config_path, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    config_path = excluded.config_path,
-                    updated_at = excluded.updated_at
-                """,
-                (project_id, resolved, now, now),
-            )
+            if workspace_id is None:
+                db.execute(
+                    """
+                    INSERT INTO projects(id, config_path, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        config_path = excluded.config_path,
+                        updated_at = excluded.updated_at
+                    """,
+                    (project_id, resolved, now, now),
+                )
+            else:
+                cursor = db.execute(
+                    """
+                    INSERT INTO projects(id, config_path, workspace_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        config_path = excluded.config_path,
+                        workspace_id = excluded.workspace_id,
+                        updated_at = excluded.updated_at
+                    WHERE projects.workspace_id IS NULL
+                       OR projects.workspace_id = excluded.workspace_id
+                    """,
+                    (project_id, resolved, workspace_id, now, now),
+                )
+                if cursor.rowcount != 1:
+                    existing = db.execute(
+                        "SELECT workspace_id FROM projects WHERE id = ?",
+                        (project_id,),
+                    ).fetchone()
+                    expected = existing["workspace_id"] if existing else "<missing>"
+                    raise ValueError(
+                        f"Project {project_id} is already bound to workspace {expected}; "
+                        f"refusing registration from workspace {workspace_id}"
+                    )
         return self.get_project(project_id)
 
     def set_requirements_hash(self, project_id: str, requirements_hash: str) -> None:
