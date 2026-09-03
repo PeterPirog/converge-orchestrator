@@ -24,5 +24,9 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check .
       - run: python -m compileall -q src tests
-      - run: pytest --cov=converge_orchestrator --cov-report=term-missing
+      - name: Run pytest with SQLite resource tracing
+        env:
+          PYTHONTRACEMALLOC: "25"
+          PYTHONWARNINGS: "always::ResourceWarning"
+        run: pytest --cov=converge_orchestrator --cov-report=term-missing
       - run: pip check
