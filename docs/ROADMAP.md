@@ -69,8 +69,8 @@ Implemented:
 Remaining:
 
 - source-level Node plus Go/Rust compatibility adapters and broader safe roll-forward strategies;
-- explicit OpenCode/provider process-death coverage and stale-resource chaos extensions where they
-  materially protect autonomous convergence.
+- stale-resource chaos extensions only where a newly discovered failure boundary lacks an equivalent
+  deterministic recovery proof.
 
 ## v0.4 — reusable configuration and service/control plane — substantially complete
 
@@ -97,24 +97,25 @@ Implemented:
 - process-level PR checkpoint-race proof reusing the exact external PR through ensure semantics;
 - process-level `ci_wait` restart proof restoring the durable wake timer and automatically resuming the
   same LangGraph run/thread without HITL;
+- real subprocess proof that abrupt OpenCode/executor death is absorbed by a bounded primary retry
+  with identical role/prompt/model and no hidden session continuation or HITL;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **OpenCode/provider process-death hardening** — prove bounded automatic recovery when an executor or
-   model-provider process disappears during a role invocation, without changing target, permissions or
-   LangGraph thread.
-2. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence.
-3. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
+1. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence so a
+   transient CI failure does not trigger unnecessary code repair/replanning.
+2. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
-4. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
+3. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
+4. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
+   core autonomous path is operationally hardened.
 
 ## v0.5 — production autonomous operation
 
 Planned:
 
-- remaining high-value process-death and stale-resource chaos fixtures;
 - flake-aware CI retry only for explicitly classified flaky jobs;
 - cost/token/time budgets per project and run;
 - provider-reported token/cost telemetry and aggregated per-role health statistics;
