@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import os
 import shutil
-import sqlite3
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from langgraph.checkpoint.sqlite import SqliteSaver
 from rich.console import Console
 
 from .config import load_config
@@ -25,6 +24,7 @@ from .opencode_config import (
 from .quality import effective_quality_gates
 from .sandbox import ExecutionSandbox, SandboxPreflightError
 from .spec import compile_contract, is_read_only, sha256_file
+from .storage import open_checkpointer, setup_checkpoint_storage
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -155,13 +155,18 @@ def run(
 ) -> None:
     """Run the autonomous convergence loop until a terminal state or interrupt."""
     cfg = load_config(config)
-    db = sqlite3.connect(cfg.state_dir / "langgraph.sqlite", check_same_thread=False)
-    graph = build_graph(checkpointer=SqliteSaver(db))
-    graph_config = {"configurable": {"thread_id": thread_id}}
-    result = graph.invoke(
-        {"config_path": str(config.resolve()), "thread_id": thread_id},
-        config=graph_config,
-    )
+    postgres_dsn = os.environ.get("CONVERGE_POSTGRES_DSN")
+    setup_checkpoint_storage(postgres_dsn)
+    checkpointer, db = open_checkpointer(cfg.state_dir, postgres_dsn)
+    try:
+        graph = build_graph(checkpointer=checkpointer)
+        graph_config = {"configurable": {"thread_id": thread_id}}
+        result = graph.invoke(
+            {"config_path": str(config.resolve()), "thread_id": thread_id},
+            config=graph_config,
+        )
+    finally:
+        db.close()
     console.print_json(data=result)
 
 
