@@ -1,42 +1,41 @@
 # Pierwsze uruchomienie: PyCharm + OpenCode + OpenWebUI
 
 Ten przewodnik prowadzi od świeżego klona Converge do pierwszego autonomicznego runu na innym
-repozytorium. Docelowo powinieneś edytować **jeden plik projektu**: `converge.yaml`.
+repozytorium. Dla jednego projektu docelowego powinieneś ręcznie utrzymywać **jeden plik**:
+`converge.yaml`.
 
-Converge nie przechowuje wymagań architektonicznych w promptach ani w Skills. Plik architektury jest
-zewnętrznym, read-only Source of Truth, a orkiestrator sprawdza jego SHA-256 podczas workflow.
+Converge nie traktuje historii chatu ani wygenerowanego configu OpenCode jako Source of Truth.
+Architektura docelowa znajduje się w osobnym, read-only Markdown, a orkiestrator przypina jego SHA-256.
 
 ## 1. Zalecany układ katalogów
-
-Najprostszy układ dla jednego projektu docelowego:
 
 ```text
 /workspace/
 ├── converge-orchestrator/          # ten projekt
-├── payments-target/
-│   ├── architecture.md             # READ ONLY, poza repozytorium
-│   ├── repository/                 # lokalny klon repo, które ma być rozwijane
-│   │   ├── .git/
-│   │   └── ...
-│   ├── converge.yaml               # jedyny plik konfiguracji tego projektu
-│   └── .converge/                  # stan generowany przez orkiestrator
-│       ├── contract.json
-│       ├── compliance.json
-│       ├── langgraph.sqlite
-│       ├── opencode.generated.json
-│       ├── evidence/
-│       └── worktrees/
+└── payments-target/
+    ├── architecture.md             # READ ONLY, poza repozytorium
+    ├── repository/                 # lokalny klon repo, które ma być rozwijane
+    │   ├── .git/
+    │   └── ...
+    ├── converge.yaml               # jedyny plik konfiguracji tego projektu
+    └── .converge/                  # stan generowany przez orkiestrator
+        ├── contract.json
+        ├── compliance.json
+        ├── langgraph.sqlite
+        ├── opencode.generated.json
+        ├── evidence/
+        └── worktrees/
 ```
 
-`architecture.md` **nie powinien znajdować się wewnątrz `repository/`**. Dzięki temu Builder nie może
-przypadkowo dodać go do commita, a izolacja worktree jest prostsza.
+`architecture.md` nie powinien znajdować się wewnątrz `repository/`. Builder pracuje wyłącznie w
+worktree i nie powinien mieć możliwości przypadkowego dodania Source of Truth do commita.
 
 ## 2. Otwórz Converge w PyCharm
 
-1. Sklonuj repozytorium Converge.
-2. Otwórz katalog `converge-orchestrator` jako projekt w PyCharm.
-3. Ustaw interpreter Python 3.11, 3.12 lub 3.13.
-4. Utwórz virtualenv, np. `.venv`.
+1. Sklonuj `PeterPirog/converge-orchestrator`.
+2. Otwórz katalog repo jako projekt PyCharm.
+3. Wybierz Python 3.11, 3.12 lub 3.13.
+4. Utwórz `.venv`.
 5. W terminalu PyCharm uruchom:
 
 ```bash
@@ -44,16 +43,16 @@ python -m pip install --upgrade pip
 pip install -e '.[dev]'
 ```
 
-Po instalacji powinny być dostępne polecenia:
+Sprawdź:
 
 ```bash
 converge --help
 converge-api --help
 ```
 
-## 3. Zainstaluj i sprawdź narzędzia wykonawcze
+## 3. Sprawdź narzędzia wykonawcze
 
-W systemowym `PATH` powinny być dostępne:
+Converge celuje w **aktualny stabilny `opencode`**, nie w osobne beta `opencode2`.
 
 ```bash
 git --version
@@ -61,57 +60,41 @@ opencode --version
 gh --version
 ```
 
-Jeśli nie używasz GitHub dla danego projektu, `gh` nie jest wymagane i w `converge.yaml` możesz
-ustawić `github.repo: null`.
-
-Converge używa OpenCode jako repo-centric execution harness. LangGraph steruje kolejnością etapów,
-ale nie zastępuje OpenCode w edycji kodu.
+`gh` jest wymagane tylko, gdy `github.repo` jest ustawione. LangGraph jest trwałym state machine,
+a OpenCode wykonuje repo-centric pracę agentów.
 
 ## 4. Przygotuj repozytorium docelowe
 
-Sklonuj repo, które Converge ma rozwijać:
-
 ```bash
 git clone git@github.com:YOUR_ORG/YOUR_REPO.git /workspace/payments-target/repository
-```
-
-Przed startem bazowy checkout powinien być czysty:
-
-```bash
 cd /workspace/payments-target/repository
 git status
 ```
 
-Nie uruchamiaj Buildera bezpośrednio na `main`. Converge tworzy osobny Git worktree i osobny branch dla
-każdego Task Envelope.
+Bazowy checkout powinien być czysty. Builder nie pracuje bezpośrednio na `main`; Converge tworzy
+osobny branch i Git worktree dla każdego Task Envelope.
 
 ## 5. Przygotuj immutable architecture.md
 
-Umieść wymagania poza repozytorium, np.:
+Umieść wymagania np. tutaj:
 
 ```text
 /workspace/payments-target/architecture.md
 ```
 
-Na Linux/macOS ustaw plik jako read-only:
+Linux/macOS:
 
 ```bash
 chmod 444 /workspace/payments-target/architecture.md
 ```
 
-Na Windows zalecany jest ACL NTFS odbierający bieżącemu kontu prawo zapisu. Sam atrybut `ReadOnly`
-jest słabszym zabezpieczeniem niż ACL i nie powinien być jedyną barierą w środowisku produkcyjnym.
+Na Windows zalecany jest ACL NTFS odbierający prawo zapisu. Sam atrybut `ReadOnly` jest słabszą
+barierą. Przy `project.require_spec_read_only: true` `converge doctor` odmówi startu, gdy plik jest
+zapisywalny.
 
-`converge doctor` odmówi startu, jeżeli `project.require_spec_read_only: true`, a plik ma ustawione bity
-zapisu.
+## 6. Skonfiguruj OpenWebUI
 
-## 6. Skonfiguruj dostęp do modeli przez OpenWebUI
-
-OpenWebUI wystawia endpoint Chat Completions pod `/api/chat/completions` i katalog modeli pod
-`/api/models`. OpenCode może używać tego endpointu jako custom OpenAI-compatible provider.
-
-W OpenWebUI utwórz API key dla konta, które ma dostęp do potrzebnych modeli. Następnie ustaw sekret
-wyłącznie w środowisku procesu Converge/OpenCode.
+OpenWebUI jest domyślnym modelem gateway. Ustaw jego API key wyłącznie w środowisku procesu.
 
 Linux/macOS:
 
@@ -125,28 +108,34 @@ PowerShell:
 $env:OPENWEBUI_API_KEY = 'sk-...'
 ```
 
-Nie wpisuj klucza do `converge.yaml` i nie commituj go do Git.
+Nigdy nie wpisuj wartości klucza do `converge.yaml`.
 
-Sprawdź katalog modeli:
-
-```bash
-curl -s \
-  -H "Authorization: Bearer $OPENWEBUI_API_KEY" \
-  http://127.0.0.1:3000/api/models
-```
-
-Skopiuj dokładne `id` modeli, których chcesz użyć. Te wartości wpiszesz do `models.profiles`.
-
-Jeżeli OpenWebUI działa na innym hoście lub porcie, zmień `models.gateway.base_url`. Dla OpenWebUI
-wartość powinna kończyć się na `/api`, np.:
+Domyślny gateway:
 
 ```yaml
-base_url: http://192.168.1.20:3000/api
+models:
+  gateway:
+    kind: openwebui
+    provider_id: openwebui
+    name: OpenWebUI
+    base_url: http://127.0.0.1:3000/api
+    api_key_env: OPENWEBUI_API_KEY
 ```
 
-## 7. Utwórz jeden converge.yaml
+Jeżeli OpenWebUI działa gdzie indziej, zmień tylko `base_url`.
 
-Skopiuj wzorzec:
+## 7. Zobacz modele widoczne przez gateway
+
+Po skopiowaniu YAML możesz użyć Converge zamiast ręcznego `curl`:
+
+```bash
+converge models --config /workspace/payments-target/converge.yaml
+```
+
+Polecenie wypisuje dokładne `id` z OpenWebUI `/api/models`. `doctor` później sprawdzi, czy modele
+aktywnych agentów rzeczywiście istnieją.
+
+## 8. Skopiuj jeden converge.yaml
 
 ```bash
 cp /workspace/converge-orchestrator/examples/converge.yaml \
@@ -163,73 +152,91 @@ project:
 
 github:
   repo: YOUR_ORG/YOUR_REPO
-
-models:
-  gateway:
-    kind: openwebui
-    base_url: http://127.0.0.1:3000/api
-    api_key_env: OPENWEBUI_API_KEY
-  profiles:
-    planner:
-      model: EXACT_MODEL_ID_FOR_PLANNING
-    builder:
-      model: EXACT_MODEL_ID_FOR_CODING
-    reviewer:
-      model: EXACT_MODEL_ID_FOR_REVIEW
 ```
 
-Role agentów są już podpięte do profili:
+Ścieżki względne są rozwiązywane względem katalogu, w którym leży `converge.yaml`, dzięki czemu
+working directory ustawione przez PyCharm nie zmienia ich znaczenia.
+
+## 9. Domyślne modele agentów
+
+Referencyjna instalacja ma już quality-first routing:
+
+```yaml
+models:
+  profiles:
+    planner:
+      model: deepseek-v4-pro:cloud
+    builder:
+      model: kimi-k2.7-code:cloud
+    reviewer:
+      model: glm-5.3-flash:cloud
+```
+
+Dobór jest celowy:
+
+- **Planner — `deepseek-v4-pro:cloud`**: szeroki reasoning i 1M context do analizy architektury;
+- **Builder — `kimi-k2.7-code:cloud`**: coding-focused long-horizon agent do implementacji;
+- **Reviewer — `glm-5.3-flash:cloud`**: inna rodzina niż Builder, mocne coding/agentic review.
+
+Nie ustawiaj Buildera i Reviewera na ten sam model bez potrzeby. Niezależna rodzina modelu zmniejsza
+ryzyko skorelowanych błędów. Deterministic gates, compliance i CI nadal są ważniejsze niż werdykt LLM.
+
+Dodatkowe rekomendacje i local-only routing są w [MODEL_ROUTING.md](MODEL_ROUTING.md).
+
+Jeśli któregoś ID nie ma w Twoim OpenWebUI, uruchom `converge models` i zmień wyłącznie odpowiedni
+`models.profiles.<role>.model`.
+
+## 10. Właściwości agentów
+
+Profile modeli mówią **jaki model** ma wykonywać rolę. Sekcja `agents` mówi **jak długo i z jakim
+budżetem wykonawczym** może pracować:
 
 ```yaml
 agents:
   planner:
     agent: converge-planner
     model_profile: planner
+    timeout_seconds: 1800
+    steps: 18
+
   builder:
     agent: converge-builder
     model_profile: builder
+    timeout_seconds: 3600
+    steps: 60
+
   reviewer:
     agent: converge-reviewer
     model_profile: reviewer
+    timeout_seconds: 1800
+    steps: 24
 ```
 
-Możesz używać tego samego modelu dla wszystkich ról. Dla lepszej niezależności review zalecane jest
-jednak użycie innego modelu lub przynajmniej osobnej sesji/review profile.
+To są limity, nie cele. Autonomia pozostaje bounded.
 
-## 8. Właściwości modeli i agentów
+Domyślnie `request_body: {}` pozostawia parametry sampling/reasoning ustawieniom providera. Nie
+wymuszamy uniwersalnego niskiego `temperature`, bo modele reasoning i coding mają różne optymalne
+ustawienia. Provider-specific tuning rób dopiero po benchmarku na własnym repo.
 
-Parametry requestu modelu umieszczaj w profilu modelu:
+## 11. Permissions OpenCode
 
-```yaml
-models:
-  profiles:
-    planner:
-      model: my-reasoning-model
-      request_body:
-        temperature: 0.1
-    builder:
-      model: my-coding-model
-      request_body:
-        temperature: 0.1
+Converge generuje kompletne runtime role o wyższym priorytecie niż config znaleziony w target repo.
+Dzięki temu `repository/opencode.json` lub `repository/.opencode/` nie może osłabić granic roli.
+
+Planner i Reviewer są read-only. Builder jest jedynym writerem w worktree, ale ma jawny zakaz m.in.:
+
+```text
+git push
+git reset --hard
+git clean
+gh
+external_directory
+task/subagent delegation
 ```
 
-Parametry wykonawcze roli umieszczaj pod `agents`:
+Integracja Git/GitHub jest wykonywana przez deterministyczny kod orkiestratora dopiero po gate'ach.
 
-```yaml
-agents:
-  builder:
-    agent: converge-builder
-    model_profile: builder
-    timeout_seconds: 2400
-    steps: 40
-```
-
-Jeżeli provider obsługuje warianty OpenCode, możesz ustawić `variant`. Nie zakładaj, że `high`, `max`
-lub inna nazwa istnieje dla każdego modelu; wariant jest provider-specific.
-
-## 9. MCP w tym samym pliku
-
-OpenCode V2 MCP można skonfigurować bez tworzenia osobnego `opencode.json`:
+## 12. MCP w tym samym pliku
 
 ```yaml
 opencode:
@@ -243,104 +250,86 @@ opencode:
           X-API-Key: "{env:DOCS_MCP_API_KEY}"
 ```
 
-Converge kopiuje tę sekcję do generowanego `opencode.generated.json`. Używaj `{env:NAME}` zamiast
-wpisywania sekretów bezpośrednio.
+Converge przekształca neutralne `servers` do formatu stabilnego OpenCode. Używaj `{env:NAME}` zamiast
+sekretów. Włączaj tylko potrzebne serwery MCP; zbyt szeroki katalog tools zwiększa kontekst i ryzyko
+błędnego wyboru narzędzia.
 
-Włączaj tylko MCP potrzebne danej instalacji. Duży katalog narzędzi MCP zwiększa kontekst modelu i
-może pogorszyć jakość działania.
+Per-agent `tool_permissions` mogą otwierać custom/MCP tools, ale nie mogą zmienić chronionych granic
+`edit`, `bash`, `external_directory`, `task`, `read` itd.
 
-## 10. Uwierzytelnij GitHub
-
-Jeżeli używasz PR/CI:
+## 13. Uwierzytelnij GitHub
 
 ```bash
 gh auth login
 gh auth status
 ```
 
-Zalecane ustawienia repozytorium GitHub:
+Zalecane:
 
-- brak bezpośrednich pushy do `main`;
-- wymagane GitHub Actions checks przed merge;
+- brak direct push do `main`;
+- required Actions checks;
 - branch protection/ruleset;
-- token/gh z minimalnym zakresem wymaganym do tworzenia PR i merge przez Integratora.
+- minimalne uprawnienia `gh` potrzebne Integratorowi.
 
-Builder nie dostaje uprawnień do `git push` ani `gh` w profilu OpenCode.
+Builder nie dostaje `gh` ani `git push`.
 
-## 11. Uruchom converge doctor
-
-Przed pierwszym runem:
+## 14. Uruchom converge doctor
 
 ```bash
 converge doctor --config /workspace/payments-target/converge.yaml
 ```
 
-`doctor` sprawdza między innymi:
+`doctor` sprawdza m.in.:
 
-- istnienie repozytorium i architecture.md;
-- read-only architecture.md;
-- obecność `opencode` i opcjonalnie `gh` w PATH;
-- SHA-256 Source of Truth;
-- skompilowane requirement IDs;
-- wykryty stack i effective quality gates;
-- poprawność requirement verifier IDs;
-- rozwiązany model dla każdego agenta;
-- zmienną środowiskową z kluczem gateway;
-- live `/models` i obecność skonfigurowanych modeli;
-- ścieżkę wygenerowanego OpenCode config.
+- repo i architecture path;
+- read-only Source of Truth i SHA-256;
+- `opencode` i opcjonalnie `gh` w PATH;
+- requirement IDs;
+- stack i effective deterministic quality gates;
+- requirement verifier IDs;
+- rozwiązany model każdego aktywnego agenta;
+- obecność ENV z kluczem gateway;
+- live `/api/models` i dostępność wybranych modeli;
+- generated OpenCode config.
 
-Jeżeli pracujesz offline i chcesz pominąć tylko live model catalog check:
+Offline, wyłącznie do pominięcia live catalog check:
 
 ```bash
 converge doctor --offline --config /workspace/payments-target/converge.yaml
 ```
 
-Nie używaj `--offline` jako stałego obejścia błędnego model ID.
+Nie traktuj `--offline` jako obejścia błędnego ID modelu.
 
-## 12. Co jest generowane automatycznie
+## 15. Co jest generowane
 
-Po `doctor` lub pierwszym wywołaniu agenta powstaje:
+Po `doctor` powstaje:
 
 ```text
 <state_dir>/opencode.generated.json
 ```
 
-Plik zawiera:
+Plik zawiera stable OpenCode provider, model catalog, pełne agent role/permissions i MCP. Sekret nie
+jest serializowany; zapisywana jest tylko referencja `{env:OPENWEBUI_API_KEY}`.
 
-- OpenWebUI/OpenAI-compatible provider;
-- wyłącznie nazwę zmiennej ENV z kluczem, nigdy wartość sekretu;
-- model catalog potrzebny profilom;
-- model/variant/steps/request overrides dla agentów;
-- MCP z `converge.yaml`.
+**Nie edytuj tego pliku.** Zmieniaj `converge.yaml`.
 
-**Nie edytuj tego pliku ręcznie.** Zmień `converge.yaml` i wygeneruj go ponownie przez `doctor`.
+## 16. OpenCode lokalnie vs persistent server
 
-## 13. OpenCode lokalnie vs opencode serve
-
-Najprostszy i zalecany pierwszy setup:
+Najprostszy pierwszy setup:
 
 ```yaml
 opencode:
   attach_url: null
 ```
 
-Wtedy każde wywołanie `opencode run` dostaje `OPENCODE_CONFIG` automatycznie od Converge.
+Wtedy każde lokalne `opencode run` dostaje wygenerowany config oraz high-precedence inline runtime
+config od Converge.
 
-Jeżeli chcesz używać długotrwałego serwera OpenCode, najpierw uruchom `doctor`, a następnie wystartuj
-serwer z tym samym wygenerowanym configiem.
-
-Linux/macOS:
+Jeżeli chcesz używać serwera:
 
 ```bash
 OPENCODE_CONFIG=/workspace/payments-target/.converge/opencode.generated.json \
   opencode serve --port 4096
-```
-
-PowerShell:
-
-```powershell
-$env:OPENCODE_CONFIG = 'C:\workspace\payments-target\.converge\opencode.generated.json'
-opencode serve --port 4096
 ```
 
 Następnie:
@@ -350,12 +339,9 @@ opencode:
   attach_url: http://127.0.0.1:4096
 ```
 
-Jeżeli serwer OpenCode działa na innej maszynie, ścieżki w `--dir` dotyczą filesystemu tej maszyny.
-Nie ustawiaj remote `attach_url`, jeśli serwer nie widzi tych samych repo/worktree paths.
+Serwer musi widzieć te same ścieżki repo/worktree.
 
-## 14. Pierwszy run
-
-CLI:
+## 17. Pierwszy autonomiczny run
 
 ```bash
 converge run \
@@ -363,69 +349,58 @@ converge run \
   --thread-id payments-main
 ```
 
-Lub uruchom control-plane API:
+Albo uruchom control-plane API:
 
 ```bash
 converge-api
 ```
 
-Następnie zarejestruj projekt i uruchom run przez API opisane w README.
+Workflow zachowuje immutable intent, one-writer-per-worktree, deterministic gates, independent review,
+bounded repair/replan, GitHub CI i exception-based HITL.
 
-## 15. Jak przełączyć Converge na zupełnie inny projekt
+## 18. Zmiana na zupełnie inny projekt
 
-Nie zmieniaj grafu ani kodu orkiestratora. Utwórz drugi plik, np.:
+Nie zmieniaj grafu. Utwórz np.:
 
 ```text
 /workspace/orders-target/converge.yaml
 ```
 
-Zmień tylko:
+Zmień tylko dane projektu: repo path, architecture path, GitHub repo, ewentualnie model profiles, MCP,
+quality gates/verifiers i limity workflow. To jest podstawowy mechanizm wieloprojektowości Converge.
 
-- `project.repo_path`;
-- `project.requirements_path`;
-- `github.repo`;
-- model profiles, jeśli ten projekt wymaga innych modeli;
-- opcjonalne MCP;
-- quality gates i requirement verifiers;
-- limity workflow.
-
-To jest podstawowy mechanizm wieloprojektowości Converge.
-
-## 16. Najczęstsze problemy
+## 19. Najczęstsze problemy
 
 ### `configured models are not visible in the gateway`
 
-Model ID w `models.profiles.*.model` nie jest identyczny z ID zwracanym przez OpenWebUI `/api/models`.
-Skopiuj dokładne ID i uruchom `doctor` ponownie.
+Uruchom `converge models`, skopiuj dokładne ID i sprawdź uprawnienia API key w OpenWebUI.
 
 ### `missing environment variable OPENWEBUI_API_KEY`
 
-Ustaw sekret w środowisku procesu PyCharm/terminala. Nie dodawaj klucza do YAML.
+Ustaw sekret w środowisku terminala/PyCharm, z którego startuje Converge.
 
 ### `OpenCode executable not found on PATH`
 
-Sprawdź `opencode --version` w **tym samym terminalu/interpreter environment**, z którego uruchamiasz
-Converge. PyCharm może mieć inny PATH niż systemowa powłoka.
+Sprawdź `opencode --version` w dokładnie tym samym środowisku procesu.
 
 ### `architecture requirements must be read-only`
 
-Ustaw realne uprawnienia read-only dla `architecture.md`. Nie wyłączaj tej kontroli w projekcie, który ma
-działać autonomicznie.
+Nadaj realne uprawnienia read-only. Nie wyłączaj tej kontroli w autonomous production run.
 
-### Build/test command nie został wykryty
+### Brak wykrytego build/test command
 
-Dodaj jawny `quality.gates` zamiast zmieniać kod grafu. Auto-discovery jest celowo konserwatywne.
+Dodaj jawny `quality.gates`. Auto-discovery jest celowo konserwatywne.
 
-### OpenCode pyta o zgodę mimo trybu autonomicznego
+### OpenCode blokuje potrzebne polecenie Buildera
 
-Sprawdź `opencode.auto_approve: true`. Jawne `deny` nadal obowiązują; jeśli blokowana jest potrzebna
-operacja, najpierw oceń, czy nie narusza ona modelu bezpieczeństwa one-writer-per-worktree.
+Najpierw sprawdź, czy polecenie nie narusza granic roli. Nie obchodź `git push`, `gh`, external path czy
+destructive Git deny przez `tool_permissions`.
 
 ## Oficjalne referencje integracji
 
-- OpenCode configuration: https://opencode.ai/v2/docs/config
-- OpenCode providers: https://opencode.ai/v2/docs/providers
-- OpenCode agents: https://opencode.ai/v2/docs/agents
-- OpenCode MCP: https://opencode.ai/v2/docs/mcp-servers
+- Stable OpenCode configuration: https://opencode.ai/docs/config/
+- Stable OpenCode providers: https://opencode.ai/docs/providers/
+- Stable OpenCode agents: https://opencode.ai/docs/agents/
+- Stable OpenCode MCP: https://opencode.ai/docs/mcp-servers/
 - OpenWebUI API endpoints: https://docs.openwebui.com/reference/api-endpoints/
 - OpenWebUI server-side tool calling: https://docs.openwebui.com/reference/server-side-tool-calling/
