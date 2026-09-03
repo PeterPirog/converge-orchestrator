@@ -1,110 +1,111 @@
-# Role agentów, dobór modeli i przepływ danych
+# Agent roles, model selection, and data flow
 
-Ten dokument opisuje **kontrakt funkcjonalny**, a nie tylko domyślne nazwy modeli. Model można
-wymienić bez zmiany grafu LangGraph, o ile nowy model spełnia wymagania roli. Role, dozwolone dane,
-uprawnienia, Skills, MCP i deterministic gates pozostają ważniejsze od konkretnego dostawcy LLM.
+This document defines **functional role contracts**, not just the default model names. A model may be
+replaced without changing the LangGraph workflow as long as the replacement satisfies the role's
+requirements. Role boundaries, allowed data, permissions, Skills, MCP access, and deterministic gates
+are more important than a particular LLM vendor.
 
-Najważniejsza zasada: **modele nie orkiestrują siebie nawzajem**. LangGraph i deterministyczny kod
-Converge wybierają następny stan, wymaganie, retry, review, PR, CI i merge. Nie istnieje trwały „czat
-między agentami”. Każde wywołanie OpenCode jest świeżą sesją, a jawne artefakty przejściowe są
-przenoszone przez stan LangGraph/evidence.
+The key rule is: **models do not orchestrate one another**. LangGraph plus deterministic Converge code
+selects the next state, target requirement, retry/replan path, review gate, PR/CI transition, and merge.
+There is no durable agent-to-agent chat. Every OpenCode call is a fresh session and continuity is
+carried only through explicit LangGraph state and evidence artifacts.
 
-## Profil modelu to nie agent
+## A model profile is not an agent
 
-W `converge.yaml` sekcja `models.profiles` opisuje parametry modeli wielokrotnego użytku. Sekcja
-`agents` wiąże profil z konkretną funkcją. Dlatego nazwa profilu `reviewer` nie oznacza jednego
-uniwersalnego Reviewera, a profil `planner` może być użyty zarówno przez Plannera, jak i niezależnego
-Architecture Reviewera.
+`models.profiles` describes reusable model/runtime parameters. `agents` binds one of those profiles to
+a concrete function. Therefore the profile name `reviewer` does not mean one universal Reviewer, and
+the `planner` profile can be used by both Planner and Architecture Reviewer.
 
-Referencyjny routing quality-first wygląda tak:
+The reference quality-first routing is:
 
-| Profil | Model referencyjny | Rola runtime |
+| Profile | Reference model | Runtime function |
 | --- | --- | --- |
 | `scout` | `deepseek-v4-flash:cloud` | Repo Scout |
-| `planner` | `deepseek-v4-pro:cloud` | Planner oraz Architecture Reviewer |
+| `planner` | `deepseek-v4-pro:cloud` | Planner and Architecture Reviewer |
 | `builder` | `kimi-k2.7-code:cloud` | Builder |
 | `reviewer` | `glm-5.3-flash:cloud` | Correctness Reviewer |
 | `security` | `gpt-oss:120b` | Security Reviewer |
 
-Nie należy odczytywać tych nazw jako twardej zależności od producenta. Są to przykładowe profile
-spełniające różne kompromisy: szybkość, reasoning, coding, szerokość kontekstu i niezależność review.
+These are replaceable examples, not hard vendor dependencies. They represent different trade-offs in
+latency, reasoning, coding/tool-loop quality, useful context, and independence of review.
 
-## Dokładne kontrakty ról
+## Exact role contracts
 
 ### Repo Scout
 
-**Cel:** szybko zbudować aktualną, evidence-backed mapę dokładnego base commit przed planowaniem.
+**Purpose:** build a fast, evidence-backed map of the exact base commit before planning.
 
-Scout może czytać repozytorium, strukturę, deklaracje zależności, testy i istotne granice
-architektoniczne. Nie wybiera następnego wymagania, nie tworzy Task Envelope i nie proponuje
-implementacji. Jego wynik jest **advisory**: Planner ma go zweryfikować względem repozytorium i
-niezmiennego Source of Truth.
+Scout may inspect repository structure, dependencies, tests, relevant modules, and visible architecture
+boundaries. It does not select the next target requirement, create the Task Envelope, or design the
+implementation. Its output is advisory: Planner must reason from the immutable Source of Truth and the
+repository itself rather than treating Scout narrative as authority.
 
-Typowy handoff: ścieżki istotnych modułów/testów, granice, ryzykowne powierzchnie, jawne
-niepewności. Nie przekazujemy pełnej historii sesji ani surowego „rozumowania” modelu.
+The normal handoff contains relevant paths, boundaries, risky surfaces, and explicit uncertainties. It
+does not contain a shared chat history or hidden reasoning trace.
 
 ### Planner
 
-**Cel:** dla requirement ID wybranego przez deterministyczny scheduler zaplanować **jeden najmniejszy
-wysokowartościowy krok zbieżności**.
+**Purpose:** for the requirement ID selected by deterministic policy, plan **one smallest valuable and
+verifiable convergence step**.
 
-Planner jest read-only. Otrzymuje target requirement, wymagania architektoniczne potrzebne do decyzji,
-advisory Repo Scout i jawny stan postępu. Zwraca ustrukturyzowany `TaskEnvelope`: cel, allowed paths,
-acceptance criteria, ryzyko, change kind i kontrakt TDD. Nie może zmienić requirement ID na łatwiejszy,
-nie pisze kodu i nie steruje GitHubem.
+Planner is read-only. It receives the deterministic target requirement, relevant architecture
+statements/source anchors, a bounded advisory Scout snapshot, and explicit progress state. It returns
+a structured `TaskEnvelope`: objective, allowed paths, acceptance criteria, risk, change kind, and TDD
+contract. Planner cannot switch to an easier requirement, write implementation code, or control GitHub.
 
 ### Builder
 
-**Cel:** zrealizować dokładnie jeden Task Envelope w izolowanym worktree.
+**Purpose:** implement exactly one validated Task Envelope in an isolated worktree.
 
-Builder jest **jedynym LLM writerem**. Dostaje tylko target requirement statements/source anchors,
-Task Envelope i — gdy dotyczy — zweryfikowane evidence fazy TDD RED. Nie potrzebuje pełnej historii
-Plannera ani narracji Scouta. Może czytać i edytować bieżący worktree oraz uruchamiać lokalne
-narzędzia potrzebne do implementacji/testów. Nie może wykonywać `git push`, `gh`, merge, destructive
-reset/clean ani edytować Source of Truth. Integracja Git/GitHub pozostaje deterministycznym kodem
-Converge.
+Builder is the **only LLM writer**. It receives the exact target requirement statements/source anchors,
+the Task Envelope, and verified TDD RED evidence when applicable. It does not need Scout's complete
+narrative or Planner's session history. It may edit the active worktree and run local implementation and
+test tools, but cannot `git push`, use `gh`, merge, perform destructive reset/clean, edit the immutable
+Source of Truth, or delegate hidden subagents. Git/GitHub integration remains deterministic Converge
+code.
 
 ### Correctness Reviewer
 
-**Cel:** niezależnie znaleźć błędy funkcjonalne, regresje, edge cases, słabe testy i niejawne zmiany
-kompatybilności.
+**Purpose:** independently find behavioral errors, regressions, edge cases, weak tests, and hidden
+compatibility changes.
 
-Jest read-only i ocenia **rzeczywisty diff + kod + Task Envelope + wymagania**, a nie opis Buildera.
-Powinien należeć do innej rodziny modelowej niż Builder, gdy jest to praktyczne, aby ograniczyć
-skorelowany self-review.
+It is read-only and evaluates the **actual diff, relevant surrounding code, Task Envelope, and
+requirements**, not a Builder self-description. When practical, use a model family different from the
+Builder to reduce correlated self-review errors.
 
 ### Architecture Reviewer
 
-**Cel:** wykrywać architectural drift, niewłaściwy kierunek zależności, przekroczenie granic, scope
-expansion, accidental public API changes i rozwiązania lokalnego zadania przez osłabienie docelowej
-architektury.
+**Purpose:** detect architectural drift, invalid dependency direction, boundary violations, scope
+expansion, accidental public API changes, inappropriate coupling, and changes that satisfy a local task
+by weakening the intended architecture.
 
-Jest read-only. Może używać tej samej rodziny modelowej co Planner, ponieważ nie ocenia własnej
-implementacji i działa w świeżej sesji, ale musi być niezależny od Buildera.
+It is read-only. It may use the same model family as Planner because it does not review its own
+implementation and runs in a fresh session, but it should remain independent from Builder.
 
 ### Security Reviewer
 
-**Cel:** niezależnie ocenić security-sensitive część zmiany: authn/authz, secrets, injection,
-command/path handling, insecure defaults, dependency regressions i trust boundaries.
+**Purpose:** independently assess security-sensitive changes: authentication/authorization, secrets,
+injection, command/path handling, insecure defaults, dependency risks, and trust boundaries.
 
-Jest read-only. Preferowany jest model niezależny od Buildera i pozostałych reviewerów. Brak odpowiedzi,
-awaria procesu albo malformed review nie oznacza „braku problemów” — failure-to-review blokuje
-integrację.
+It is read-only. Prefer a model family independent from Builder and, where practical, from the other
+reviewers. No response, process failure, or malformed review is not interpreted as "no security
+problem": failure-to-review blocks integration.
 
-## Deterministyczny Orchestrator nie jest kolejnym agentem LLM
+## The orchestrator is not another LLM agent
 
-Nie dodajemy osobnego modelu „manager/orchestrator”. Taki model zwiększałby ryzyko dryftu celu i
-ukrytych decyzji. Funkcję koordynacji pełni LangGraph + deterministic Python controller. To on:
+Converge deliberately does **not** add a manager/orchestrator model. An LLM manager would introduce a
+second nondeterministic control plane and increase goal-drift risk. Coordination belongs to LangGraph
+plus deterministic Python policy. That layer:
 
-- wybiera target requirement według jawnej polityki;
-- uruchamia Scout/Planner/Builder/Reviewers;
-- pilnuje limitów retry/replan i context budgets;
-- wykonuje deterministic quality/risk/architecture gates;
-- kontroluje worktree, commit/push, PR, CI i opcjonalny merge;
-- odtwarza workflow po crashu;
-- eskaluje HITL dopiero w zdefiniowanych wyjątkach.
+- selects the target requirement using explicit policy;
+- invokes Scout, Planner, Builder, and Reviewers;
+- enforces retry/replan/context budgets;
+- runs deterministic quality, scope, risk, architecture, and requirement gates;
+- owns worktrees, commit/push, PR, CI, and optional merge transitions;
+- restores work after process failure;
+- escalates HITL only for defined exceptions and exhausted bounded recovery.
 
-## Model przepływu pracy
+## Workflow and agent data-flow model
 
 ```mermaid
 flowchart TD
@@ -115,19 +116,19 @@ flowchart TD
     SOT --> LG
     BASE --> SCOUT[Repo Scout\nread-only]
     SCOUT -->|bounded advisory repository map| LG
-    LG -->|deterministic target requirement + advisory map| PLAN[Planner\nread-only]
+    LG -->|target requirement + advisory map| PLAN[Planner\nread-only]
     PLAN -->|validated Task Envelope| LG
     LG --> WT[Isolated worktree + deterministic TDD baseline/RED]
-    WT -->|Task Envelope + exact target requirements + RED evidence| BUILD[Builder\nsole writer]
+    WT -->|Task Envelope + target requirements + RED evidence| BUILD[Builder\nsole writer]
     BUILD -->|candidate worktree| GATES[Deterministic quality / scope / risk / architecture gates]
-    GATES -->|actual diff + Task Envelope + requirements| CR[Correctness Reviewer\nread-only]
-    GATES -->|actual diff + Task Envelope + requirements| AR[Architecture Reviewer\nread-only]
-    GATES -->|actual diff + Task Envelope + requirements| SR[Security Reviewer\nread-only]
+    GATES -->|actual diff + task + requirements| CR[Correctness Reviewer\nread-only]
+    GATES -->|actual diff + task + requirements| AR[Architecture Reviewer\nread-only]
+    GATES -->|actual diff + task + requirements| SR[Security Reviewer\nread-only]
     CR --> AGG[Deterministic review aggregation]
     AR --> AGG
     SR --> AGG
     AGG -->|pass| INT[Deterministic Git integration]
-    AGG -->|reject findings only| LG
+    AGG -->|normalized reject findings| LG
     INT --> PR[GitHub PR / required CI]
     PR -->|pass| MERGE[Deterministic merge + refresh]
     PR -->|failure evidence| LG
@@ -135,35 +136,36 @@ flowchart TD
     LG -->|all mandatory requirements PASS| END[Converged]
 ```
 
-Strzałki oznaczają **jawne artefakty danych**, nie bezpośrednie rozmowy agent-agent. Reviewer nie
-otrzymuje ukrytej sesji Buildera. Builder nie dostaje surowego transcriptu Plannera. Repair loop
-otrzymuje znormalizowane findings i deterministic gate evidence.
+The arrows are **explicit data artifacts**, not direct agent conversations. Reviewers never receive a
+hidden Builder session. Builder does not receive Planner's transcript. Repair receives normalized,
+lane-attributed findings and deterministic gate evidence.
 
-## Dozwolone handoffy danych
+## Allowed data handoffs
 
-| Z | Do | Dozwolony artefakt | Dlaczego |
+| From | To | Allowed artifact | Purpose |
 | --- | --- | --- | --- |
-| Source of Truth | wszystkie potrzebujące role | requirement IDs, statements, source anchors | autorytatywny cel |
-| Scout | Planner | bounded advisory repo map | szybka orientacja, bez trwałej narracji |
-| Planner | Builder | validated Task Envelope | dokładny zakres pracy |
-| TDD controller | Builder | zweryfikowane RED evidence | RED -> GREEN bez osłabiania testu |
-| Builder/worktree | Reviewers | actual diff + niezbędny surrounding code | niezależne evidence |
-| quality/risk gates | controller/repair | structured results | deterministyczna decyzja |
-| Reviewers | Builder repair | zagregowane, lane-attributed findings | naprawa bez transferu sesji reviewera |
-| LangGraph | kolejna iteracja | bounded working-memory fields | kontrolowana ciągłość |
+| Source of Truth | roles that need it | requirement IDs, statements, source anchors | authoritative goal |
+| Scout | Planner | bounded advisory repository map | fast orientation without durable narrative |
+| Planner | Builder | validated Task Envelope | exact bounded work scope |
+| TDD controller | Builder | verified RED evidence | RED -> GREEN without weakening the test |
+| candidate worktree | Reviewers | actual diff + necessary surrounding code | independent evidence |
+| quality/risk gates | controller/repair | structured results | deterministic transition decision |
+| Reviewers | Builder repair | aggregated lane-attributed findings | focused repair without shared sessions |
+| LangGraph | next iteration | bounded working-memory fields | controlled continuity |
 
-Nie są dozwolone jako domyślny handoff: ukryta historia czatu, `--continue`/shared model session,
-provider credentials, pełny katalog state/evidence, surowy output innego agenta bez potrzeby,
-Builder narrative jako dowód dla Reviewera ani credentials MCP przypisane innej roli.
+The following are not default handoffs: hidden chat history, `--continue`/shared model sessions,
+provider credentials, the complete state/evidence directory, irrelevant raw output from another role,
+Builder narrative as review evidence, or MCP credentials assigned to another role.
 
 ## MCP: least privilege per role
 
-Serwery MCP są zdefiniowane centralnie pod `opencode.mcp.servers`, ale **nie powinny być automatycznie
-aktywne dla wszystkich agentów**. Converge traktuje wpis `tool_permissions: <server>_*` jako jawne
-przypisanie MCP do konkretnej roli. W runtime znane serwery nieprzypisane do aktywnej roli są
-`enabled: false`, a ich `{env:SECRET}` nie jest przekazywany do procesu agenta.
+MCP servers are declared centrally under `opencode.mcp.servers`, but they are not automatically active
+for every agent. Converge interprets a role's explicit `tool_permissions: <server>_*` entry as the
+assignment of that MCP server to that role. At runtime, known configured servers not assigned to the
+active role are `enabled: false`; their `{env:SECRET}` references are not forwarded to that agent
+process. An explicitly disabled MCP server remains disabled even if the role grants its tool pattern.
 
-Przykład:
+Example:
 
 ```yaml
 opencode:
@@ -188,31 +190,31 @@ agents:
     tool_permissions: {}
 ```
 
-Tutaj tylko Scout może użyć `docs_*` i tylko jego proces dostaje `DOCS_MCP_API_KEY`. Builder nie
-uruchamia tego serwera i nie otrzymuje jego sekretu.
+Only Scout can use `docs_*`, and only Scout's process receives `DOCS_MCP_API_KEY`. Builder neither
+enables this MCP server nor receives that credential.
 
-Zalecany zakres MCP:
+Recommended MCP scope:
 
-| Rola | Dobre MCP | Nie dawać agentowi |
+| Role | Good MCP candidates | Keep outside agent authority |
 | --- | --- | --- |
-| Scout | read-only code search, dokumentacja, schema/catalog | write/deploy/GitHub mutation |
-| Planner | read-only docs, issue metadata, architecture catalog | write DB, merge, deploy |
-| Builder | project-specific build/test helpers, read-only docs | GitHub push/merge, deployment, secrets admin |
+| Scout | read-only code search, documentation, schema/catalog | writes, deployment, GitHub mutation |
+| Planner | read-only docs, issue metadata, architecture catalog | DB writes, merge, deployment |
+| Builder | project-specific build/test helpers, read-only docs | push/merge, deployment, secrets admin |
 | Correctness Reviewer | read-only repo/docs/test metadata | write tools |
 | Architecture Reviewer | read-only dependency/docs/catalog | write tools |
-| Security Reviewer | read-only security/dependency metadata | credential mutation, deploy/write |
+| Security Reviewer | read-only security/dependency metadata | credential mutation, deployment/write |
 
-Krytyczne operacje Git/GitHub/test policy pozostają deterministic host code, a nie agentowym MCP.
-Dzięki temu niedeterministyczny model nie może sam „przegłosować” gate lub wykonać merge.
+Critical Git/GitHub operations and deterministic gate policy remain host-side deterministic code, not
+agent-controlled MCP. A model therefore cannot bypass a failed gate by invoking a tool or merge itself.
 
-## Skills: role-specific, managed i ukryte dla innych ról
+## Skills: role-specific and managed by Converge
 
-Converge materializuje własne, zaufane Skills poza target repo do
-`<state_dir>/opencode-runtime/skills/` i wskazuje ten katalog przez `OPENCODE_CONFIG_DIR`. Permission
-`skill` jest allowlistą per rola; wildcard `*` jest `deny`, więc przypadkowe global/project Skills nie
-stają się instrukcjami wszystkich agentów.
+Converge materializes trusted runtime Skills outside the target repository under
+`<state_dir>/opencode-runtime/skills/` and points OpenCode at that directory through
+`OPENCODE_CONFIG_DIR`. The `skill` permission is an explicit per-role allowlist with `*` denied, so
+unrelated global/project Skills do not become instructions for every agent.
 
-| Rola | Managed Skills |
+| Role | Managed Skills |
 | --- | --- |
 | Scout | `repo-scout`, `requirements-compliance` |
 | Planner | `bounded-planning`, `requirements-compliance` |
@@ -221,70 +223,75 @@ stają się instrukcjami wszystkich agentów.
 | Architecture Reviewer | `architecture-review`, `requirements-compliance` |
 | Security Reviewer | `security-review`, `requirements-compliance` |
 
-`task` pozostaje denied, dlatego agent nie może uruchamiać ukrytych subagentów i tworzyć drugiego,
-niekontrolowanego kanału pamięci/delegacji.
+`task` remains denied, so an agent cannot create hidden subagents as an uncontrolled memory or
+delegation channel.
 
-## Jak świadomie zastąpić model
+## How to replace a model consciously
 
-Najpierw zachowaj **rolę**, potem wymieniaj profil modelu. Użytkownik powinien ocenić model na zadaniach
-zbliżonych do swojego repo, a nie tylko po liczbie parametrów lub marketingowej długości context window.
+Preserve the **role contract** first, then replace the model profile. Evaluate candidate models on tasks
+similar to the target repository rather than selecting by parameter count or advertised context window
+alone.
 
-| Rola | Cechy krytyczne | Cechy pożądane | Odrzuć model, gdy... |
+| Role | Critical capabilities | Desirable properties | Reject the model when... |
 | --- | --- | --- | --- |
-| Scout | stabilne read/tool calling, dobre code/repo summarization, instruction following | niski latency/koszt, długi kontekst | myli obserwacje z planem, łamie read-only, tool calls są niestabilne |
-| Planner | silny reasoning, ścisłe JSON/schema following, rozumienie architektury, minimal scope | szeroki kontekst, dobre TDD reasoning | często zmienia target, proponuje broad rewrite, nie potrafi zwrócić Task Envelope |
-| Builder | coding accuracy, wieloetapowy tool loop, test literacy, patch discipline | dobre debugging/refactoring, 128k–256k+ użytecznego kontekstu | gubi stan tool loop, psuje testy/API, generuje duże przypadkowe diffy |
-| Correctness Reviewer | code reasoning, adversarial bug finding, edge cases/test/backcompat | inna rodzina niż Builder, długi kontekst | rubber-stamps diff, powtarza narrację Buildera, słabo wykrywa regresje |
-| Architecture Reviewer | dependency/boundary reasoning, requirement adherence, scope discipline | duży kontekst repo/architektury | optymalizuje lokalny kod kosztem Source of Truth albo nie rozpoznaje driftu |
-| Security Reviewer | secure-code reasoning, trust boundaries, auth/injection/path/secret analysis | niezależna rodzina, local/private option | ma wysoki false-negative na security albo ujawnia dane w output/tool calls |
+| Scout | stable read/tool calls, code/repo summarization, instruction following | low latency/cost, useful long context | it turns observations into plans, violates read-only intent, or tool use is unstable |
+| Planner | strong reasoning, strict structured output, architecture understanding, minimal-scope planning | broad useful context, strong TDD reasoning | it changes targets, proposes broad rewrites, or cannot reliably emit Task Envelope JSON |
+| Builder | coding accuracy, long tool-loop stability, test literacy, patch discipline | strong debugging/refactoring, useful 128k-256k+ context | it loses tool-loop state, weakens tests/APIs, or produces large accidental diffs |
+| Correctness Reviewer | code reasoning, adversarial bug finding, edge-case/test/backcompat analysis | different family from Builder, broad context | it rubber-stamps changes or mostly repeats Builder assumptions |
+| Architecture Reviewer | dependency/boundary reasoning, requirement adherence, scope discipline | broad repo/architecture context | it optimizes local code at the expense of Source of Truth or misses drift |
+| Security Reviewer | secure-code reasoning, trust boundaries, auth/injection/path/secret analysis | independent family, local/private option where required | it has unacceptable security false negatives or exposes sensitive data in output/tool calls |
 
-Minimalny praktyczny filtr dla **każdej** roli:
+A practical minimum filter for every role:
 
-1. model musi stabilnie wykonywać instrukcje i format wymagany przez rolę;
-2. jeśli rola używa narzędzi, tool calling musi być powtarzalny;
-3. zadeklarowany `context_tokens` musi mieścić authoritative core + output reserve; Converge nie ucina
-   core po cichu;
-4. model musi przejść mały benchmark na rzeczywistym repo: poprawność struktury output, liczba
-   niepotrzebnych tool calls, latency, koszt i częstość retry;
-5. dla review preferuj co najmniej jedną rodzinę niezależną od Buildera;
-6. nie wybieraj modelu wyłącznie dlatego, że ma największy context window.
+1. The model must reliably follow the role instructions and required output schema.
+2. Tool-using roles require repeatable and correct tool calling.
+3. Declared `context_tokens` must fit authoritative core plus output reserve; Converge does not silently
+   truncate the authoritative core.
+4. Benchmark the candidate on a representative repository: schema adherence, useful tool calls,
+   unnecessary steps, latency, cost, retry rate, and role-specific quality.
+5. Keep at least one review family independent from Builder where practical.
+6. Do not select solely by parameter count or maximum advertised context.
 
-### Wagi przy doborze modelu
+### Suggested search/benchmark weights
 
-Orientacyjne priorytety (5 = krytyczne):
+5 means critical; these are selection priorities, not vendor rankings.
 
-| Cecha | Scout | Planner | Builder | Correctness | Architecture | Security |
+| Capability | Scout | Planner | Builder | Correctness | Architecture | Security |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Reasoning | 3 | 5 | 4 | 5 | 5 | 5 |
-| Coding/tool-loop | 2 | 3 | 5 | 4 | 3 | 4 |
+| Coding/tool loop | 2 | 3 | 5 | 4 | 3 | 4 |
 | Structured output | 4 | 5 | 3 | 5 | 5 | 5 |
-| Długi kontekst | 4 | 5 | 4 | 4 | 5 | 3 |
-| Szybkość/koszt | 5 | 2 | 3 | 3 | 2 | 2 |
-| Niezależność od Buildera | 1 | 2 | — | 5 | 4 | 5 |
+| Useful long context | 4 | 5 | 4 | 4 | 5 | 3 |
+| Latency/cost | 5 | 2 | 3 | 3 | 2 | 2 |
+| Independence from Builder | 1 | 2 | - | 5 | 4 | 5 |
 | Security reasoning | 1 | 2 | 3 | 3 | 3 | 5 |
 
-Wagi są kryterium wyszukiwania/benchmarku, nie automatycznym rankingiem dostawców.
+## Data-isolation audit and fixes
 
-## Audyt izolacji danych
+The runtime review found two concrete overexposure paths and this hardening closes them:
 
-Podczas przeglądu runtime zidentyfikowano dwa konkretne kanały nadmiernej ekspozycji i zostały one
-zamknięte w kodzie:
+1. **Host mode inherited the complete parent `os.environ`.** An agent process could see credentials
+   unrelated to its role. Agent scope now receives a minimal OS environment plus explicit
+   `sandbox.pass_env`, the configured model-gateway credential, role-assigned MCP credentials, and
+   Converge runtime configuration variables.
+2. **Containerized agents received a read-only mount of the complete `state_dir`.** That directory can
+   contain context ledgers, provider-health records, and evidence from other workflow phases. OpenCode
+   agent calls no longer receive the full state mount; only the generated runtime config and managed
+   Skills required for the active role are mounted.
 
-1. **host mode dziedziczył całe `os.environ`** — proces agenta mógł widzieć sekrety niezwiązane ze
-   swoją rolą. Agent scope używa teraz minimalnego środowiska OS + jawnego `sandbox.pass_env` +
-   credentialu gateway + credentials tylko role-assigned MCP + runtime config vars;
-2. **container agent miał read-only mount całego `state_dir`** — był tam m.in. context ledger,
-   provider health i evidence innych faz. OpenCode nie dostaje już pełnego state mount; montowane są
-   tylko generated runtime config i managed Skills potrzebne do wykonania roli.
+In addition, each invocation remains a fresh model session, Skills are role-allowlisted, configured MCP
+servers are disabled when not assigned to the active role, and other-role MCP credentials are not
+forwarded.
 
-Dodatkowo każde wywołanie pozostaje fresh session, Skills są allowlistowane per role, a skonfigurowane
-MCP są w runtime wyłączane dla ról bez jawnego `<server>_*` permission.
+### Residual boundary: host mode is compatibility, not strong isolation
 
-### Pozostałe świadome ograniczenie
+`sandbox.mode: host` is not an OS security boundary. Builder has a local shell and, on the host, can
+technically read files available to the service account. Environment filtering removes the simplest
+credential leak but cannot turn same-user host execution into a sandbox. For autonomous work on
+untrusted repositories or sensitive hosts, use `sandbox.mode: container`, minimal bind mounts, an
+internal agent network, and narrowly scoped credentials.
 
-`host` sandbox jest trybem zgodności, a nie silną granicą bezpieczeństwa OS. Builder ma lokalny shell i
-na hoście może technicznie czytać pliki dostępne dla konta systemowego. Filtrowanie env usuwa
-najprostszy przeciek sekretów, lecz pełna izolacja poufnych danych wymaga `sandbox.mode: container`,
-minimalnych mountów, wewnętrznej sieci agentów i wąsko scoped credentials. Target/global OpenCode
-config może również definiować własne pluginy/MCP; inline permissions blokują ich narzędzia, ale dla
-untrusted repository hardened container pozostaje obowiązkowym profilem deploymentowym.
+Target/global OpenCode configuration can also define plugins or MCP entries. High-precedence Converge
+permissions deny unrelated tools and role environment filtering withholds unrelated secrets, but a
+hardened container remains the required deployment profile when repository configuration itself is not
+trusted.
