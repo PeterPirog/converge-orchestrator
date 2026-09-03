@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from .registry import ControlRegistry
@@ -24,6 +25,11 @@ def _postgres_components():
             "install converge-orchestrator[postgres]"
         ) from exc
     return PostgresSaver, Connection, dict_row
+
+
+def _postgres_serializer() -> JsonPlusSerializer:
+    """Reject unregistered Python types if shared checkpoint storage is compromised."""
+    return JsonPlusSerializer(allowed_msgpack_modules=None)
 
 
 def create_control_registry(registry_path: Path, postgres_dsn: str | None = None) -> Any:
@@ -52,7 +58,7 @@ def setup_checkpoint_storage(postgres_dsn: str | None = None) -> None:
         row_factory=dict_row,
     )
     try:
-        saver = PostgresSaver(connection)
+        saver = PostgresSaver(connection, serde=_postgres_serializer())
         saver.setup()
     finally:
         connection.close()
@@ -71,7 +77,7 @@ def open_checkpointer(
             prepare_threshold=0,
             row_factory=dict_row,
         )
-        return PostgresSaver(connection), connection
+        return PostgresSaver(connection, serde=_postgres_serializer()), connection
 
     state_dir.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(
