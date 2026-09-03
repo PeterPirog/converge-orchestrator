@@ -257,6 +257,23 @@ def test_opencode_agent_ids_must_be_unique(tmp_path: Path) -> None:
         ProjectConfig.model_validate(raw)
 
 
+def test_agent_fallback_profiles_are_bounded_known_and_distinct(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["agents"]["planner"]["fallback_model_profiles"] = ["missing"]
+    with pytest.raises(ValidationError, match="unknown model profiles"):
+        ProjectConfig.model_validate(raw)
+
+    raw = _nested_config(tmp_path)
+    raw["agents"]["planner"]["fallback_model_profiles"] = ["builder", "builder"]
+    with pytest.raises(ValidationError, match="must not contain duplicates"):
+        ProjectConfig.model_validate(raw)
+
+    raw = _nested_config(tmp_path)
+    raw["agents"]["planner"]["fallback_model_profiles"] = ["planner"]
+    with pytest.raises(ValidationError, match="must not repeat the primary"):
+        ProjectConfig.model_validate(raw)
+
+
 def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: Path) -> None:
     cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
     adapter = OpenCodeAdapter(cfg)
@@ -350,6 +367,8 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert profiles["planner"]["context_tokens"] == 1048576
     assert profiles["builder"]["model"] == "kimi-k2.7-code:cloud"
     assert profiles["builder"]["context_tokens"] == 262144
+    assert profiles["builder_fallback"]["model"] == "qwen3-coder-next:cloud"
+    assert profiles["builder_fallback"]["context_tokens"] == 262144
     assert profiles["reviewer"]["model"] == "glm-5.3-flash:cloud"
     assert profiles["reviewer"]["context_tokens"] == 1048576
     assert profiles["security"]["model"] == "gpt-oss:120b"
@@ -361,6 +380,10 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["agents"]["correctness_reviewer"]["steps"] == 24
     assert raw["agents"]["architecture_reviewer"]["steps"] == 24
     assert raw["agents"]["security_reviewer"]["steps"] == 24
+    assert raw["agents"]["builder"]["fallback_model_profiles"] == [
+        "builder_fallback"
+    ]
+    assert all(agent["provider_retries"] == 0 for agent in raw["agents"].values())
     assert set(raw["agents"]) == {
         "scout",
         "planner",

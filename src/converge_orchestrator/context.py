@@ -69,16 +69,25 @@ def estimate_tokens(text: str) -> int:
     return math.ceil(len(text.encode("utf-8")) / _ESTIMATED_BYTES_PER_TOKEN)
 
 
-def _profile_limits(config: ProjectConfig, role: str) -> tuple[int | None, int | None]:
+def _profile_limits(
+    config: ProjectConfig,
+    role: str,
+    model_profile: str | None = None,
+) -> tuple[int | None, int | None]:
     agent = config.agents[role]
-    if not agent.model_profile:
+    profile_name = model_profile or agent.model_profile
+    if not profile_name:
         return None, None
-    profile = config.model_profiles[agent.model_profile]
+    profile = config.model_profiles[profile_name]
     return profile.context_tokens, profile.output_tokens
 
 
-def _input_budget(config: ProjectConfig, role: str) -> tuple[int | None, int | None, str]:
-    context_limit, configured_output = _profile_limits(config, role)
+def _input_budget(
+    config: ProjectConfig,
+    role: str,
+    model_profile: str | None = None,
+) -> tuple[int | None, int | None, str]:
+    context_limit, configured_output = _profile_limits(config, role, model_profile)
     if context_limit is None:
         return None, None, "unknown_model_limit"
     output_reserve = max(config.context_output_reserve_tokens, configured_output or 0)
@@ -112,13 +121,15 @@ def prepare_prompt(
     config: ProjectConfig,
     role: str,
     prompt: str | PromptEnvelope,
+    *,
+    model_profile: str | None = None,
 ) -> tuple[str, ContextReport]:
     envelope = prompt if isinstance(prompt, PromptEnvelope) else PromptEnvelope(core=prompt)
     invocation_id = uuid.uuid4().hex
     core = envelope.core.strip()
     core_tokens = estimate_tokens(core)
-    input_budget, output_reserve, status = _input_budget(config, role)
-    context_limit, _ = _profile_limits(config, role)
+    input_budget, output_reserve, status = _input_budget(config, role, model_profile)
+    context_limit, _ = _profile_limits(config, role, model_profile)
     report = ContextReport(
         invocation_id=invocation_id,
         role=role,

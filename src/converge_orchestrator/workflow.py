@@ -285,6 +285,13 @@ def build(state: WorkflowState) -> WorkflowState:
         builder_prompt(task, _requirements(state)),
         Path(state["worktree"]),
     )
+    if context := getattr(result, "context", None):
+        _evidence(state).write_json(
+            state["run_id"],
+            task.id,
+            "context-build.json",
+            context,
+        )
     return {
         **state,
         "message": result.output,
@@ -371,6 +378,13 @@ def review(state: WorkflowState) -> WorkflowState:
         reviewer_prompt(task, patch, requirements),
         worktree,
     )
+    if context := getattr(result, "context", None):
+        store.write_json(
+            state["run_id"],
+            task.id,
+            "context-review.json",
+            context,
+        )
     if result.ok:
         review_result = ReviewResult.model_validate(_json_object(result.output))
     else:
@@ -448,9 +462,17 @@ def repair(state: WorkflowState) -> WorkflowState:
         ),
         Path(state["worktree"]),
     )
+    repair_attempt = state.get("repair_attempts", 0) + 1
+    if context := getattr(result, "context", None):
+        _evidence(state).write_json(
+            state["run_id"],
+            task.id,
+            f"context-repair-{repair_attempt:02d}.json",
+            context,
+        )
     return {
         **state,
-        "repair_attempts": state.get("repair_attempts", 0) + 1,
+        "repair_attempts": repair_attempt,
         "message": result.output,
         "status": "repaired" if result.ok else "repair_failed",
     }

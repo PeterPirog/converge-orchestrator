@@ -13,8 +13,8 @@ OpenWebUI jest punktem operatorskim, a GitHub jest zewnętrzną barierą PR/CI/m
 
 Aktualnie **14 z 15 obszarów** jest zgodnych albo zaimplementowanych mocniej niż w referencji, a jeden
 obszar (`MCP jako szyna narzędziowa`) pozostaje częściowy z wyboru architektonicznego. Nie oznacza to,
-że projekt jest już production-complete: pozostały hardening crash/chaos, deterministic architecture
-analyzers, szersze compatibility adapters, provider fallback i produkcyjny multi-worker storage.
+że projekt jest już production-complete: pozostały hardening crash/chaos, szersze cross-language
+compatibility/architecture adapters i produkcyjny multi-worker storage.
 
 Najważniejsze wcześniejsze luki operacyjne zostały istotnie zmniejszone. LangGraph ma trwałe run leases,
 retry-safe side effects i checkpointowane oczekiwanie na GitHub CI. Worktree utworzony przed crashem
@@ -24,8 +24,8 @@ timer po restarcie z checkpointu.
 
 Warstwa GitHub weryfikuje także lokalny `origin`, klasyczne branch protection oraz efektywne
 `required_status_checks` z GitHub Rulesets. Gdy polityki chronionej gałęzi nie można odczytać lub jest
-malformed, CI pozostaje `pending` — nigdy false-PASS. Największą pozostałą luką recovery jest teraz
-**ownership-aware stale worktree/branch cleanup oraz pełny E2E chaos suite**, a nie sam checkpointing.
+malformed, CI pozostaje `pending` — nigdy false-PASS. Ownership-aware cleanup jest już wdrożony;
+największą pozostałą luką recovery jest pełny E2E chaos suite, a nie sam checkpointing.
 
 ## Macierz zbieżności
 
@@ -36,7 +36,7 @@ malformed, CI pozostaje `pending` — nigdy false-PASS. Największą pozostałą
 | Deterministyczny kontroler nad LLM | **STRONGER** | LangGraph + Pydantic state + policy code; LLM nie może ominąć gate, sterować merge ani sam wytworzyć hard-block evidence | brak krytycznej luki |
 | Planner / Worker / Reviewer | **STRONGER** | Scout RO, Planner RO, Builder jako jedyny writer, niezależne correctness/architecture/security review lanes RO | specialty analyzers mogą być rozszerzane |
 | Autonomiczny TDD / repair loop | **ALIGNED** | behavior task wymaga baseline, test-only RED, novel literal marker, deterministic test-artifact check, SHA freeze i GREEN; bounded repair/replan; brak human bypass | `change_kind` może być dalej wzmacniany regułami językowymi |
-| Izolacja Git | **STRONGER** | osobny deterministic worktree per task, safe adoption po crashu, RO shared Git metadata w sandboxie | ownership-aware stale worktree/branch GC i chaos tests |
+| Izolacja Git | **STRONGER** | osobny deterministic worktree per task, safe adoption po crashu, RO shared Git metadata w sandboxie, ownership-aware terminal-resource GC | pełne E2E chaos tests |
 | Code review jako bariera przed dryfem | **STRONGER** | deterministic risk scan przed semantic review; trzy niezależne lanes; reject albo reviewer failure blokuje integration; secret material nie trafia do reviewerów | dalsze specialty lanes opcjonalne |
 | GitHub PR + CI | **STRONGER** | retry-safe push/PR/merge, checkpointable CI machine wait, origin validation, classic branch protection + effective Rulesets required checks, App-ID-aware matching, fail-closed protected policy | jawna flaky-job retry policy i dodatkowe E2E failure tests |
 | MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do OpenCode; MCP dostępne dla agentów zgodnie z rolą | część krytycznych operacji Git/GitHub/test policy celowo pozostaje deterministycznym kodem zamiast delegacji do MCP |
@@ -44,7 +44,7 @@ malformed, CI pozostaje `pending` — nigdy false-PASS. Największą pozostałą
 | Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne, model profiles, agents, MCP, sandbox, quality, verifiers i workflow | GUI editor opcjonalny |
 | Minimalny HITL | **STRONGER** | HITL tylko dla risk policy/ambiguity lub wyczerpania bounded recovery; failing deterministic gates, hard secret BLOCK i brak RED nie są approvable | compatibility adapters mogą dalej zmniejszać eskalacje |
 | Least privilege / sandbox | **STRONGER** | role permissions + container boundary: RO Scout/Planner/Reviewers, RW tylko Builder worktree, RO Git metadata, read-only root, cap-drop, no-new-privileges, resource limits, ENV/network policy i timeout cleanup | pinned production images i deployment-specific hardening |
-| Dual-memory / context rotation | **ALIGNED** | świeża sesja OpenCode per agent call; continuity w LangGraph/evidence; authoritative core bez silent truncation; advisory-only compaction | provider-reported token/cost telemetry |
+| Dual-memory / context rotation | **ALIGNED** | świeża sesja OpenCode per agent attempt; continuity w LangGraph/evidence; authoritative core bez silent truncation; advisory-only compaction; bounded jawny model fallback z profile-specific budgets | provider-reported token/cost telemetry |
 | Evidence + compliance | **STRONGER** | LangGraph/SQLite checkpoints, event/evidence bundles, persistent compliance, verifier evidence, TDD RED/GREEN, risk fingerprint, CI policy evidence i context ledger | produkcyjny shared storage, backup i metrics/tracing |
 
 ## LangGraph pozostaje źródłem prawdy o przebiegu
@@ -97,9 +97,9 @@ jako `ensure`, a nie `create blindly`:
   śmierci procesu może zostać przejęty po expiry;
 - checkpointowane CI wait nie utrzymuje lease przez okres bezczynności.
 
-Pozostały hardening nie polega już na „dodaniu checkpointów”, lecz na bezpiecznym sprzątaniu zasobów.
-Automatyczny GC nie może skasować worktree wskazywanego przez active/recoverable/waiting run. Musi być
-oparty na jawnej własności zasobu i terminalnym stanie runu.
+Pozostały hardening nie polega już na „dodaniu checkpointów”. Automatyczny GC ma trwałe rekordy
+własności i chroni worktree wskazywane przez active/recoverable/waiting run; główną luką jest pełny
+E2E chaos suite potwierdzający te własności przy kill/restart w rzeczywistym procesie.
 
 ## GitHub remote policy
 
@@ -140,6 +140,11 @@ budżetu core failuje przed model call; kompaktowane mogą być jedynie sekcje a
 Review jest równoległe wyłącznie dla read-only lanes. Deterministyczny agregator wymaga wszystkich
 skonfigurowanych lanes; execution failure reviewera nie staje się PASS.
 
+Awaria wykonania modelu może uruchomić wyłącznie skończoną, jawnie skonfigurowaną sekwencję primary
+retry i fallback profiles. Każda próba zachowuje role permissions i świeżą sesję, ponownie przechodzi
+context budget oraz zapisuje model/profile/exit evidence bez raw output. Malformed output albo
+semantic reject nie są maskowane jako provider failure.
+
 `ExecutionSandbox` otacza OpenCode, quality gates i requirement verifiers. Deterministyczny Git/GitHub
 integrator pozostaje na hoście. Builder jest jedynym writerem worktree; reszta ról ma mount RO. W
 container mode działają read-only root, drop capabilities, no-new-privileges, limity zasobów, tmpfs,
@@ -161,15 +166,13 @@ SHA-256 dokładnego candidate diffu i wygasa po repair.
 
 Kolejność prac po domknięciu effective GitHub policy:
 
-1. **Ownership-aware crash/chaos completion** — bezpieczny stale worktree/branch GC i E2E kill/restart
-   testy dla service/OpenCode/integrate/CI-wait.
-2. **Deterministic architecture analyzers** — AST/import/dependency rules niezależne od project scripts
-   i oceny LLM.
-3. **Cross-language compatibility adapters** — public API/data migration safety i bezpieczne
+1. **Cross-language compatibility adapters** — public API/data migration safety i bezpieczne
    shim/roll-forward strategies redukujące HITL.
-4. **Provider/model resilience** — bounded retries/fallback z evidence, bez ukrytej zmiany policy.
-5. **Production state + observability** — PostgreSQL checkpointer/control registry, backup,
+2. **Crash/chaos completion** — E2E kill/restart testy dla service/OpenCode/provider/integrate/CI-wait.
+3. **Flake-aware CI policy** — selektywny retry tylko dla jawnie sklasyfikowanych flaky jobs.
+4. **Production state + observability** — PostgreSQL checkpointer/control registry, backup,
    OpenTelemetry/metrics i opcjonalny LangSmith bez przenoszenia evidence poza system.
+5. **Cross-language architecture analyzers** — deterministic dependency rules poza Python AST/import.
 
 ## Kryterium docelowe
 

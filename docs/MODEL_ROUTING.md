@@ -12,6 +12,7 @@ nie zastępuje deterministic quality gates, ale zwiększa wartość semantic rev
 
 | Rola | Domyślny model | Context | Dlaczego |
 | --- | --- | ---: | --- |
+| Repo Scout | `deepseek-v4-flash:cloud` | 1,048,576 | szybka, read-only mapa aktualnego base commit |
 | Planner | `deepseek-v4-pro:cloud` | 1,048,576 | frontier reasoning + tools/thinking; analiza architektury i wybór najmniejszego kolejnego kroku |
 | Builder | `kimi-k2.7-code:cloud` | 262,144 | coding-focused long-horizon agent do wieloetapowego software engineering |
 | Correctness Reviewer | `glm-5.3-flash:cloud` | 1,048,576 | niezależna rodzina od Buildera; zachowanie, edge cases, testy i compatibility |
@@ -30,6 +31,24 @@ bezpieczeństwa. Failure-to-review jest failure-to-integrate.
 Dokładne limity kontekstu są zapisane w `examples/converge.yaml` jako `context_tokens`. Converge
 przekłada je na stable OpenCode `provider.models.<id>.limit.context`, dzięki czemu OpenCode może
 zarządzać compaction względem rzeczywistego limitu custom gateway.
+
+## Jawny bounded retry i fallback
+
+Każda rola może mieć `provider_retries` (0–3 dodatkowe próby primary modelu) oraz uporządkowane
+`fallback_model_profiles` (maksymalnie cztery profile, każdy użyty raz). Referencyjny preset ustawia
+`provider_retries: 0`, aby nie czekać ponownie na niedostępny model, i przechodzi bezpośrednio do
+jawnego fallbacku. Profil fallback może wskazać inny model w OpenWebUI albo innego istniejącego
+providera OpenCode.
+
+Failover nie zmienia roli ani polityki: nowe wywołanie ma świeżą sesję, identyczny system prompt,
+permissions, write/read-only boundary i ten sam LangGraph state. Zmieniane są wyłącznie jawne
+parametry profilu modelu. Converge ponownie liczy context budget; zbyt mały profil nie otrzyma cicho
+uciętego authoritative core. Non-zero execution, timeout albo exception mogą uruchomić następną
+próbę, lecz malformed JSON i semantic rejection pozostają normalnym wynikiem workflow.
+
+Każda próba zapisuje role/model/profile/exit status do `<state_dir>/provider-health.jsonl` bez raw
+output. Wybrany model i cała bounded lista prób trafiają również do context evidence fazy, więc
+failover nie jest ukrytą zmianą policy.
 
 Domyślne profile pozostawiają `request_body: {}`. Jest to świadome: modele reasoning/coding mają
 provider-specific ustawienia i ich optymalnych parametrów nie należy zgadywać w uniwersalnym
@@ -54,18 +73,18 @@ Builder pozostaje jedynym writerem.
 Builder dostaje ten agregat w repair loop, więc może naprawić wszystkie blocking findings w jednej
 kolejnej iteracji.
 
-## Kandydaci do kolejnych ról
+## Profile zapasowe
 
 Po aktywacji parallel review kolejne przydatne role/model policies są następujące:
 
-| Przyszła rola | Model | Context | Zastosowanie |
+| Profil | Model | Context | Zastosowanie |
 | --- | --- | ---: | --- |
-| Repo Scout / Triage | `deepseek-v4-flash:cloud` | 1,048,576 | szybkie mapowanie repo, logów i dużego kontekstu bez używania Plannera Pro |
 | Local long-horizon fallback | `laguna-s-2.1:latest` | 262,144 | agentic coding i długie zadania bez zależności od cloud; bardzo duże wymagania pamięciowe |
 | Coding fallback | `qwen3-coder-next:cloud` | 262,144 | coding/tool use jako zapasowy model implementacyjny |
 
-Repo Scout i provider failover nie są jeszcze aktywne w grafie. Nie należy dodawać nowych ról do
-`workflow.review_roles`, jeśli rola nie jest jednym z jawnie obsługiwanych reviewerów.
+Repo Scout i bounded model failover są aktywne bez dodawania nowych przejść LangGraph. Nie należy
+dodawać nowych ról do `workflow.review_roles`, jeśli rola nie jest jednym z jawnie obsługiwanych
+reviewerów.
 
 ## Dlaczego nie jeden model wszędzie
 

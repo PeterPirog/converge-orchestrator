@@ -174,6 +174,14 @@ models:
       variant: null
       request_body: {}
 
+    builder_fallback:
+      # Explicit second model for execution failure; tried once after the primary budget.
+      model: qwen3-coder-next:cloud
+      name: Qwen 3 Coder Next - implementation fallback
+      context_tokens: 262144
+      variant: null
+      request_body: {}
+
     reviewer:
       # Correctness review lane. Independent family from Builder, 1M context.
       model: glm-5.3-flash:cloud
@@ -204,6 +212,9 @@ agents:
     model_profile: scout
     timeout_seconds: 900
     steps: 12
+    # Ordered, explicit failover only. Every fallback is a fresh session with the same role policy.
+    fallback_model_profiles: [planner]
+    provider_retries: 0
     tool_permissions: {}
 
   planner:
@@ -212,6 +223,8 @@ agents:
     model_profile: planner
     timeout_seconds: 1800
     steps: 18
+    fallback_model_profiles: [reviewer]
+    provider_retries: 0
     tool_permissions: {}
 
   builder:
@@ -219,6 +232,8 @@ agents:
     model_profile: builder
     timeout_seconds: 3600
     steps: 60
+    fallback_model_profiles: [builder_fallback]
+    provider_retries: 0
     # Builder has edit + local shell access, while git push/gh/external paths stay denied.
     tool_permissions: {}
 
@@ -227,6 +242,8 @@ agents:
     model_profile: reviewer
     timeout_seconds: 1800
     steps: 24
+    fallback_model_profiles: [planner]
+    provider_retries: 0
     tool_permissions: {}
 
   architecture_reviewer:
@@ -234,6 +251,8 @@ agents:
     model_profile: planner
     timeout_seconds: 1800
     steps: 24
+    fallback_model_profiles: [reviewer]
+    provider_retries: 0
     tool_permissions: {}
 
   security_reviewer:
@@ -241,6 +260,8 @@ agents:
     model_profile: security
     timeout_seconds: 1800
     steps: 24
+    fallback_model_profiles: [planner]
+    provider_retries: 0
     tool_permissions: {}
 
 quality:

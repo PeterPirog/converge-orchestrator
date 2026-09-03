@@ -313,7 +313,8 @@ repeated inability to make deterministic progress.
 
 ## Remaining hardening boundary
 
-OpenCode permission rules are not a kernel security boundary. Strong autonomous operation still needs a
-sandbox profile with explicit filesystem/network/process limits, especially for untrusted repositories.
-Context-budget/session-rotation policy and the OpenWebUI Function operator bridge are also remaining
-operational hardening milestones rather than reasons to weaken the current deterministic core.
+The container sandbox, fresh-session context budgets, OpenWebUI operator bridge and bounded model
+fallback are implemented. Production deployments still need project-specific pinned sandbox images,
+cross-language architecture/compatibility analyzers, broader kill/restart chaos fixtures and shared
+multi-worker state/observability. None of those gaps is a reason to weaken the deterministic LangGraph
+core, immutable intent, one-writer boundary or integration gates.
