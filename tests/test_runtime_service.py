@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 
+from converge_orchestrator.models import ProjectConfig
+from converge_orchestrator.remote import RemoteValidationError
 from converge_orchestrator.runtime_service import ScheduledRunController
 
 
@@ -88,3 +91,31 @@ def test_waiting_ci_counts_as_active_project_run() -> None:
 
     with pytest.raises(RuntimeError, match="already has active run"):
         controller.start_run("project")
+
+
+def test_registration_rejects_github_origin_mismatch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    requirements = tmp_path / "architecture.md"
+    requirements.write_text("Architecture\n", encoding="utf-8")
+    cfg = ProjectConfig(
+        repo_path=repo,
+        requirements_path=requirements,
+        github_repo="owner/repo",
+        agents={},
+    )
+    controller = _controller()
+
+    with (
+        patch("converge_orchestrator.runtime_service.load_config", return_value=cfg),
+        patch(
+            "converge_orchestrator.runtime_service.validate_origin_repository",
+            side_effect=RemoteValidationError(
+                "Git origin mismatch: expected owner/repo, found owner/other"
+            ),
+        ),
+    ):
+        with pytest.raises(ValueError, match="Git origin mismatch"):
+            controller.register_project("project", tmp_path / "project.yaml")
+
+    controller.registry.register_project.assert_not_called()
