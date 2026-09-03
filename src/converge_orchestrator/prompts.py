@@ -38,7 +38,7 @@ def planner_prompt(requirements: list[Requirement], iteration: int) -> str:
             "mode": "required|not_applicable",
             "test_paths": ["tests/**"],
             "test_gate": None,
-            "expected_failure_pattern": "specific new-test failure regex",
+            "expected_failure_pattern": "literal marker unique to the new failing test",
             "rationale": "Why red-before-green is applicable or not applicable",
         },
     }
@@ -52,11 +52,13 @@ Classify the task honestly:
 - docs/config/test_only: only that surface changes;
 - other: none of the above.
 Behavior-changing tasks MUST use tdd.mode=required. Declare test_paths that may change during the RED
-phase and a specific expected_failure_pattern that should appear only after the new failing test is
-added. `test_gate` may name an existing configured/discovered deterministic test gate; null means the
-orchestrator deterministically chooses the first available test gate. Never invent or return an
-arbitrary shell command for TDD. If no deterministic test gate can exercise the desired behavior,
-plan a smaller test-infrastructure/test_only task first instead of bypassing TDD.
+phase and a specific expected_failure_pattern containing a LITERAL output marker that should appear
+only after the new failing test is added. This value is not a regular expression and should identify
+the new assertion/test specifically. `test_gate` may name an existing configured/discovered
+deterministic test gate; null means the orchestrator deterministically chooses the first available
+test gate. Never invent or return an arbitrary shell command for TDD. If no deterministic test gate
+can exercise the desired behavior, plan a smaller test-infrastructure/test_only task first instead of
+bypassing TDD.
 For refactor/docs/config/test_only/other use tdd.mode=not_applicable with a concise rationale.
 Return ONLY JSON matching this shape: {json.dumps(schema)}
 Iteration: {iteration}
@@ -78,8 +80,9 @@ def builder_prompt(
 TDD RED EVIDENCE:
 {json.dumps(red_evidence, ensure_ascii=False, indent=2)}
 The orchestrator has already verified a test-only RED phase against the pre-change implementation.
-Preserve the intent of that test and now implement the smallest production change needed to make the
-same deterministic test gate pass. Do not weaken/delete the test merely to obtain GREEN.
+Preserve the exact frozen RED test artifact and now implement the smallest production change needed
+to make the same deterministic test gate pass. Do not modify, weaken, delete, skip or xfail the frozen
+RED test; GREEN verifies its SHA-256 before accepting the result.
 """
     return f"""Implement the task below in this isolated git worktree.
 The architecture requirements are immutable. The orchestrator has supplied the exact target
@@ -109,9 +112,9 @@ def tdd_red_prompt(
     return f"""Prepare ONLY the failing-test (RED) phase for the task below.
 Do not implement or modify production behavior. The orchestrator will reject this phase unless every
 changed file is inside tdd.test_paths and the declared deterministic test gate produces the expected
-new failure against the old implementation. Do not disable existing tests, weaken assertions, add
-skip/xfail markers, or manufacture a failure unrelated to the requested behavior. Keep the test
-minimal and evidence-backed. Do not push or merge.
+new literal failure marker against the old implementation. Do not disable existing tests, weaken
+assertions, add skip/xfail markers, or manufacture a failure unrelated to the requested behavior.
+Keep the test minimal and evidence-backed. Do not push or merge.
 {evidence}
 TARGET REQUIREMENTS:
 {contract_excerpt(relevant, limit=len(relevant))}
@@ -169,7 +172,7 @@ def repair_prompt(
     return f"""Repair the current implementation without expanding scope.
 Keep requirements unchanged. Fix all required quality-gate or review failures and rerun relevant
 tests. Stay inside the original Task Envelope. If the task has verified TDD RED evidence, preserve
-the intent of that test; do not weaken/delete/skip it to obtain GREEN. Do not push or merge.
+the frozen RED test exactly; do not weaken/delete/skip it to obtain GREEN. Do not push or merge.
 TARGET REQUIREMENTS:
 {contract_excerpt(relevant, limit=len(relevant))}
 TASK: {task.model_dump_json(indent=2)}
