@@ -33,11 +33,33 @@ def planner_prompt(requirements: list[Requirement], iteration: int) -> str:
         "max_diff_lines": 400,
         "risk": "medium",
         "risk_flags": [],
+        "change_kind": "behavior|refactor|docs|config|test_only|other",
+        "tdd": {
+            "mode": "required|not_applicable",
+            "test_paths": ["tests/**"],
+            "test_gate": None,
+            "expected_failure_pattern": "literal marker unique to the new failing test",
+            "rationale": "Why red-before-green is applicable or not applicable",
+        },
     }
     return f"""You are the planning agent in an autonomous software convergence system.
 The architecture requirements are immutable. Never propose changing them.
 Select ONE smallest high-value change that moves the repository toward compliance.
 Inspect the repository before deciding. Avoid broad rewrites and unrelated modernization.
+Classify the task honestly:
+- behavior: changes observable runtime behavior, fixes a behavioral bug, or adds behavior;
+- refactor: preserves observable behavior;
+- docs/config/test_only: only that surface changes;
+- other: none of the above.
+Behavior-changing tasks MUST use tdd.mode=required. Declare test_paths that may change during
+RED and a specific expected_failure_pattern containing a LITERAL output marker that should
+appear only after the new failing test is added. This value is not a regular expression and
+should identify the new assertion/test specifically. `test_gate` may name an existing
+configured/discovered deterministic test gate; null means the orchestrator deterministically
+chooses the first available test gate. Never invent or return an arbitrary shell command for
+TDD. If no deterministic test gate can exercise the desired behavior, plan a smaller
+ test-infrastructure/test_only task first instead of bypassing TDD.
+For refactor/docs/config/test_only/other use tdd.mode=not_applicable with a concise rationale.
 Return ONLY JSON matching this shape: {json.dumps(schema)}
 Iteration: {iteration}
 
@@ -49,14 +71,50 @@ REQUIREMENTS:
 def builder_prompt(
     task: TaskEnvelope,
     requirements: list[Requirement],
+    red_evidence: dict | None = None,
 ) -> str:
     relevant = task_requirements(task, requirements)
+    tdd_context = ""
+    if task.tdd.mode == "required":
+        tdd_context = f"""
+TDD RED EVIDENCE:
+{json.dumps(red_evidence, ensure_ascii=False, indent=2)}
+The orchestrator has already verified a test-only RED phase against the pre-change implementation.
+Preserve the exact frozen RED test artifact and now implement the smallest production change needed
+to make the same deterministic test gate pass. Do not modify, weaken, delete, skip or xfail the
+frozen RED test; GREEN verifies its SHA-256 before accepting the result.
+"""
     return f"""Implement the task below in this isolated git worktree.
 The architecture requirements are immutable. The orchestrator has supplied the exact target
 requirement statements and source anchors below. Do not modify or reinterpret them.
 Inspect existing code first. Make the smallest coherent change. Stay inside allowed_paths.
 Add or update meaningful tests for changed behavior. Do not push, merge, or modify the base branch.
+{tdd_context}
+TARGET REQUIREMENTS:
+{contract_excerpt(relevant, limit=len(relevant))}
 
+TASK:
+{task.model_dump_json(indent=2)}
+"""
+
+
+def tdd_red_prompt(
+    task: TaskEnvelope,
+    requirements: list[Requirement],
+    prior_evidence: dict | None = None,
+) -> str:
+    relevant = task_requirements(task, requirements)
+    evidence = ""
+    if prior_evidence is not None:
+        serialized = json.dumps(prior_evidence, ensure_ascii=False, indent=2)
+        evidence = f"\nPRIOR RED ATTEMPT EVIDENCE:\n{serialized}\n"
+    return f"""Prepare ONLY the failing-test (RED) phase for the task below.
+Do not implement or modify production behavior. The orchestrator will reject this phase unless every
+changed file is inside tdd.test_paths and the declared deterministic test gate produces the expected
+new literal failure marker against the old implementation. Do not disable existing tests, weaken
+assertions, add skip/xfail markers, or manufacture a failure unrelated to the requested behavior.
+Keep the test minimal and evidence-backed. Do not push or merge.
+{evidence}
 TARGET REQUIREMENTS:
 {contract_excerpt(relevant, limit=len(relevant))}
 
@@ -87,7 +145,9 @@ def reviewer_prompt(
     return f"""Act as an independent architecture and code reviewer. Do not edit files.
 Review against immutable requirements and acceptance criteria. Do not trust the Builder's
 narrative as evidence. Reject architectural drift, unnecessary scope, weak tests, security
-regressions, hidden behavior changes, and violations of the Task Envelope.
+regressions, hidden behavior changes, violations of the Task Envelope, and dishonest change_kind/TDD
+classification. For behavior tasks, reject changes that weaken/remove the RED test instead of making
+it pass through the intended implementation.
 Return ONLY JSON matching this shape: {json.dumps(schema)}
 
 TASK:
@@ -110,7 +170,8 @@ def repair_prompt(
     relevant = task_requirements(task, requirements)
     return f"""Repair the current implementation without expanding scope.
 Keep requirements unchanged. Fix all required quality-gate or review failures and rerun relevant
-tests. Stay inside the original Task Envelope. Do not push or merge.
+tests. Stay inside the original Task Envelope. If the task has verified TDD RED evidence, preserve
+the frozen RED test exactly; do not weaken/delete/skip it to obtain GREEN. Do not push or merge.
 TARGET REQUIREMENTS:
 {contract_excerpt(relevant, limit=len(relevant))}
 TASK: {task.model_dump_json(indent=2)}

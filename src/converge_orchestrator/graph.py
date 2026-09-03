@@ -5,16 +5,18 @@ from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from . import workflow as wf
 from .config import load_config
 from .context import AdvisorySection, PromptEnvelope, build_working_memory
 from .git import update_base
-from .models import Requirement, TaskEnvelope, WorkflowState
+from .models import GateResult, Requirement, TaskEnvelope, WorkflowState
 from .opencode import OpenCodeAdapter
-from .prompts import contract_excerpt
+from .prompts import builder_prompt, contract_excerpt, tdd_red_prompt
 from .quality import run_quality_gates, run_scope_gate
+from .tdd import requires_tdd, run_tdd_baseline, run_tdd_green, run_tdd_red
 
 
 class RepoScoutPayload(BaseModel):
@@ -124,6 +126,11 @@ def _fallback_snapshot(
         ),
         warnings=[_bounded_text(warning, 2000)],
     )
+
+
+def _gate_from_state(state: WorkflowState, key: str) -> GateResult | None:
+    payload = state.get(key)
+    return GateResult.model_validate(payload) if payload else None
 
 
 def scout(state: WorkflowState) -> WorkflowState:
@@ -256,6 +263,9 @@ def plan(state: WorkflowState) -> WorkflowState:
         "iteration": iteration,
         "risk_flags": task.risk_flags,
         "approved_risk_flags": [],
+        "tdd_baseline_result": None,
+        "tdd_red_result": None,
+        "tdd_red_attempts": 0,
         "status": "planned",
     }
     store.write_json(next_state["run_id"], task.id, "task.json", next_state["task"])
@@ -264,6 +274,8 @@ def plan(state: WorkflowState) -> WorkflowState:
         "planned",
         {
             "task_id": task.id,
+            "change_kind": task.change_kind,
+            "tdd_mode": task.tdd.mode,
             "scout_base_commit": snapshot.get("base_commit") if snapshot else None,
             "context_budget_status": (
                 result.context.get("budget_status") if result.context else None
@@ -273,12 +285,145 @@ def plan(state: WorkflowState) -> WorkflowState:
     return next_state
 
 
+def tdd_baseline(state: WorkflowState) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    task = TaskEnvelope.model_validate(state["task"])
+    evidence = run_tdd_baseline(cfg, Path(state["worktree"]), task)
+    payload = evidence.model_dump(mode="json")
+    store = wf._evidence(state)
+    store.write_json(state["run_id"], task.id, "tdd-baseline.json", payload)
+    return {
+        **state,
+        "tdd_baseline_result": payload,
+        "tdd_red_result": None,
+        "tdd_red_attempts": 0,
+        "status": "tdd_baseline_ready" if evidence.ok else "tdd_baseline_unavailable",
+    }
+
+
+def route_after_tdd_baseline(state: WorkflowState) -> str:
+    evidence = _gate_from_state(state, "tdd_baseline_result")
+    if evidence is not None and evidence.ok:
+        return "continue"
+    cfg = load_config(state["config_path"])
+    if state.get("replan_attempts", 0) < cfg.max_replans:
+        return "replan"
+    return "human"
+
+
+def route_after_build_pause(state: WorkflowState) -> str:
+    if state.get("status") == "stopped":
+        return "end"
+    task = TaskEnvelope.model_validate(state["task"])
+    return "tdd_red" if requires_tdd(task) else "build"
+
+
+def tdd_red_build(state: WorkflowState) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    task = TaskEnvelope.model_validate(state["task"])
+    prior = state.get("tdd_red_result")
+    result = OpenCodeAdapter(cfg).invoke(
+        "builder",
+        tdd_red_prompt(task, wf._requirements(state), prior),
+        Path(state["worktree"]),
+    )
+    return {
+        **state,
+        "tdd_red_attempts": state.get("tdd_red_attempts", 0) + 1,
+        "message": result.output,
+        "status": "tdd_red_prepared" if result.ok else "tdd_red_builder_failed",
+    }
+
+
+def tdd_red_gate(state: WorkflowState) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    task = TaskEnvelope.model_validate(state["task"])
+    baseline = _gate_from_state(state, "tdd_baseline_result")
+    evidence = run_tdd_red(cfg, Path(state["worktree"]), task, baseline)
+    payload = evidence.model_dump(mode="json")
+    store = wf._evidence(state)
+    store.write_json(state["run_id"], task.id, "tdd-red.json", payload)
+    store.append_event(
+        state["run_id"],
+        "tdd_red",
+        {"task_id": task.id, "ok": evidence.ok, "attempt": state.get("tdd_red_attempts", 0)},
+    )
+    return {
+        **state,
+        "tdd_red_result": payload,
+        "status": "tdd_red_verified" if evidence.ok else "tdd_red_failed",
+    }
+
+
+def route_after_tdd_red(state: WorkflowState) -> str:
+    evidence = _gate_from_state(state, "tdd_red_result")
+    if evidence is not None and evidence.ok:
+        return "build"
+    cfg = load_config(state["config_path"])
+    if state.get("tdd_red_attempts", 0) < cfg.max_repair_attempts:
+        return "repair"
+    if state.get("replan_attempts", 0) < cfg.max_replans:
+        return "replan"
+    return "human"
+
+
+def pause_before_tdd_red_repair(state: WorkflowState) -> WorkflowState:
+    return wf._safe_point(state, "before_tdd_red_repair")
+
+
+def build(state: WorkflowState) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    task = TaskEnvelope.model_validate(state["task"])
+    result = OpenCodeAdapter(cfg).invoke(
+        "builder",
+        builder_prompt(
+            task,
+            wf._requirements(state),
+            state.get("tdd_red_result"),
+        ),
+        Path(state["worktree"]),
+    )
+    return {
+        **state,
+        "message": result.output,
+        "status": "built" if result.ok else "builder_failed",
+    }
+
+
+def tdd_human_gate(state: WorkflowState) -> WorkflowState:
+    decision = interrupt(
+        {
+            "kind": "tdd_evidence_failure",
+            "reason": "Bounded autonomous attempts could not establish valid RED evidence",
+            "task": state.get("task"),
+            "baseline": state.get("tdd_baseline_result"),
+            "red": state.get("tdd_red_result"),
+            "allowed": ["replan", "stop"],
+        }
+    )
+    action = decision.get("action") if isinstance(decision, dict) else decision
+    if action == "replan":
+        return {**state, "replan_attempts": 0, "status": "tdd_human_replan"}
+    if action == "stop":
+        return {**state, "status": "stopped", "message": "Stopped at TDD evidence gate"}
+    raise ValueError(f"Unsupported TDD decision: {action}")
+
+
+def route_after_tdd_human(state: WorkflowState) -> str:
+    return "replan" if state.get("status") == "tdd_human_replan" else "end"
+
+
 def quality(state: WorkflowState) -> WorkflowState:
-    """Run repo-controlled commands before the final deterministic scope measurement."""
+    """Run RED-preserving GREEN, repo commands, then final deterministic scope measurement."""
     cfg = load_config(state["config_path"])
     task = TaskEnvelope.model_validate(state["task"])
     worktree = Path(state["worktree"])
-    results = [*run_quality_gates(cfg, worktree), run_scope_gate(cfg, worktree, task)]
+    red = _gate_from_state(state, "tdd_red_result")
+    results = [
+        run_tdd_green(cfg, worktree, task, red),
+        *run_quality_gates(cfg, worktree),
+        run_scope_gate(cfg, worktree, task),
+    ]
     payload = [item.model_dump(mode="json") for item in results]
     store = wf._evidence(state)
     store.write_json(state["run_id"], task.id, "quality.json", payload)
@@ -286,7 +431,7 @@ def quality(state: WorkflowState) -> WorkflowState:
 
 
 def build_graph(checkpointer: Any = None):
-    """Compose the durable LangGraph with a read-only scout immediately before planning."""
+    """Compose the durable LangGraph with Scout and deterministic TDD evidence phases."""
     graph = StateGraph(WorkflowState)
     nodes = [
         ("bootstrap", wf.bootstrap),
@@ -295,6 +440,7 @@ def build_graph(checkpointer: Any = None):
         ("spec_stop", wf.spec_stop),
         ("pause_plan", wf.pause_before_plan),
         ("pause_build", wf.pause_before_build),
+        ("pause_tdd_red_repair", pause_before_tdd_red_repair),
         ("pause_repair", wf.pause_before_repair),
         ("pause_integrate", wf.pause_before_integrate),
         ("pause_pr", wf.pause_before_pr),
@@ -302,7 +448,11 @@ def build_graph(checkpointer: Any = None):
         ("scout", scout),
         ("plan", plan),
         ("prepare_worktree", wf.prepare_worktree),
-        ("build", wf.build),
+        ("tdd_baseline", tdd_baseline),
+        ("tdd_red_build", tdd_red_build),
+        ("tdd_red_gate", tdd_red_gate),
+        ("tdd_human", tdd_human_gate),
+        ("build", build),
         ("quality", quality),
         ("review", wf.review),
         ("repair", wf.repair),
@@ -331,11 +481,37 @@ def build_graph(checkpointer: Any = None):
     )
     graph.add_edge("scout", "plan")
     graph.add_edge("plan", "prepare_worktree")
-    graph.add_edge("prepare_worktree", "pause_build")
+    graph.add_edge("prepare_worktree", "tdd_baseline")
+    graph.add_conditional_edges(
+        "tdd_baseline",
+        route_after_tdd_baseline,
+        {"continue": "pause_build", "replan": "replan", "human": "tdd_human"},
+    )
     graph.add_conditional_edges(
         "pause_build",
+        route_after_build_pause,
+        {"tdd_red": "tdd_red_build", "build": "build", "end": END},
+    )
+    graph.add_edge("tdd_red_build", "tdd_red_gate")
+    graph.add_conditional_edges(
+        "tdd_red_gate",
+        route_after_tdd_red,
+        {
+            "build": "build",
+            "repair": "pause_tdd_red_repair",
+            "replan": "replan",
+            "human": "tdd_human",
+        },
+    )
+    graph.add_conditional_edges(
+        "pause_tdd_red_repair",
         wf.route_after_pause,
-        {"continue": "build", "end": END},
+        {"continue": "tdd_red_build", "end": END},
+    )
+    graph.add_conditional_edges(
+        "tdd_human",
+        route_after_tdd_human,
+        {"replan": "replan", "end": END},
     )
     graph.add_edge("build", "guard_quality")
     graph.add_conditional_edges(
