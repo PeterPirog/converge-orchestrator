@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from converge_orchestrator.github import GitHubAdapter
+from converge_orchestrator.github import GitHubAdapter, RemotePolicy
 from converge_orchestrator.models import ProjectConfig
 
 
@@ -22,6 +22,15 @@ def _config(tmp_path: Path) -> ProjectConfig:
     )
 
 
+def _unprotected_policy() -> RemotePolicy:
+    return RemotePolicy(
+        base_branch="main",
+        protected=False,
+        authoritative=True,
+        source="test",
+    )
+
+
 def test_ci_status_is_pending_when_no_checks_exist(tmp_path: Path) -> None:
     adapter = StubGitHubAdapter(
         _config(tmp_path),
@@ -30,7 +39,7 @@ def test_ci_status_is_pending_when_no_checks_exist(tmp_path: Path) -> None:
             "repos/owner/repo/commits/abc/status": {"statuses": []},
         },
     )
-    assert adapter.ci_status("abc").status == "pending"
+    assert adapter.ci_status("abc", _unprotected_policy()).status == "pending"
 
 
 def test_ci_status_fails_on_failed_check(tmp_path: Path) -> None:
@@ -45,4 +54,4 @@ def test_ci_status_fails_on_failed_check(tmp_path: Path) -> None:
             "repos/owner/repo/commits/abc/status": {"statuses": []},
         },
     )
-    assert adapter.ci_status("abc").status == "fail"
+    assert adapter.ci_status("abc", _unprotected_policy()).status == "fail"
