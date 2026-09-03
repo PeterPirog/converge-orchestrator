@@ -82,7 +82,7 @@ class DurableFakeGitHubAdapter:
         return pr
 
 
-def _seed(state: ChaosState) -> dict[str, Any]:
+def _candidate_state(state: ChaosState) -> ChaosState:
     task = TaskEnvelope(
         id="CHAOS-PR-001",
         requirement_ids=["ARCH-001"],
@@ -99,13 +99,17 @@ def _seed(state: ChaosState) -> dict[str, Any]:
         "risk_flags": [],
         "risk_fingerprint": "candidate-risk-sha",
         "branch": "converge/chaos-pr-001",
-        "status": "seeded",
+        "status": "ready_for_pr",
     }
 
 
 def _create_pr_then_crash(state: ChaosState) -> dict[str, Any]:
+    # Derive deterministic candidate metadata inside the crash-prone node. This keeps the durable
+    # pre-node checkpoint at START, matching the production at-least-once boundary without relying
+    # on a previous node's output checkpoint being flushed before os._exit().
+    prepared = _candidate_state(state)
     workflow.GitHubAdapter = DurableFakeGitHubAdapter
-    next_state = workflow.create_pr(state)
+    next_state = workflow.create_pr(prepared)
     cfg = load_config(state["config_path"])
     attempts_path = cfg.state_dir / "pr-chaos-attempts.txt"
     attempts = int(attempts_path.read_text(encoding="utf-8")) if attempts_path.exists() else 0
@@ -123,11 +127,9 @@ def _finish(_state: ChaosState) -> dict[str, str]:
 
 def build_chaos_graph(checkpointer: Any = None):
     graph = StateGraph(ChaosState)
-    graph.add_node("seed", _seed)
     graph.add_node("create_pr", _create_pr_then_crash)
     graph.add_node("finish", _finish)
-    graph.add_edge(START, "seed")
-    graph.add_edge("seed", "create_pr")
+    graph.add_edge(START, "create_pr")
     graph.add_edge("create_pr", "finish")
     graph.add_edge("finish", END)
     return graph.compile(checkpointer=checkpointer)
