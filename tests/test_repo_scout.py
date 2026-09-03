@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from converge_orchestrator.context import PromptEnvelope
 from converge_orchestrator.graph import build_graph, plan, scout
 from converge_orchestrator.models import AgentResult, ProjectConfig, Requirement
 from converge_orchestrator.opencode_config import build_opencode_config
@@ -142,7 +143,7 @@ def test_scout_failure_falls_back_without_stopping_planning(tmp_path: Path) -> N
     assert "model gateway unavailable" in snapshot["warnings"][0]
 
 
-def test_planner_receives_the_scout_snapshot(tmp_path: Path) -> None:
+def test_planner_receives_the_scout_snapshot_as_advisory_context(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     state = _state(tmp_path)
     state["baseline"]["repo_scout"] = {
@@ -188,9 +189,15 @@ def test_planner_receives_the_scout_snapshot(tmp_path: Path) -> None:
         result = plan(state)
 
     prompt = invoke.call_args.args[1]
-    assert "REPOSITORY SCOUT SNAPSHOT" in prompt
-    assert '"base_commit": "abc123"' in prompt
-    assert "src/domain/service.py" in prompt
+    assert isinstance(prompt, PromptEnvelope)
+    assert "ARCH-001" in prompt.core
+    assert "Domain logic must remain independent from infrastructure." in prompt.core
+    scout_context = next(
+        section for section in prompt.advisory if section.name == "repository scout snapshot"
+    )
+    assert '"base_commit": "abc123"' in scout_context.text
+    assert "src/domain/service.py" in scout_context.text
+    assert any(section.name == "working memory" for section in prompt.advisory)
     assert result["task"]["id"] == "ARCH-001-0001"
     assert result["iteration"] == 1
 
