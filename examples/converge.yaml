@@ -93,6 +93,9 @@ models:
   # Keep Builder and Reviewer on DIFFERENT model families. This reduces correlated mistakes:
   # deterministic gates remain authoritative, but independent model families improve review value.
   #
+  # context_tokens are copied to stable OpenCode's provider.models.*.limit.context, so OpenCode can
+  # manage compaction against the actual custom-gateway context window rather than an unknown limit.
+  #
   # If one of these IDs is unavailable in another OpenWebUI installation, run `converge models`
   # and replace only the affected profile. The LangGraph workflow does not need to change.
   profiles:
@@ -100,6 +103,7 @@ models:
       # Frontier reasoning + 1M context. Used for architecture gap selection and bounded planning.
       model: deepseek-v4-pro:cloud
       name: DeepSeek V4 Pro - architecture planner
+      context_tokens: 1048576
       variant: null
       # Empty means provider/model defaults. Avoid speculative tuning of reasoning modes here.
       request_body: {}
@@ -108,6 +112,7 @@ models:
       # Coding-focused long-horizon agentic model. Sole writer in the active worktree.
       model: kimi-k2.7-code:cloud
       name: Kimi K2.7 Code - implementation builder
+      context_tokens: 262144
       variant: null
       # Provider defaults are intentional. Determinism comes from tests/gates, not low temperature.
       request_body: {}
@@ -116,14 +121,15 @@ models:
       # Independent family from Builder, 1M context, strong coding/agentic reasoning.
       model: glm-5.3-flash:cloud
       name: GLM 5.3 Flash - independent reviewer
+      context_tokens: 1048576
       variant: null
       request_body: {}
 
   # Recommended alternatives from the same OpenWebUI catalog:
-  # - deepseek-v4-flash:cloud      -> fast scout/triage, large 1M context
-  # - gpt-oss:120b                -> independent local reasoning/security reviewer
-  # - laguna-s-2.1:latest         -> local long-horizon coding/reasoning fallback (large memory)
-  # - qwen3-coder-next:cloud      -> lower-cost coding fallback
+  # - deepseek-v4-flash:cloud      -> fast scout/triage, context 1048576
+  # - gpt-oss:120b                -> independent local reasoning/security reviewer, context 131072
+  # - laguna-s-2.1:latest         -> local long-horizon fallback, context 262144; very large memory
+  # - qwen3-coder-next:cloud      -> coding fallback, context 262144
   #
   # Do not switch Reviewer to the same family as Builder merely to reduce latency. Review model
   # diversity is part of the quality policy, not just a performance preference.
