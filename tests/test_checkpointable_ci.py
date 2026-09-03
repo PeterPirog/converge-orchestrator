@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from converge_orchestrator.ci import ci_poll, ci_wait, route_after_ci
+from converge_orchestrator.ci_flakes import FlakyCIPolicy
 from converge_orchestrator.graph_service import build_graph
 from converge_orchestrator.models import CIResult, ProjectConfig, TaskEnvelope
 
@@ -62,6 +63,10 @@ def test_ci_poll_observes_github_exactly_once(tmp_path: Path) -> None:
 
     with (
         patch("converge_orchestrator.ci.load_config", return_value=cfg),
+        patch(
+            "converge_orchestrator.ci.load_flaky_ci_policy",
+            return_value=FlakyCIPolicy(),
+        ),
         patch("converge_orchestrator.ci.wf._evidence", return_value=store),
         patch("converge_orchestrator.ci.GitHubAdapter", return_value=adapter),
     ):
@@ -86,6 +91,10 @@ def test_ci_timeout_is_measured_across_checkpointed_polls(tmp_path: Path) -> Non
 
     with (
         patch("converge_orchestrator.ci.load_config", return_value=cfg),
+        patch(
+            "converge_orchestrator.ci.load_flaky_ci_policy",
+            return_value=FlakyCIPolicy(),
+        ),
         patch("converge_orchestrator.ci.wf._evidence", return_value=store),
         patch("converge_orchestrator.ci.GitHubAdapter", return_value=adapter),
         patch("converge_orchestrator.ci._utcnow", return_value=now),
@@ -109,6 +118,10 @@ def test_new_candidate_head_resets_ci_timeout_window(tmp_path: Path) -> None:
 
     with (
         patch("converge_orchestrator.ci.load_config", return_value=cfg),
+        patch(
+            "converge_orchestrator.ci.load_flaky_ci_policy",
+            return_value=FlakyCIPolicy(),
+        ),
         patch("converge_orchestrator.ci.wf._evidence", return_value=store),
         patch("converge_orchestrator.ci.GitHubAdapter", return_value=adapter),
         patch("converge_orchestrator.ci._utcnow", return_value=now),
