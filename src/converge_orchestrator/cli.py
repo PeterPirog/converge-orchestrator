@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Annotated
@@ -10,6 +11,16 @@ from rich.console import Console
 
 from .config import load_config
 from .inspector import inspect_repository
+from .model_gateway import (
+    ModelGatewayError,
+    configured_gateway_model_ids,
+    gateway_model_ids,
+)
+from .opencode_config import (
+    materialize_opencode_config,
+    resolve_agent_model,
+    resolve_agent_variant,
+)
 from .quality import effective_quality_gates
 from .spec import compile_contract, is_read_only, sha256_file
 from .workflow import build_graph
@@ -19,12 +30,56 @@ console = Console()
 
 ConfigOption = Annotated[Path, typer.Option("--config", exists=True, readable=True)]
 ThreadOption = Annotated[str, typer.Option("--thread-id")]
+OfflineOption = Annotated[
+    bool,
+    typer.Option("--offline", help="Skip live model-gateway connectivity checks."),
+]
+
+
+def _require_executable(binary: str, label: str) -> None:
+    if shutil.which(binary) is None:
+        raise typer.BadParameter(f"{label} executable not found on PATH: {binary}")
+
+
+@app.command("models")
+def list_models(config: ConfigOption) -> None:
+    """List model IDs visible through the configured OpenWebUI/OpenAI-compatible gateway."""
+    cfg = load_config(config)
+    if cfg.model_gateway.kind == "existing":
+        console.print("model gateway: existing OpenCode providers")
+        console.print("Run `opencode models` to inspect models from native OpenCode providers.")
+        return
+    try:
+        visible = sorted(gateway_model_ids(cfg))
+    except ModelGatewayError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if not visible:
+        console.print("No models returned by the configured gateway.")
+        return
+    console.print(f"gateway: {cfg.model_gateway.base_url}")
+    for model_id in visible:
+        console.print(model_id)
 
 
 @app.command()
-def doctor(config: ConfigOption) -> None:
-    """Validate paths and show the immutable specification fingerprint."""
+def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
+    """Validate one project config before the autonomous run starts."""
     cfg = load_config(config)
+    if not cfg.repo_path.is_dir():
+        raise typer.BadParameter(f"repository directory does not exist: {cfg.repo_path}")
+    if not cfg.requirements_path.is_file():
+        raise typer.BadParameter(
+            f"architecture requirements file does not exist: {cfg.requirements_path}"
+        )
+    if cfg.require_spec_read_only and not is_read_only(cfg.requirements_path):
+        raise typer.BadParameter(
+            f"architecture requirements must be read-only: {cfg.requirements_path}"
+        )
+
+    _require_executable(cfg.opencode_binary, "OpenCode")
+    if cfg.github_repo:
+        _require_executable(cfg.github_binary, "GitHub CLI")
+
     contract = compile_contract(cfg.requirements_path)
     requirement_ids = {item.id for item in contract.requirements}
     unknown_verifiers = set(cfg.requirement_verifiers) - requirement_ids
@@ -32,8 +87,37 @@ def doctor(config: ConfigOption) -> None:
         raise typer.BadParameter(
             f"requirement_verifiers reference unknown IDs: {sorted(unknown_verifiers)}"
         )
+
     profile = inspect_repository(cfg.repo_path)
     gates = effective_quality_gates(cfg, cfg.repo_path)
+    try:
+        generated_config = materialize_opencode_config(cfg)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    agent_models: dict[str, str] = {}
+    for role, agent in cfg.agents.items():
+        try:
+            model = resolve_agent_model(cfg, agent) or "OpenCode default"
+        except ValueError as exc:
+            raise typer.BadParameter(f"invalid model for agent {role}: {exc}") from exc
+        variant = resolve_agent_variant(cfg, agent)
+        agent_models[role] = f"{model}#{variant}" if variant else model
+
+    gateway_models: set[str] = set()
+    if cfg.model_gateway.kind != "existing" and not offline:
+        try:
+            gateway_models = gateway_model_ids(cfg)
+        except ModelGatewayError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        missing_models = configured_gateway_model_ids(cfg) - gateway_models
+        if missing_models:
+            raise typer.BadParameter(
+                f"configured models are not visible in the gateway: {sorted(missing_models)}"
+            )
+
+    console.print(f"configuration version: {cfg.version}")
+    console.print(f"project: {cfg.project_name or config.stem}")
     console.print(f"repo: {cfg.repo_path}")
     console.print(f"requirements: {cfg.requirements_path}")
     console.print(f"requirements read-only: {is_read_only(cfg.requirements_path)}")
@@ -43,6 +127,13 @@ def doctor(config: ConfigOption) -> None:
     console.print(f"quality gates: {', '.join(gate.name for gate in gates) or 'none'}")
     console.print(f"deterministic requirement verifiers: {len(cfg.requirement_verifiers)}")
     console.print(f"github: {cfg.github_repo or 'disabled'}")
+    console.print(f"OpenCode binary: {cfg.opencode_binary}")
+    console.print(f"model gateway: {cfg.model_gateway.kind}")
+    if gateway_models:
+        console.print(f"gateway models visible: {len(gateway_models)}")
+    for role, model in agent_models.items():
+        console.print(f"agent {role}: {cfg.agents[role].agent} -> {model}")
+    console.print(f"generated OpenCode config: {generated_config}")
 
 
 @app.command()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -41,13 +40,18 @@ from .spec import compile_contract, is_read_only, sha256_file, write_contract
 
 
 def _json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
     try:
-        return json.loads(text)
+        payload = json.loads(stripped)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
             raise ValueError("Agent did not return a JSON object") from None
-        return json.loads(match.group(0))
+        payload = json.loads(stripped[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("Agent output must be a JSON object")
+    return payload
 
 
 def _evidence(state: WorkflowState) -> EvidenceStore:
@@ -58,6 +62,10 @@ def _evidence(state: WorkflowState) -> EvidenceStore:
 def _task_id(state: WorkflowState) -> str:
     task = state.get("task")
     return str(task.get("id")) if task else "run"
+
+
+def _requirements(state: WorkflowState) -> list[Requirement]:
+    return [Requirement.model_validate(item) for item in state["requirements"]]
 
 
 def _write_compliance(state: WorkflowState, compliance: ComplianceSnapshot) -> None:
@@ -101,7 +109,7 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
     ensure_clean(cfg.repo_path)
     expected = sha256_file(cfg.requirements_path)
     hash_path = cfg.state_dir / "requirements.sha256"
-    if hash_path.exists() and hash_path.read_text().strip() != expected:
+    if hash_path.exists() and hash_path.read_text(encoding="utf-8").strip() != expected:
         raise RuntimeError(
             "Requirements changed since project initialization; refusing to continue."
         )
@@ -217,7 +225,7 @@ def route_after_pause(state: WorkflowState) -> str:
 def plan(state: WorkflowState) -> WorkflowState:
     cfg = load_config(state["config_path"])
     update_base(cfg.repo_path, cfg.base_branch)
-    requirements = [Requirement.model_validate(item) for item in state["requirements"]]
+    requirements = _requirements(state)
     result = OpenCodeAdapter(cfg).invoke(
         "planner",
         planner_prompt(requirements, state["iteration"] + 1),
@@ -267,7 +275,7 @@ def build(state: WorkflowState) -> WorkflowState:
     task = TaskEnvelope.model_validate(state["task"])
     result = OpenCodeAdapter(cfg).invoke(
         "builder",
-        builder_prompt(task, cfg.requirements_path),
+        builder_prompt(task, _requirements(state)),
         Path(state["worktree"]),
     )
     return {
@@ -291,7 +299,7 @@ def quality(state: WorkflowState) -> WorkflowState:
 def review(state: WorkflowState) -> WorkflowState:
     cfg = load_config(state["config_path"])
     task = TaskEnvelope.model_validate(state["task"])
-    requirements = [Requirement.model_validate(item) for item in state["requirements"]]
+    requirements = _requirements(state)
     worktree = Path(state["worktree"])
     patch = diff(worktree, cfg.base_branch)
     result = OpenCodeAdapter(cfg).invoke(
@@ -367,6 +375,7 @@ def repair(state: WorkflowState) -> WorkflowState:
         "builder",
         repair_prompt(
             task,
+            _requirements(state),
             state.get("quality_results", []),
             state.get("review_result"),
         ),
@@ -470,7 +479,11 @@ def human_gate(state: WorkflowState) -> WorkflowState:
             **state,
             "repair_attempts": 0,
             "replan_attempts": 0,
-            "status": "human_retry_ci" if kind == "ci_failure_budget" else "human_retry_review",
+            "status": (
+                "human_retry_ci"
+                if kind == "ci_failure_budget"
+                else "human_retry_review"
+            ),
         }
     if action == "edit":
         raw_task = payload.get("task")
