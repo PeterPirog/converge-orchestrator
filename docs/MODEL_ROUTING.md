@@ -8,6 +8,15 @@ To jest część architektury bezpieczeństwa jakościowego. Review wykonywane p
 wytworzył implementację, ma większe ryzyko powtórzenia tych samych błędnych założeń. Model diversity
 nie zastępuje deterministic quality gates, ale zwiększa wartość semantic review.
 
+> **Najpierw wybieraj model do roli, nie rolę do modelu.** Szczegółowy kontrakt Scout/Planner/Builder/
+> Correctness/Architecture/Security Reviewer, model przepływu danych, MCP/Skills boundaries, tabela
+> cech modeli zastępczych i audyt izolacji są w [AGENT_ROLES_AND_DATA_FLOW.md](AGENT_ROLES_AND_DATA_FLOW.md).
+
+Ważne rozróżnienie: nazwy pod `models.profiles` są **profilami konfiguracji modelu**, a nie osobnymi
+agentami. Na przykład profil `planner` jest używany przez Plannera i Architecture Reviewera, natomiast
+profil `reviewer` jest używany przez Correctness Reviewera. LangGraph pozostaje deterministycznym
+orkiestratorem; nie dodajemy osobnego modelu LLM „managera”.
+
 ## Domyślny routing
 
 | Rola | Domyślny model | Context | Dlaczego |
@@ -145,6 +154,9 @@ converge doctor --config /workspace/my-project/converge.yaml
 ```
 
 `doctor` sprawdza, czy wszystkie modele aktywnych agentów są faktycznie widoczne przez gateway.
+Przed zaakceptowaniem zamiany wykonaj dodatkowo mały benchmark na swoim repo: sprawdź schema/JSON
+adherence, poprawność tool calls, liczbę zbędnych kroków, latency/koszt i jakość wyników konkretnej
+roli. Szczegółowe cechy i wagi są w `AGENT_ROLES_AND_DATA_FLOW.md`.
 
 ## Limity modelu
 
