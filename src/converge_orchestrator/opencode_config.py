@@ -49,6 +49,24 @@ _RESERVED_AGENT_OPTIONS = {
     "steps",
     "tools",
 }
+_PROTECTED_TOOL_PERMISSIONS = {
+    "*",
+    "bash",
+    "doom_loop",
+    "edit",
+    "external_directory",
+    "glob",
+    "grep",
+    "list",
+    "lsp",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "websearch",
+}
 
 
 def resolve_profile_model(config: ProjectConfig, profile: ModelProfile) -> str:
@@ -92,6 +110,16 @@ def _agent_model_options(config: ProjectConfig, agent: AgentConfig) -> dict[str,
     return body
 
 
+def _safe_tool_overrides(agent: AgentConfig) -> dict[str, str]:
+    protected = sorted(_PROTECTED_TOOL_PERMISSIONS.intersection(agent.tool_permissions))
+    if protected:
+        raise ValueError(
+            "agent tool_permissions may only target custom/MCP tools; protected keys: "
+            f"{protected}"
+        )
+    return dict(agent.tool_permissions)
+
+
 def _read_only_permission(agent: AgentConfig) -> dict[str, Any]:
     permission: dict[str, Any] = {
         "*": "deny",
@@ -116,7 +144,7 @@ def _read_only_permission(agent: AgentConfig) -> dict[str, Any]:
         "external_directory": "deny",
         "question": "deny",
     }
-    permission.update(agent.tool_permissions)
+    permission.update(_safe_tool_overrides(agent))
     return permission
 
 
@@ -146,7 +174,7 @@ def _builder_permission(agent: AgentConfig) -> dict[str, Any]:
         "external_directory": "deny",
         "question": "deny",
     }
-    permission.update(agent.tool_permissions)
+    permission.update(_safe_tool_overrides(agent))
     return permission
 
 
@@ -157,7 +185,7 @@ def _role_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
 
 
 def _stable_mcp_config(raw: dict[str, Any]) -> dict[str, Any]:
-    """Accept the neutral documented `mcp.servers` shape and emit stable OpenCode MCP."""
+    """Accept neutral `mcp.servers` and emit stable OpenCode's `mcp.<name>` shape."""
     if not raw:
         return {}
     servers = raw.get("servers") if isinstance(raw.get("servers"), dict) else raw
@@ -226,7 +254,6 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
                 f"{sorted(_ROLE_DEFINITIONS)}"
             )
         model = resolve_agent_model(config, agent)
-        variant = resolve_agent_variant(config, agent)
         override: dict[str, Any] = {
             "description": role_definition["description"],
             "mode": "all",
@@ -238,10 +265,6 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
         if agent.steps:
             override["steps"] = agent.steps
         override.update(_agent_model_options(config, agent))
-        if variant:
-            # Stable OpenCode applies variants through the CLI flag. Keep it out of agent model IDs
-            # so providers with slash-containing model IDs remain unambiguous.
-            override["convergeVariant"] = variant
         agent_overrides[agent.agent] = override
     if agent_overrides:
         payload["agent"] = agent_overrides
@@ -249,11 +272,8 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
 
 
 def runtime_opencode_config(config: ProjectConfig) -> dict[str, Any]:
-    """Return the highest-precedence runtime config without internal-only metadata."""
-    payload = build_opencode_config(config)
-    for agent in payload.get("agent", {}).values():
-        agent.pop("convergeVariant", None)
-    return payload
+    """Return the highest-precedence runtime config used for every local OpenCode call."""
+    return build_opencode_config(config)
 
 
 def materialize_opencode_config(config: ProjectConfig) -> Path:
