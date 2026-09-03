@@ -98,10 +98,8 @@ def test_parallel_review_runs_concurrently_and_one_reject_blocks(
             stdout=json.dumps(payloads[agent_id]),
         )
 
-    with unittest.mock.patch(
-        "converge_orchestrator.opencode.run",
-        side_effect=fake_run,
-    ) as runner:
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with unittest.mock.patch(target, side_effect=fake_run) as runner:
         result = adapter.invoke("reviewer", "Review this diff", cfg.repo_path)
 
     assert result.ok
@@ -137,10 +135,8 @@ def test_failed_review_process_becomes_deterministic_rejection(
             stdout=json.dumps({"verdict": "pass", "findings": [], "confidence": 0.9}),
         )
 
-    with unittest.mock.patch(
-        "converge_orchestrator.opencode.run",
-        side_effect=fake_run,
-    ):
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with unittest.mock.patch(target, side_effect=fake_run):
         result = adapter.invoke("reviewer", "Review this diff", cfg.repo_path)
 
     aggregate = ReviewResult.model_validate_json(result.output)
