@@ -8,6 +8,7 @@ from typing import Any
 from langgraph.types import Command
 
 from .config import load_config
+from .graph_service import build_graph
 from .remote import RemoteValidationError, validate_origin_repository
 from .runtime import _TERMINAL_STATUSES, RunController
 
@@ -179,6 +180,15 @@ class ScheduledRunController(RunController):
             self._schedule_recoverable(run_id)
         else:
             self._cancel_timer(run_id)
+
+    def _open_graph(self, record: dict[str, Any]):
+        """Open the canonical service graph with the selected persistence backend."""
+        project = self.registry.get_project(record["project_id"])
+        cfg = load_config(project["config_path"])
+        checkpointer, db = self.persistence.open_checkpointer(cfg.state_dir)
+        graph = build_graph(checkpointer=checkpointer)
+        graph_config = {"configurable": {"thread_id": record["thread_id"]}}
+        return graph, db, graph_config
 
     def _recovery_snapshot(self, record: dict[str, Any]) -> dict[str, Any] | None:
         """Read restart state and retry only backend-classified transient failures."""
