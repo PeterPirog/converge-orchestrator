@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -33,9 +34,10 @@ from .models import (
     WorkflowState,
 )
 from .opencode import OpenCodeAdapter
-from .policy import DecisionKind, can_integrate
+from .policy import BLOCKING_RISK_FLAGS, DecisionKind, can_integrate
 from .prompts import builder_prompt, planner_prompt, repair_prompt, reviewer_prompt
 from .quality import required_gates_pass, run_quality_gates, run_scope_gate
+from .risk import classify_repository_risk
 from .spec import compile_contract, is_read_only, sha256_file, write_contract
 
 
@@ -135,6 +137,8 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
         "replan_attempts": 0,
         "risk_flags": [],
         "approved_risk_flags": [],
+        "risk_report": None,
+        "risk_fingerprint": None,
         "status": "bootstrapped",
     }
     _write_compliance(next_state, compliance)
@@ -244,6 +248,8 @@ def plan(state: WorkflowState) -> WorkflowState:
         "iteration": state["iteration"] + 1,
         "risk_flags": task.risk_flags,
         "approved_risk_flags": [],
+        "risk_report": None,
+        "risk_fingerprint": None,
         "status": "planned",
     }
     store = _evidence(next_state)
@@ -302,6 +308,62 @@ def review(state: WorkflowState) -> WorkflowState:
     requirements = _requirements(state)
     worktree = Path(state["worktree"])
     patch = diff(worktree, cfg.base_branch)
+    fingerprint = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+    report = classify_repository_risk(cfg, worktree, task)
+    risk_report = report.model_dump(mode="json")
+    risk_flags = sorted(set(task.risk_flags) | set(report.flags))
+    same_candidate = state.get("risk_fingerprint") == fingerprint
+    approved_risk_flags = (
+        list(state.get("approved_risk_flags", [])) if same_candidate else []
+    )
+
+    store = _evidence(state)
+    store.write_json(state["run_id"], task.id, "risk.json", risk_report)
+    store.append_event(
+        state["run_id"],
+        "risk_classified",
+        {
+            "task_id": task.id,
+            "flags": risk_flags,
+            "findings": len(report.findings),
+            "candidate_sha256": fingerprint,
+        },
+    )
+
+    blocking_flags = sorted(BLOCKING_RISK_FLAGS.intersection(risk_flags))
+    if blocking_flags:
+        review_result = ReviewResult(
+            verdict="reject",
+            findings=[
+                {
+                    "severity": "blocker",
+                    "reason": (
+                        "Deterministic repository-risk policy blocked semantic review: "
+                        + ", ".join(blocking_flags)
+                    ),
+                    "required_fix": (
+                        "Remove blocking material before any external semantic reviewer receives "
+                        "the candidate diff."
+                    ),
+                }
+            ],
+        )
+        store.write_json(
+            state["run_id"],
+            task.id,
+            "review.json",
+            review_result.model_dump(mode="json"),
+        )
+        return {
+            **state,
+            "risk_flags": risk_flags,
+            "approved_risk_flags": approved_risk_flags,
+            "risk_report": risk_report,
+            "risk_fingerprint": fingerprint,
+            "review_result": review_result.model_dump(mode="json"),
+            "status": "risk_blocked",
+        }
+
     result = OpenCodeAdapter(cfg).invoke(
         "reviewer",
         reviewer_prompt(task, patch, requirements),
@@ -320,7 +382,6 @@ def review(state: WorkflowState) -> WorkflowState:
                 }
             ],
         )
-    store = _evidence(state)
     store.write_text(state["run_id"], task.id, "diff.patch", patch)
     store.write_json(
         state["run_id"],
@@ -330,6 +391,10 @@ def review(state: WorkflowState) -> WorkflowState:
     )
     return {
         **state,
+        "risk_flags": risk_flags,
+        "approved_risk_flags": approved_risk_flags,
+        "risk_report": risk_report,
+        "risk_fingerprint": fingerprint,
         "review_result": review_result.model_dump(mode="json"),
         "status": "reviewed",
     }
@@ -423,6 +488,8 @@ def replan(state: WorkflowState) -> WorkflowState:
         "replan_attempts": state.get("replan_attempts", 0) + 1,
         "risk_flags": [],
         "approved_risk_flags": [],
+        "risk_report": None,
+        "risk_fingerprint": None,
         "status": "replanning",
     }
 
@@ -454,6 +521,8 @@ def human_gate(state: WorkflowState) -> WorkflowState:
             "review": state.get("review_result"),
             "ci": state.get("ci"),
             "risk_flags": state.get("risk_flags"),
+            "risk_report": state.get("risk_report"),
+            "risk_fingerprint": state.get("risk_fingerprint"),
             "allowed": allowed,
         }
     )
@@ -508,6 +577,8 @@ def human_gate(state: WorkflowState) -> WorkflowState:
             "replan_attempts": 0,
             "risk_flags": task.risk_flags,
             "approved_risk_flags": [],
+            "risk_report": None,
+            "risk_fingerprint": None,
             "status": "human_edit",
         }
     raise ValueError(f"Unsupported human decision: {action}")
@@ -573,6 +644,8 @@ def _pull_request_body(state: WorkflowState) -> str:
         f"- {item['name']}: {'PASS' if item['ok'] else 'FAIL'}"
         for item in state.get("quality_results", [])
     ]
+    risk_flags = state.get("risk_flags", [])
+    risk_lines = [f"- {flag}" for flag in risk_flags] or ["- none detected"]
     return "\n".join(
         [
             "## Objective",
@@ -583,11 +656,14 @@ def _pull_request_body(state: WorkflowState) -> str:
             "- independent review: PASS",
             "",
             "## Risk",
-            task.risk,
+            f"Task-declared level: {task.risk}",
+            "Deterministic/declarative flags:",
+            *risk_lines,
             "",
             "## Converge metadata",
             f"- run: {state['run_id']}",
             f"- task: {task.id}",
+            f"- candidate_risk_sha256: {state.get('risk_fingerprint') or 'n/a'}",
             f"- requirements_sha256: {state['requirements_hash']}",
         ]
     )
@@ -707,6 +783,8 @@ def refresh_from_main(state: WorkflowState) -> WorkflowState:
         "replan_attempts": 0,
         "risk_flags": [],
         "approved_risk_flags": [],
+        "risk_report": None,
+        "risk_fingerprint": None,
         "status": status,
     }
 
