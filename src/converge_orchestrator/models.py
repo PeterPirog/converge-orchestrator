@@ -138,6 +138,8 @@ class ProjectConfig(BaseModel):
     max_diff_lines_hard: int = 1000
     review_roles: list[str] = Field(default_factory=list)
     max_parallel_reviews: int = Field(default=3, ge=1, le=16)
+    context_input_fraction: float = Field(default=0.70, gt=0.10, le=0.95)
+    context_output_reserve_tokens: int = Field(default=4096, ge=256)
     ci_poll_seconds: int = 15
     ci_timeout_seconds: int = 1800
     auto_merge: bool = False
@@ -204,6 +206,8 @@ class ProjectConfig(BaseModel):
             "max_diff_lines_hard",
             "review_roles",
             "max_parallel_reviews",
+            "context_input_fraction",
+            "context_output_reserve_tokens",
         ):
             copy_value(key, workflow, key)
         return data
@@ -261,6 +265,7 @@ class AgentResult(BaseModel):
     ok: bool
     output: str
     returncode: int = 0
+    context: dict[str, Any] | None = None
 
 
 class GateResult(BaseModel):

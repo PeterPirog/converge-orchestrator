@@ -5,10 +5,11 @@ import json
 from .models import Requirement, TaskEnvelope
 
 
-def contract_excerpt(requirements: list[Requirement], limit: int = 80) -> str:
+def contract_excerpt(requirements: list[Requirement], limit: int | None = None) -> str:
+    selected = requirements if limit is None else requirements[:limit]
     return "\n".join(
         f"{requirement.id} | {requirement.source} | {requirement.statement}"
-        for requirement in requirements[:limit]
+        for requirement in selected
     )
 
 
@@ -94,7 +95,7 @@ TASK:
 REQUIREMENTS:
 {contract_excerpt(requirements)}
 DIFF:
-{diff_text[-30000:]}
+{diff_text}
 """
 
 

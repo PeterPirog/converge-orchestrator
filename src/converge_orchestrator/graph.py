@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from . import workflow as wf
 from .config import load_config
+from .context import AdvisorySection, PromptEnvelope, build_working_memory
 from .git import update_base
 from .models import Requirement, TaskEnvelope, WorkflowState
 from .opencode import OpenCodeAdapter
@@ -128,6 +129,7 @@ def scout(state: WorkflowState) -> WorkflowState:
     cfg = load_config(state["config_path"])
     base_commit = update_base(cfg.repo_path, cfg.base_branch)
     requirements = wf._requirements(state)
+    context_report: dict[str, Any] | None = None
 
     if "scout" not in cfg.agents:
         snapshot = _fallback_snapshot(
@@ -141,6 +143,7 @@ def scout(state: WorkflowState) -> WorkflowState:
             _scout_prompt(requirements, cfg.base_branch, base_commit),
             cfg.repo_path,
         )
+        context_report = result.context
         if not result.ok:
             snapshot = _fallback_snapshot(
                 base_branch=cfg.base_branch,
@@ -179,6 +182,13 @@ def scout(state: WorkflowState) -> WorkflowState:
         "repo-scout.json",
         snapshot.model_dump(mode="json"),
     )
+    if context_report:
+        store.write_json(
+            next_state["run_id"],
+            "run",
+            f"context-scout-{state.get('iteration', 0) + 1:04d}.json",
+            context_report,
+        )
     store.append_event(
         next_state["run_id"],
         "repo_scout",
@@ -192,18 +202,45 @@ def scout(state: WorkflowState) -> WorkflowState:
 
 
 def plan(state: WorkflowState) -> WorkflowState:
-    """Plan from immutable requirements plus the latest scout snapshot."""
+    """Plan from immutable requirements plus bounded, explicitly advisory continuity context."""
     cfg = load_config(state["config_path"])
     requirements = wf._requirements(state)
-    prompt = wf.planner_prompt(requirements, state["iteration"] + 1)
+    iteration = state["iteration"] + 1
     snapshot = (state.get("baseline") or {}).get("repo_scout")
+    memory = build_working_memory(state)
+    advisory: list[AdvisorySection] = []
     if snapshot:
-        prompt += (
-            "\nREPOSITORY SCOUT SNAPSHOT (advisory, verify details when needed):\n"
-            + json.dumps(snapshot, ensure_ascii=False, indent=2)
-            + "\n"
+        advisory.append(
+            AdvisorySection(
+                "repository scout snapshot",
+                json.dumps(snapshot, ensure_ascii=False, indent=2),
+            )
         )
+    advisory.append(
+        AdvisorySection(
+            "working memory",
+            json.dumps(memory, ensure_ascii=False, indent=2),
+        )
+    )
+    prompt = PromptEnvelope(
+        core=wf.planner_prompt(requirements, iteration),
+        advisory=tuple(advisory),
+    )
+    store = wf._evidence(state)
+    store.write_json(
+        state["run_id"],
+        "run",
+        f"working-memory-{iteration:04d}.json",
+        memory,
+    )
     result = OpenCodeAdapter(cfg).invoke("planner", prompt, cfg.repo_path)
+    if result.context:
+        store.write_json(
+            state["run_id"],
+            "run",
+            f"context-plan-{iteration:04d}.json",
+            result.context,
+        )
     if not result.ok:
         raise RuntimeError(f"Planner failed: {result.output}")
     task = TaskEnvelope.model_validate(wf._json_object(result.output))
@@ -214,12 +251,11 @@ def plan(state: WorkflowState) -> WorkflowState:
     next_state: WorkflowState = {
         **state,
         "task": task.model_dump(mode="json"),
-        "iteration": state["iteration"] + 1,
+        "iteration": iteration,
         "risk_flags": task.risk_flags,
         "approved_risk_flags": [],
         "status": "planned",
     }
-    store = wf._evidence(next_state)
     store.write_json(next_state["run_id"], task.id, "task.json", next_state["task"])
     store.append_event(
         next_state["run_id"],
@@ -227,6 +263,9 @@ def plan(state: WorkflowState) -> WorkflowState:
         {
             "task_id": task.id,
             "scout_base_commit": snapshot.get("base_commit") if snapshot else None,
+            "context_budget_status": (
+                result.context.get("budget_status") if result.context else None
+            ),
         },
     )
     return next_state

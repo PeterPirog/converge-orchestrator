@@ -99,6 +99,8 @@ def _nested_config(tmp_path: Path) -> dict:
             "max_replans": 2,
             "max_iterations": 50,
             "max_diff_lines_hard": 1000,
+            "context_input_fraction": 0.65,
+            "context_output_reserve_tokens": 8192,
         },
     }
 
@@ -121,6 +123,8 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
     assert cfg.model_profiles["builder"].output_tokens == 16000
     assert cfg.review_roles == []
     assert cfg.max_parallel_reviews == 3
+    assert cfg.context_input_fraction == 0.65
+    assert cfg.context_output_reserve_tokens == 8192
     assert resolve_agent_model(cfg, cfg.agents["builder"]) == "openwebui/coding-model"
     assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openwebui/reasoning/model"
 
@@ -325,6 +329,8 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
         "architecture_reviewer",
         "security_reviewer",
     }
+    assert raw["workflow"]["context_input_fraction"] == 0.70
+    assert raw["workflow"]["context_output_reserve_tokens"] == 4096
     assert raw["workflow"]["review_roles"] == [
         "correctness_reviewer",
         "architecture_reviewer",

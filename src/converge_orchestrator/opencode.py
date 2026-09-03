@@ -2,6 +2,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .context import (
+    ContextBudgetExceeded,
+    PromptEnvelope,
+    append_context_ledger,
+    finalize_report,
+    prepare_prompt,
+)
 from .models import AgentResult, ProjectConfig, ReviewFinding, ReviewResult
 from .opencode_config import (
     materialize_opencode_config,
@@ -94,7 +101,7 @@ class OpenCodeAdapter:
     def __init__(self, config: ProjectConfig):
         self.config = config
 
-    def invoke(self, role: str, prompt: str, cwd: Path) -> AgentResult:
+    def invoke(self, role: str, prompt: str | PromptEnvelope, cwd: Path) -> AgentResult:
         generated_config = materialize_opencode_config(self.config)
         runtime_config = json.dumps(
             runtime_opencode_config(self.config),
@@ -118,11 +125,23 @@ class OpenCodeAdapter:
     def _invoke_single(
         self,
         role: str,
-        prompt: str,
+        prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
         runtime_config: str,
     ) -> AgentResult:
+        try:
+            rendered_prompt, context_report = prepare_prompt(self.config, role, prompt)
+        except ContextBudgetExceeded as exc:
+            append_context_ledger(self.config, exc.report, cwd)
+            return AgentResult(
+                role=role,
+                ok=False,
+                output=f"CONTEXT_BUDGET_EXCEEDED: {exc}",
+                returncode=78,
+                context=exc.report.model_dump(mode="json"),
+            )
+
         agent_cfg = self.config.agents[role]
         cmd = [self.config.opencode_binary, "run", "--agent", agent_cfg.agent]
         model = resolve_agent_model(self.config, agent_cfg)
@@ -135,29 +154,38 @@ class OpenCodeAdapter:
             cmd.append("--auto")
         if self.config.opencode_attach_url:
             cmd += ["--attach", self.config.opencode_attach_url]
-        cmd += ["--dir", str(cwd), prompt]
-        result = run(
-            cmd,
-            cwd=cwd,
-            timeout=agent_cfg.timeout_seconds,
-            env={
-                "OPENCODE_CONFIG": str(generated_config),
-                # Stable OpenCode loads inline config after project config and `.opencode`. This
-                # keeps orchestrator safety policy authoritative even for a target repository that
-                # contains its own OpenCode configuration.
-                "OPENCODE_CONFIG_CONTENT": runtime_config,
-            },
-        )
+        # Fresh-session invariant: Converge never supplies --continue or --session. Long-running
+        # continuity comes from LangGraph state and explicit evidence, not hidden model history.
+        cmd += ["--dir", str(cwd), rendered_prompt]
+        try:
+            result = run(
+                cmd,
+                cwd=cwd,
+                timeout=agent_cfg.timeout_seconds,
+                env={
+                    "OPENCODE_CONFIG": str(generated_config),
+                    # Stable OpenCode loads inline config after project config and `.opencode`.
+                    # This keeps orchestrator safety policy authoritative even for a target
+                    # repository that contains its own OpenCode configuration.
+                    "OPENCODE_CONFIG_CONTENT": runtime_config,
+                },
+            )
+        except Exception:
+            append_context_ledger(self.config, context_report, cwd)
+            raise
+        context_report = finalize_report(context_report, result.stdout)
+        append_context_ledger(self.config, context_report, cwd)
         return AgentResult(
             role=role,
             ok=result.returncode == 0,
             output=result.stdout,
             returncode=result.returncode,
+            context=context_report.model_dump(mode="json"),
         )
 
     def _invoke_review_fanout(
         self,
-        prompt: str,
+        prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
         runtime_config: str,
@@ -206,4 +234,11 @@ class OpenCodeAdapter:
             ok=True,
             output=aggregate.model_dump_json(),
             returncode=0,
+            context={
+                "review_lanes": {
+                    role: raw_results[role].context
+                    for role in roles
+                    if role in raw_results
+                }
+            },
         )
