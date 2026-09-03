@@ -54,6 +54,16 @@ def _completed(returncode: int, stdout: str):
     return types.SimpleNamespace(returncode=returncode, stdout=stdout)
 
 
+def _baseline() -> GateResult:
+    return GateResult(
+        name="tdd_baseline",
+        ok=True,
+        required=True,
+        returncode=0,
+        output=json.dumps({"gate_output": "baseline pass"}),
+    )
+
+
 def test_behavior_task_requires_structured_tdd_contract() -> None:
     with pytest.raises(ValidationError, match="behavior-changing tasks require"):
         TaskEnvelope(
@@ -124,6 +134,7 @@ def test_red_accepts_only_new_expected_failure_from_test_only_diff(tmp_path: Pat
     payload = json.loads(red.output)
     assert payload["expected_signal_in_red"] is True
     assert payload["expected_signal_in_baseline"] is False
+    assert payload["deterministic_test_artifacts_ok"] is True
     assert set(payload["red_test_sha256"]) == {"tests/test_rule.py"}
 
 
@@ -164,13 +175,6 @@ def test_red_rejects_production_changes_in_test_only_phase(tmp_path: Path) -> No
     task = _behavior_task()
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "service.py").write_text("enabled = True\n", encoding="utf-8")
-    baseline = GateResult(
-        name="tdd_baseline",
-        ok=True,
-        required=True,
-        returncode=0,
-        output=json.dumps({"gate_output": "baseline pass"}),
-    )
 
     with (
         patch(
@@ -182,10 +186,61 @@ def test_red_rejects_production_changes_in_test_only_phase(tmp_path: Path) -> No
             return_value=["src/service.py"],
         ),
     ):
-        red = run_tdd_red(cfg, tmp_path, task, baseline)
+        red = run_tdd_red(cfg, tmp_path, task, _baseline())
 
     assert not red.ok
     assert json.loads(red.output)["test_paths_ok"] is False
+
+
+def test_red_does_not_trust_planner_declared_production_test_paths(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    task = _behavior_task()
+    task.tdd.test_paths = ["src/**"]
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "service.py").write_text("enabled = True\n", encoding="utf-8")
+
+    with (
+        patch(
+            "converge_orchestrator.tdd.ExecutionSandbox.run",
+            return_value=_completed(1, "NEW_RULE_MISSING"),
+        ),
+        patch(
+            "converge_orchestrator.tdd.changed_files",
+            return_value=["src/service.py"],
+        ),
+    ):
+        red = run_tdd_red(cfg, tmp_path, task, _baseline())
+
+    payload = json.loads(red.output)
+    assert not red.ok
+    assert payload["test_paths_ok"] is True
+    assert payload["deterministic_test_artifacts_ok"] is False
+
+
+def test_red_failure_marker_is_literal_not_regex(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    task = _behavior_task()
+    task.tdd.expected_failure_pattern = "RULE[1]"
+    test_file = tmp_path / "tests" / "test_rule.py"
+    test_file.parent.mkdir()
+    test_file.write_text("def test_rule():\n    assert False\n", encoding="utf-8")
+
+    with (
+        patch(
+            "converge_orchestrator.tdd.ExecutionSandbox.run",
+            return_value=_completed(1, "AssertionError: RULE1"),
+        ),
+        patch(
+            "converge_orchestrator.tdd.changed_files",
+            return_value=["tests/test_rule.py"],
+        ),
+    ):
+        red = run_tdd_red(cfg, tmp_path, task, _baseline())
+
+    payload = json.loads(red.output)
+    assert not red.ok
+    assert payload["failure_marker_valid"] is True
+    assert payload["expected_signal_in_red"] is False
 
 
 def test_green_requires_exact_frozen_red_test_and_same_gate_to_pass(tmp_path: Path) -> None:
@@ -196,13 +251,6 @@ def test_green_requires_exact_frozen_red_test_and_same_gate_to_pass(tmp_path: Pa
     test_file.write_text(
         "def test_new_rule():\n    assert False, 'NEW_RULE_MISSING'\n",
         encoding="utf-8",
-    )
-    baseline = GateResult(
-        name="tdd_baseline",
-        ok=True,
-        required=True,
-        returncode=0,
-        output=json.dumps({"gate_output": "baseline pass"}),
     )
 
     with (
@@ -215,7 +263,7 @@ def test_green_requires_exact_frozen_red_test_and_same_gate_to_pass(tmp_path: Pa
             return_value=["tests/test_rule.py"],
         ),
     ):
-        red = run_tdd_red(cfg, tmp_path, task, baseline)
+        red = run_tdd_red(cfg, tmp_path, task, _baseline())
     assert red.ok
 
     with patch(
