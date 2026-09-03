@@ -9,5 +9,7 @@ def test_evidence_store_writes_task_artifacts_and_events(tmp_path: Path) -> None
     artifact = store.write_json("run-1", "task-1", "quality.json", {"ok": True})
     store.append_event("run-1", "quality", {"task_id": "task-1"})
     assert json.loads(artifact.read_text()) == {"ok": True}
+    assert store.read_json("run-1", "task-1", "quality.json") == {"ok": True}
+    assert store.read_json("run-1", "task-1", "missing.json") is None
     events = (tmp_path / "run-1" / "events.jsonl").read_text().splitlines()
     assert json.loads(events[0])["event"] == "quality"
