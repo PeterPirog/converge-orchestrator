@@ -119,6 +119,8 @@ def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> N
     assert cfg.agents["builder"].model_profile == "builder"
     assert cfg.model_profiles["builder"].context_tokens == 128000
     assert cfg.model_profiles["builder"].output_tokens == 16000
+    assert cfg.review_roles == []
+    assert cfg.max_parallel_reviews == 3
     assert resolve_agent_model(cfg, cfg.agents["builder"]) == "openwebui/coding-model"
     assert resolve_agent_model(cfg, cfg.agents["planner"]) == "openwebui/reasoning/model"
 
@@ -190,6 +192,29 @@ def test_tool_permissions_cannot_weaken_core_role_boundaries(tmp_path: Path) -> 
     cfg = ProjectConfig.model_validate(raw)
     with pytest.raises(ValueError, match="custom/MCP tools"):
         build_opencode_config(cfg)
+
+
+def test_review_roles_must_be_explicit_supported_and_configured(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["workflow"]["review_roles"] = ["security_reviewer"]
+    with pytest.raises(ValidationError, match="unconfigured agents"):
+        ProjectConfig.model_validate(raw)
+
+    raw = _nested_config(tmp_path)
+    raw["agents"]["builder_review"] = {
+        "agent": "converge-builder-review",
+        "model_profile": "builder",
+    }
+    raw["workflow"]["review_roles"] = ["builder_review"]
+    with pytest.raises(ValidationError, match="unsupported review roles"):
+        ProjectConfig.model_validate(raw)
+
+
+def test_opencode_agent_ids_must_be_unique(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["agents"]["builder"]["agent"] = "converge-planner"
+    with pytest.raises(ValidationError, match="agent IDs must be unique"):
+        ProjectConfig.model_validate(raw)
 
 
 def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: Path) -> None:
@@ -281,10 +306,24 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert profiles["builder"]["context_tokens"] == 262144
     assert profiles["reviewer"]["model"] == "glm-5.3-flash:cloud"
     assert profiles["reviewer"]["context_tokens"] == 1048576
-    assert profiles["planner"]["request_body"] == {}
-    assert profiles["builder"]["request_body"] == {}
-    assert profiles["reviewer"]["request_body"] == {}
+    assert profiles["security"]["model"] == "gpt-oss:120b"
+    assert profiles["security"]["context_tokens"] == 131072
+    assert all(profile["request_body"] == {} for profile in profiles.values())
     assert raw["agents"]["planner"]["steps"] == 18
     assert raw["agents"]["builder"]["steps"] == 60
-    assert raw["agents"]["reviewer"]["steps"] == 24
-    assert set(raw["agents"]) == {"planner", "builder", "reviewer"}
+    assert raw["agents"]["correctness_reviewer"]["steps"] == 24
+    assert raw["agents"]["architecture_reviewer"]["steps"] == 24
+    assert raw["agents"]["security_reviewer"]["steps"] == 24
+    assert set(raw["agents"]) == {
+        "planner",
+        "builder",
+        "correctness_reviewer",
+        "architecture_reviewer",
+        "security_reviewer",
+    }
+    assert raw["workflow"]["review_roles"] == [
+        "correctness_reviewer",
+        "architecture_reviewer",
+        "security_reviewer",
+    ]
+    assert raw["workflow"]["max_parallel_reviews"] == 3
