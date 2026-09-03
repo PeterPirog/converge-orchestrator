@@ -109,13 +109,16 @@ def test_opencode_invocation_is_fresh_and_writes_context_ledger(tmp_path: Path) 
     adapter = OpenCodeAdapter(cfg)
     fake_result = type("Result", (), {"returncode": 0, "stdout": "ok"})()
 
-    with patch("converge_orchestrator.opencode.run", return_value=fake_result) as runner:
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with patch(target, return_value=fake_result) as runner:
         result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
 
     assert result.ok
     command = runner.call_args.args[0]
     assert "--continue" not in command
     assert "--session" not in command
+    assert runner.call_args.kwargs["writable_cwd"] is False
+    assert runner.call_args.kwargs["scope"] == "agent"
     assert result.context["session_mode"] == "fresh"
     ledger = cfg.state_dir / "context-usage.jsonl"
     records = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
@@ -129,7 +132,8 @@ def test_core_budget_failure_does_not_launch_opencode(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     adapter = OpenCodeAdapter(cfg)
 
-    with patch("converge_orchestrator.opencode.run") as runner:
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with patch(target) as runner:
         result = adapter.invoke("planner", "z" * 12000, cfg.repo_path)
 
     runner.assert_not_called()
