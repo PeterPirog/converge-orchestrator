@@ -11,6 +11,7 @@ from .config import load_config
 from .git import update_base
 from .models import Requirement, TaskEnvelope, WorkflowState
 from .opencode import OpenCodeAdapter
+from .prompts import contract_excerpt
 
 
 class RepoScoutPayload(BaseModel):
@@ -100,7 +101,7 @@ Base branch: {base_branch}
 Base commit: {base_commit}
 
 IMMUTABLE REQUIREMENTS:
-{wf.contract_excerpt(requirements)}
+{contract_excerpt(requirements)}
 """
 
 
