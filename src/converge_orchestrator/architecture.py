@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -89,9 +90,12 @@ def write_baseline_architecture_cache(
         policy_sha256=architecture_policy_sha256(config),
         scan=scan,
     )
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(cache.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(cache.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _path_matches_source(path: str, source: str) -> bool:
@@ -117,10 +121,11 @@ def _candidate_files(
 ) -> tuple[set[Path], list[PythonArchitectureIssue]]:
     files: set[Path] = set()
     issues: list[PythonArchitectureIssue] = []
-    for rule in rules:
-        for source in rule.source_paths:
-            target = root if source == "." else root / source
-            if target.is_symlink():
+    sources = sorted({source for rule in rules for source in rule.source_paths})
+    for source in sources:
+        target = root if source == "." else root / source
+        if target.is_symlink():
+            for rule in _matching_rules(source, rules):
                 issues.append(
                     PythonArchitectureIssue(
                         rule=rule.name,
@@ -130,15 +135,14 @@ def _candidate_files(
                         detail="configured architecture source is a symlink",
                     )
                 )
-                continue
-            if target.is_file():
-                if target.suffix == ".py":
-                    files.add(target)
-                continue
-            if not target.is_dir():
-                continue
-            for candidate in target.rglob("*.py"):
-                files.add(candidate)
+            continue
+        if target.is_file():
+            if target.suffix == ".py":
+                files.add(target)
+            continue
+        if not target.is_dir():
+            continue
+        files.update(target.rglob("*.py"))
     return files, issues
 
 
