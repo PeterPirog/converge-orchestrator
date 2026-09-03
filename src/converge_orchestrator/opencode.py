@@ -164,9 +164,9 @@ class OpenCodeAdapter:
                 timeout=agent_cfg.timeout_seconds,
                 env={
                     "OPENCODE_CONFIG": str(generated_config),
-                    # Stable OpenCode loads inline config after project config and `.opencode`. This
-                    # keeps orchestrator safety policy authoritative even for a target repository that
-                    # contains its own OpenCode configuration.
+                    # Stable OpenCode loads inline config after project config and `.opencode`.
+                    # This keeps orchestrator safety policy authoritative even for a target
+                    # repository that contains its own OpenCode configuration.
                     "OPENCODE_CONFIG_CONTENT": runtime_config,
                 },
             )
