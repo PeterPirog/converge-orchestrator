@@ -9,6 +9,8 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from .registry import ControlRegistry
 
+_POSTGRES_CHECKPOINT_SETUP_LOCK = 4850181456138487621
+
 
 class PostgresSupportError(RuntimeError):
     """Raised when PostgreSQL runtime state is requested without its optional dependencies."""
@@ -58,8 +60,18 @@ def setup_checkpoint_storage(postgres_dsn: str | None = None) -> None:
         row_factory=dict_row,
     )
     try:
-        saver = PostgresSaver(connection, serde=_postgres_serializer())
-        saver.setup()
+        connection.execute(
+            "SELECT pg_advisory_lock(%s)",
+            (_POSTGRES_CHECKPOINT_SETUP_LOCK,),
+        )
+        try:
+            saver = PostgresSaver(connection, serde=_postgres_serializer())
+            saver.setup()
+        finally:
+            connection.execute(
+                "SELECT pg_advisory_unlock(%s)",
+                (_POSTGRES_CHECKPOINT_SETUP_LOCK,),
+            )
     finally:
         connection.close()
 
