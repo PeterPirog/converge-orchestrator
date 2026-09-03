@@ -79,9 +79,11 @@ Implemented:
 - backward-compatible legacy flat configuration;
 - OpenWebUI/OpenAI-compatible generated stable OpenCode provider;
 - reusable model profiles and per-agent runtime properties;
-- quality-first default routing: DeepSeek V4 Pro Planner/architecture review, Kimi K2.7 Code Builder,
-  GLM 5.3 Flash correctness review and gpt-oss 120B security review;
+- quality-first default routing: DeepSeek V4 Flash Scout, DeepSeek V4 Pro Planner/architecture review,
+  Kimi K2.7 Code Builder, GLM 5.3 Flash correctness review and gpt-oss 120B security review;
 - model-family diversity documented as a review-quality invariant;
+- fast read-only Repo Scout/Triage before Planner with exact-base-commit capture, bounded durable
+  snapshot, requirement-hint validation and non-blocking fallback;
 - bounded configurable review parallelism with legacy single-reviewer compatibility;
 - `converge models` model-catalog discovery;
 - model gateway live validation in `converge doctor`;
@@ -91,9 +93,8 @@ Implemented:
 
 Next priorities:
 
-- fast read-only Repo Scout/Triage role (reference candidate: `deepseek-v4-flash:cloud`);
+- OpenWebUI operator/control Function bridge on top of the existing FastAPI/LangGraph API;
 - provider/model fallback policy with bounded retries and evidence;
-- OpenWebUI operator/control Function bridge on top of the existing FastAPI API;
 - context-budget/session-rotation policy for long-running projects;
 - sandboxed execution runner with filesystem/network policy;
 - PostgreSQL checkpointer/control registry for multi-worker deployment;
