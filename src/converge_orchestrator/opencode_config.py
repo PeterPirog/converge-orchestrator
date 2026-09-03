@@ -209,22 +209,51 @@ def _stable_mcp_config(raw: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+def _provider_model_entry(profile: ModelProfile, model_id: str) -> dict[str, Any]:
+    entry: dict[str, Any] = {"name": profile.name or model_id}
+    limit: dict[str, int] = {}
+    if profile.context_tokens is not None:
+        limit["context"] = profile.context_tokens
+    if profile.output_tokens is not None:
+        limit["output"] = profile.output_tokens
+    if limit:
+        entry["limit"] = limit
+    return entry
+
+
+def _add_provider_model(
+    provider_models: dict[str, dict[str, Any]],
+    profile: ModelProfile,
+    model_id: str,
+) -> None:
+    entry = _provider_model_entry(profile, model_id)
+    existing = provider_models.get(model_id)
+    if existing is None:
+        provider_models[model_id] = entry
+        return
+    existing_limit = existing.get("limit")
+    new_limit = entry.get("limit")
+    if existing_limit and new_limit and existing_limit != new_limit:
+        raise ValueError(
+            f"model {model_id!r} has conflicting OpenCode context/output limits"
+        )
+    if not existing_limit and new_limit:
+        existing["limit"] = new_limit
+
+
 def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
     """Build stable OpenCode config without materializing any secret value."""
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
     gateway = config.model_gateway
 
     if gateway.kind != "existing":
-        provider_models: dict[str, dict[str, str]] = {}
+        provider_models: dict[str, dict[str, Any]] = {}
         for profile in config.model_profiles.values():
             resolved = resolve_profile_model(config, profile)
             provider, model_id = resolved.split("/", 1)
             if provider != gateway.provider_id:
                 continue
-            provider_models.setdefault(
-                model_id,
-                {"name": profile.name or model_id},
-            )
+            _add_provider_model(provider_models, profile, model_id)
 
         options: dict[str, Any] = {"baseURL": gateway.base_url}
         if gateway.api_key_env:
