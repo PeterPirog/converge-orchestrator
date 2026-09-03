@@ -12,10 +12,32 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from .models import ProjectConfig
+from .opencode_config import role_mcp_env_source
 from .shell import run_configured
 
 SandboxScope = Literal["agent", "quality"]
 _ENV_REFERENCE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+_HOST_AGENT_BASE_ENV = {
+    "APPDATA",
+    "COMSPEC",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "PATH",
+    "PATHEXT",
+    "PROGRAMDATA",
+    "SHELL",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+}
 
 
 def _env_references(value: Any) -> set[str]:
@@ -32,15 +54,33 @@ def _env_references(value: Any) -> set[str]:
     return found
 
 
-def _configured_env_names(config: ProjectConfig, scope: SandboxScope) -> set[str]:
+def _configured_env_names(
+    config: ProjectConfig,
+    scope: SandboxScope,
+    agent_role: str | None = None,
+) -> set[str]:
     names = set(config.sandbox.pass_env)
     if scope != "agent":
         return names
     if config.model_gateway.api_key_env:
         names.add(config.model_gateway.api_key_env)
     names.update(_env_references(config.model_gateway.headers))
-    names.update(_env_references(config.mcp))
+    names.update(_env_references(role_mcp_env_source(config, agent_role)))
     return names
+
+
+def _host_agent_environment(
+    config: ProjectConfig,
+    env: dict[str, str] | None,
+    agent_role: str | None,
+) -> dict[str, str]:
+    """Build a least-privilege host environment instead of inheriting every parent secret."""
+    names = _HOST_AGENT_BASE_ENV | _configured_env_names(config, "agent", agent_role)
+    process_env = {name: os.environ[name] for name in names if name in os.environ}
+    if env:
+        process_env.update(env)
+    process_env["GIT_OPTIONAL_LOCKS"] = "0"
+    return process_env
 
 
 def _mount(source: Path, *, readonly: bool) -> str:
@@ -191,8 +231,19 @@ class ExecutionSandbox:
         scope: SandboxScope = "quality",
         writable_cwd: bool = True,
         include_state: bool = False,
+        agent_role: str | None = None,
+        readonly_paths: tuple[Path, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         if self.config.sandbox.mode == "host":
+            if scope == "agent":
+                return run_configured(
+                    command,
+                    cwd=cwd,
+                    timeout=timeout,
+                    shell=shell,
+                    env=_host_agent_environment(self.config, env, agent_role),
+                    inherit_env=False,
+                )
             return run_configured(
                 command,
                 cwd=cwd,
@@ -213,6 +264,8 @@ class ExecutionSandbox:
             scope=scope,
             writable_cwd=writable_cwd,
             include_state=include_state,
+            agent_role=agent_role,
+            readonly_paths=readonly_paths,
         )
 
     def _run_container(
@@ -226,6 +279,8 @@ class ExecutionSandbox:
         scope: SandboxScope,
         writable_cwd: bool,
         include_state: bool,
+        agent_role: str | None,
+        readonly_paths: tuple[Path, ...],
     ) -> subprocess.CompletedProcess[str]:
         policy = self.config.sandbox
         image = policy.image
@@ -282,8 +337,12 @@ class ExecutionSandbox:
         if include_state and self.config.state_dir.exists():
             if not _is_within(self.config.state_dir, cwd):
                 argv += ["--mount", _mount(self.config.state_dir, readonly=True)]
+        for path in readonly_paths:
+            resolved = path.resolve()
+            if resolved.exists() and not _is_within(resolved, cwd):
+                argv += ["--mount", _mount(resolved, readonly=True)]
 
-        env_names = _configured_env_names(self.config, scope)
+        env_names = _configured_env_names(self.config, scope, agent_role)
         env_names.update((env or {}).keys())
         env_names.update({"GIT_OPTIONAL_LOCKS", "HOME", "XDG_CACHE_HOME"})
         for name in sorted(env_names):
