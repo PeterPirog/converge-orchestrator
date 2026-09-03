@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
+from converge_orchestrator.config import load_config
 from converge_orchestrator.models import ProjectConfig
 from converge_orchestrator.opencode import OpenCodeAdapter
 from converge_orchestrator.opencode_config import (
@@ -101,6 +103,7 @@ def _nested_config(tmp_path: Path) -> dict:
 def test_documented_nested_config_flattens_to_runtime_model(tmp_path: Path) -> None:
     cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
 
+    assert cfg.version == 1
     assert cfg.project_name == "fixture"
     assert cfg.github_repo == "acme/fixture"
     assert cfg.repo_path == (tmp_path / "repository").resolve()
@@ -156,6 +159,14 @@ def test_request_body_cannot_override_orchestrator_safety_fields(tmp_path: Path)
         build_opencode_config(cfg)
 
 
+def test_tool_permissions_cannot_weaken_core_role_boundaries(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["agents"]["planner"]["tool_permissions"] = {"edit": "allow"}
+    cfg = ProjectConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="custom/MCP tools"):
+        build_opencode_config(cfg)
+
+
 def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: Path) -> None:
     cfg = ProjectConfig.model_validate(_nested_config(tmp_path))
     adapter = OpenCodeAdapter(cfg)
@@ -173,6 +184,47 @@ def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: P
     command = call.args[0]
     assert "--auto" in command
     assert command[command.index("--agent") + 1] == "converge-builder"
+
+
+def test_load_config_resolves_relative_paths_from_yaml_directory(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    repo = project / "repository"
+    repo.mkdir()
+    requirements = project / "architecture.md"
+    requirements.write_text("System must remain stable.\n", encoding="utf-8")
+    config_path = project / "converge.yaml"
+    config_path.write_text(
+        """
+version: 1
+project:
+  repo_path: ./repository
+  requirements_path: ./architecture.md
+  state_dir: ./.state
+  require_spec_read_only: false
+opencode:
+  generated_config_path: ./.runtime/opencode.json
+agents:
+  planner:
+    agent: converge-planner
+    model: openai/example
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+    assert cfg.repo_path == repo.resolve()
+    assert cfg.requirements_path == requirements.resolve()
+    assert cfg.state_dir == (project / ".state").resolve()
+    assert cfg.opencode_generated_config_path == (project / ".runtime/opencode.json").resolve()
+
+
+def test_unknown_config_version_is_rejected(tmp_path: Path) -> None:
+    raw = _nested_config(tmp_path)
+    raw["version"] = 2
+    with pytest.raises(ValidationError):
+        ProjectConfig.model_validate(raw)
 
 
 def test_legacy_flat_configuration_remains_supported(tmp_path: Path) -> None:
@@ -193,6 +245,7 @@ def test_legacy_flat_configuration_remains_supported(tmp_path: Path) -> None:
 def test_example_yaml_is_valid_single_file_configuration() -> None:
     source = Path("examples/converge.yaml").read_text(encoding="utf-8")
     raw = yaml.safe_load(source)
+    assert raw["version"] == 1
     assert raw["project"]["repo_path"]
     assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
