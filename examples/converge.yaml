@@ -39,6 +39,17 @@ github:
   ci_poll_seconds: 15
   ci_timeout_seconds: 1800
 
+  # Disabled by default. Automatic reruns are allowed only for exact GitHub Actions check names
+  # explicitly listed here. Commit-status failures, mixed flaky/non-flaky required failures and
+  # ambiguous duplicate checks are never retried. The retry ledger is durable for each candidate SHA.
+  flaky_ci:
+    checks: []
+    max_retries_per_check: 0
+  # Example opt-in after a job has been independently classified as flaky:
+  # flaky_ci:
+  #   checks: ["test (3.13)"]
+  #   max_retries_per_check: 1
+
 opencode:
   # Current stable OpenCode CLI. In container sandbox mode this binary must exist INSIDE the image.
   binary: opencode

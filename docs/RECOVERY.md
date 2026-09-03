@@ -14,13 +14,14 @@ checkpoint from the project's `state_dir/langgraph.sqlite`.
 | human risk/TDD/budget interrupt | remain interrupted; operator decision is still required |
 | controlled pause | remain paused; never auto-resume |
 | `next` node and no interrupt | mark `recoverable` and automatically resume the same LangGraph `thread_id` |
-| no first checkpoint yet | reconstruct only the original minimal run input from the control registry and re-enter the same thread |
+| no checkpoint, or the exact minimal input-envelope checkpoint before the first node | reconstruct only the original minimal run input from the control registry and re-enter the same thread |
 | terminal checkpoint | no recovery action |
 
-A recovered graph with a durable checkpoint is resumed with no new task input. The already checkpointed
-state remains authoritative. Only the narrow crash window before the first checkpoint is allowed to
-reconstruct input, and that reconstruction contains only `project_id`, `config_path`, `run_id` and
-`thread_id` from the durable control registry.
+A recovered graph with an executable durable checkpoint is resumed with no new task input. The already
+checkpointed state remains authoritative. Only the narrow crash window before the first executable node
+is allowed to reconstruct input. This includes both an absent checkpoint and LangGraph's exact durable
+input envelope containing only `project_id`, `config_path`, `run_id` and `thread_id`; any extra state is
+not treated as pre-node state. Reconstruction uses those same values from the durable control registry.
 
 Checkpoint inspection failures are fail-closed. Corrupt or unreadable checkpoint storage is recorded as
 an error and is never interpreted as an empty run. A transient SQLite `locked`/`busy` error is different:
@@ -48,7 +49,11 @@ Therefore recovery assumes that a side-effect node may be executed more than onc
 - pull-request creation uses `ensure_pull_request()` to reuse an existing task PR;
 - merge detects an already merged PR and returns the existing merge SHA;
 - CI polling performs one observation per `ci_poll`; waiting is represented by a durable machine
-  interrupt rather than a sleeping worker.
+  interrupt rather than a sleeping worker;
+- an explicitly classified flaky GitHub Actions retry reserves its bounded per-head budget in durable
+  evidence before the remote rerun request. If the process dies before the LangGraph checkpoint, the
+  next controller reconciles that reservation and waits for a fresh CI observation instead of issuing
+  an unaccounted duplicate rerun.
 
 These invariants are required for safe automatic restart recovery.
 

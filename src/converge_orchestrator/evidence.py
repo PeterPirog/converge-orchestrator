@@ -26,6 +26,13 @@ class EvidenceStore:
         self._atomic_write(path, text)
         return path
 
+    def read_json(self, run_id: str, task_id: str, name: str) -> Any | None:
+        """Read one JSON artifact without scanning the rest of the task evidence bundle."""
+        path = self.root / run_id / task_id / name
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def append_event(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
         run_dir = self.root / run_id
         run_dir.mkdir(parents=True, exist_ok=True)

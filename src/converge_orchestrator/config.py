@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 
+from .ci_flakes import flaky_ci_policy_from_mapping
 from .models import ProjectConfig
 
 _PATH_KEYS = (
@@ -62,6 +63,7 @@ def load_config(path: str | Path) -> ProjectConfig:
     data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError("converge.yaml must contain a YAML mapping at the document root")
+    flaky_ci_policy_from_mapping(data)
     data = _resolve_relative_paths(data, source.parent)
     cfg = ProjectConfig.model_validate(data)
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
