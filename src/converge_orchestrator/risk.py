@@ -101,8 +101,8 @@ _AUTH_SEGMENTS = {
     "session",
 }
 _AUTH_PRIMITIVE = re.compile(
-    r"(?i)\b(?:auth(?:enticate|orize|entication|orization)?|permission|role|scope|jwt|oauth|oidc|"
-    r"session|token|password|credential|principal|identity|policy|access[_ -]?control)\b"
+    r"(?i)\b(?:auth(?:enticate|orize|entication|orization)?|permissions?|roles?|scopes?|jwt|oauth|"
+    r"oidc|sessions?|tokens?|password|credential|principal|identity|policy|access[_ -]?control)\b"
 )
 _AUTH_WEAKENING = re.compile(
     r"(?i)(?:verify\s*=\s*false|skip[_ -]?auth|bypass[_ -]?auth|allow[_ -]?anonymous|"
@@ -168,6 +168,30 @@ def _auth_path(path: str) -> bool:
     parts = [part.lower() for part in normalized.parts[:-1]]
     stem_tokens = set(re.split(r"[^a-z0-9]+", normalized.stem.lower()))
     return bool(set(parts).intersection(_AUTH_SEGMENTS) or stem_tokens.intersection(_AUTH_SEGMENTS))
+
+
+def _canonical_auth_term(raw: str) -> str:
+    value = re.sub(r"[_ -]+", "_", raw.lower())
+    if value.startswith("auth"):
+        return "auth"
+    if value in {"permission", "permissions"}:
+        return "permission"
+    if value in {"role", "roles"}:
+        return "role"
+    if value in {"scope", "scopes"}:
+        return "scope"
+    if value in {"session", "sessions"}:
+        return "session"
+    if value in {"token", "tokens"}:
+        return "token"
+    return value
+
+
+def _auth_terms(lines: list[str]) -> set[str]:
+    terms: set[str] = set()
+    for line in lines:
+        terms.update(_canonical_auth_term(match.group(0)) for match in _AUTH_PRIMITIVE.finditer(line))
+    return terms
 
 
 def _redact_secret_evidence(path: str, line: int | None, kind: str) -> str:
@@ -267,23 +291,26 @@ def _auth_findings(
 ) -> list[RiskFinding]:
     if _is_test_path(path) or not _auth_path(path):
         return []
+    added_lines = [line for _, line in added]
     added_security = [
         (line_no, line) for line_no, line in added if _AUTH_PRIMITIVE.search(line)
     ]
     removed_security = [line for line in removed if _AUTH_PRIMITIVE.search(line)]
     weakening = [(line_no, line) for line_no, line in added if _AUTH_WEAKENING.search(line)]
+    lost_terms = _auth_terms(removed_security) - _auth_terms(added_lines)
     changed_security_lines = len(added_security) + len(removed_security)
-    if weakening or removed_security or changed_security_lines >= 8:
+    if weakening or lost_terms or changed_security_lines >= 8:
         line_no = (
             weakening[0][0]
             if weakening
             else (added_security[0][0] if added_security else None)
         )
-        reason = (
-            "explicit auth weakening"
-            if weakening
-            else "authorization/authentication contract changed"
-        )
+        if weakening:
+            reason = "explicit auth weakening"
+        elif lost_terms:
+            reason = "security primitive removed: " + ", ".join(sorted(lost_terms))
+        else:
+            reason = "authorization/authentication contract changed substantially"
         return [
             RiskFinding(
                 kind="auth_security_change",
