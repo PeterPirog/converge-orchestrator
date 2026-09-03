@@ -19,6 +19,10 @@ class Decision:
     reason: str
 
 
+BLOCKING_RISK_FLAGS = {
+    "secret_material_detected",
+}
+
 HUMAN_ONLY_FLAGS = {
     "contradictory_requirements",
     "destructive_data_migration",
@@ -41,6 +45,8 @@ def can_integrate(
         return Decision(DecisionKind.BLOCK, "SPEC_CHANGED")
     if not required_gates_pass(gates):
         return Decision(DecisionKind.BLOCK, "QUALITY_GATE_FAILED")
+    if BLOCKING_RISK_FLAGS.intersection(risk_flags):
+        return Decision(DecisionKind.BLOCK, "RISK_POLICY_BLOCKED")
     if review.verdict != "pass":
         return Decision(DecisionKind.BLOCK, "REVIEW_REJECTED")
     if compliance.mandatory_regressions > 0:

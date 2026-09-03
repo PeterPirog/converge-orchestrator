@@ -16,10 +16,12 @@ gdy LangGraph pozostaje trwałym silnikiem procesu. Długotrwała ciągłość p
 ukrytej historii modelu: każdy agent call jest świeżą sesją, a continuity pochodzi z LangGraph state i
 jawnych artefaktów evidence.
 
-Największą pozostałą luką operacyjną jest deterministyczna klasyfikacja zmian public API, migracji
-danych, sekretów i auth oraz powiązane compatibility adapters. Kolejne ryzyka to crash/chaos recovery,
-remote branch-protection awareness i observability. OS/container execution boundary oraz wymuszane
-red-before-green dla behavior tasks nie są już lukami architektonicznymi.
+Deterministyczna klasyfikacja finalnego diffu dla sekretów, migracji, publicznego Python API oraz
+auth/authz nie jest już luką. Największą pozostałą luką operacyjną jest crash/chaos recovery: leases,
+stale worktree cleanup, wznowienie po zabitym procesie oraz długotrwałe oczekiwanie na CI. Dalszego
+rozszerzenia wymagają także cross-language compatibility adapters, remote branch-protection awareness
+i observability. OS/container execution boundary oraz wymuszane red-before-green dla behavior tasks
+nie są już lukami architektonicznymi.
 
 ## Macierz zbieżności
 
@@ -27,19 +29,19 @@ red-before-green dla behavior tasks nie są już lukami architektonicznymi.
 | --- | --- | --- | --- |
 | Niezmienny Markdown jako Source of Truth | **STRONGER** | plik poza repo, OS read-only, SHA-256 pin, ponowne sprawdzanie przed zmianami i bezpośrednio przed integration | brak krytycznej luki |
 | Przeciwdziałanie architectural drift | **STRONGER** | traceable `contract.json`, source anchors, exact target requirement injection, compliance i monotonic verifier policy; pełny contract nie jest już cicho obcinany do 80 wymagań | semantic-only requirements nadal wymagają LLM review |
-| Deterministyczny kontroler nad LLM | **ALIGNED** | LangGraph + Pydantic state/policy; LLM nie steruje merge ani nie może anulować failing gate | brak krytycznej luki |
+| Deterministyczny kontroler nad LLM | **STRONGER** | LangGraph + Pydantic state/policy; LLM nie steruje merge, nie może anulować failing gate ani sam wyprodukować hard-block evidence bez deterministycznego klasyfikatora | brak krytycznej luki |
 | Planner / Worker / Reviewer | **STRONGER** | Scout RO mapuje dokładny base commit, Planner RO wybiera task, Builder jest jedynym writerem, trzy niezależne review lanes są RO | dalsze specialty analyzers są opcjonalnym rozszerzeniem |
-| Autonomiczny TDD / repair loop | **ALIGNED** | behavior task wymaga strukturalnego TDD contract; orkiestrator wykonuje baseline, test-only RED, literalny novel failure marker, deterministic test-artifact check, SHA-256 freeze i GREEN na tym samym gate; repair/replan są bounded, a HITL nie może ominąć RED | klasyfikacja `change_kind` pozostaje semantic/reviewer-backed i może być dalej wzmacniana przez risk classifier |
+| Autonomiczny TDD / repair loop | **ALIGNED** | behavior task wymaga strukturalnego TDD contract; orkiestrator wykonuje baseline, test-only RED, literalny novel failure marker, deterministic test-artifact check, SHA-256 freeze i GREEN na tym samym gate; repair/replan są bounded, a HITL nie może ominąć RED | klasyfikacja `change_kind` pozostaje semantic/reviewer-backed i może być dalej wzmacniana regułami językowymi |
 | Izolacja Git | **STRONGER** | osobny `git worktree` per task; w container sandbox shared `.git` i worktree `.git` pointer są dodatkowo read-only | cleanup po crash wymaga dalszego hardeningu |
-| Code review jako bariera przed dryfem | **STRONGER** | correctness + architecture + security wykonywane równolegle; jeden reject albo reviewer failure blokuje integration; reviewer otrzymuje pełny diff zamiast cichego tail-only truncation | future specialty lanes mogą zostać dodane później |
-| GitHub PR + CI | **ALIGNED** | deterministic integrator, branch push, PR, bounded CI wait, opcjonalny merge po PASS | required-check/branch-protection discovery jeszcze niepełne |
+| Code review jako bariera przed dryfem | **STRONGER** | deterministic risk scan poprzedza semantic review; correctness + architecture + security są wykonywane równolegle; jeden reject albo reviewer failure blokuje integration; candidate z materiałem sekretu nie jest wysyłany reviewerom | future specialty lanes mogą zostać dodane później |
+| GitHub PR + CI | **ALIGNED** | deterministic integrator, branch push, PR, bounded CI wait, opcjonalny merge po PASS | required-check/branch-protection discovery i długie checkpointowane oczekiwanie jeszcze niepełne |
 | MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do stable OpenCode | Converge nie wymusza konkretnego katalogu git/github/pytest/desktop MCP; część funkcji realizuje bezpieczniej deterministycznym kodem lokalnym |
 | OpenWebUI jako punkt wejścia operatora | **ALIGNED** | natywny Workspace Tool nad Bearer-authenticated FastAPI; read-only status/compliance/evidence oraz confirmation-gated register/bootstrap/start/pause/resume/decision; durable state pozostaje w LangGraph | docelowy dashboard może poprawić ergonomię, ale nie jest wymagany do kontroli workflow |
 | Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne do YAML, profiles/models/MCP/sandbox/quality/workflow oraz Valves dla operator bridge | pełny GUI editor projektu pozostaje opcjonalny |
-| Minimalny HITL | **STRONGER** | przerwanie tylko dla risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate ani ominąć brakującego RED evidence | klasyfikacja public API/migracji/sekretów/auth wymaga dalszego rozszerzenia |
+| Minimalny HITL | **STRONGER** | przerwanie tylko dla deterministic risk policy lub wyczerpania bounded recovery; człowiek nie może zatwierdzić failing deterministic gate, hard-block secret material ani ominąć brakującego RED evidence; risk approval jest związane z hashem candidate diffu | szersze cross-language compatibility adapters mogą jeszcze zmniejszyć liczbę eskalacji |
 | Least privilege / sandbox | **STRONGER** | deny-by-default role permissions + niezależny container boundary: RO Scout/Planner/Reviewers, RW tylko active Builder worktree, RO Git metadata/pointer, read-only root, cap-drop, no-new-privileges, resource limits, allowlisted ENV, rozdzielone sieci, internal-agent-network validation, timeout cleanup i host-only GitHub integration | production image hardening i konkretne sieci/toolchainy pozostają deployment-specific |
 | Dual-memory / context rotation | **ALIGNED** | każda inwokacja OpenCode jest świeżą sesją bez `--continue`/`--session`; continuity pochodzi z LangGraph/evidence; deterministyczny bounded working memory jest advisory-only; context budget failuje przed model call, jeśli pełny authoritative core się nie mieści | token usage jest obecnie konserwatywnie estymowany; provider-reported cost/token telemetry pozostaje późniejszym hardeningiem |
-| Evidence + compliance | **STRONGER** | SQLite checkpoints, evidence bundles, events, compliance snapshot, requirement verifiers, baseline/candidate regression policy, TDD baseline/RED/GREEN evidence oraz per-invocation context ledger | docelowo metrics/tracing i storage dla multi-worker |
+| Evidence + compliance | **STRONGER** | SQLite checkpoints, evidence bundles, events, compliance snapshot, requirement verifiers, baseline/candidate regression policy, TDD baseline/RED/GREEN evidence, deterministic `risk.json`, candidate risk fingerprint oraz per-invocation context ledger | docelowo metrics/tracing i storage dla multi-worker |
 
 ## Wspierana implementacja zamiast legacy OpenWebUI Pipelines
 
@@ -195,13 +197,39 @@ przeszedł. Builder/repair nie mogą więc uzyskać GREEN przez osłabienie, ski
 wersję testu. Po wyczerpaniu bounded repair/replan specjalny TDD HITL oferuje wyłącznie replan lub stop;
 nie istnieje human override prowadzący do integration bez RED.
 
+## Deterministic repository-risk policy
+
+Przed semantic review aktywny LangGraph uruchamia deterministyczną klasyfikację finalnego candidate
+diffu. Risk scan nie korzysta z oceny LLM i nie ufa Plannerowi jako authority dla hard-block evidence.
+Planner może deklarować ryzyka advisory/HITL, ale zastrzeżone blocking flags są odrzucane z części
+deklaratywnej i mogą pojawić się w stanie grafu tylko jako rezultat klasyfikatora.
+
+Klasyfikator obecnie obejmuje:
+
+- high-confidence secret material i literalne sekrety — **BLOCK**, bez human override;
+- nowe zależności od nazwanych sekretów środowiskowych — **HITL**;
+- destrukcyjne operacje w ścieżkach migracji i usunięcie istniejącej migracji — **HITL**;
+- usunięcie lub zmianę sygnatury publicznego Python API — **HITL**;
+- jawne osłabienie albo utratę security primitives w auth/authz — **HITL**;
+- małe zmiany na powierzchni auth bez utraty primitive — jawne evidence `observe`, bez automatycznej
+  eskalacji.
+
+Wykrycie materiału sekretu następuje przed zewnętrznym semantic review. W takim przypadku reviewerzy
+nie otrzymują raw diffu, a evidence zapisuje tylko zredagowany finding. Dla approvable risków human
+approval jest związane z SHA-256 dokładnego candidate diffu. Każdy repair zmieniający choć jeden bajt
+unieważnia zgodę i wymusza świeżą klasyfikację oraz review.
+
+To zachowuje zasadę LangGraph: modele produkują propozycje i oceny semantyczne, natomiast przejścia do
+integration wynikają z jawnego stanu, deterministycznych węzłów i policy code.
+
 ## Priorytety dalszej zbieżności
 
 Kolejność prac powinna maksymalizować autonomię bez zwiększania blast radius:
 
-1. **Risk classifier + compatibility adapters** — public API, migracje danych, sekrety i auth jako
-   deterministyczne/przedintegracyjne sygnały ryzyka.
-2. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie CI.
+1. **Crash/chaos hardening** — leases, stale worktree cleanup, killed-process recovery i długie,
+   checkpointowane oczekiwanie na CI.
+2. **Compatibility adapters** — rozszerzenie public API/migration safety poza Python oraz bezpieczne
+   shim/roll-forward strategies redukujące HITL.
 3. **Remote policy/observability hardening** — branch protection/required checks, model fallback,
    metrics/tracing i multi-worker state.
 4. **Deterministic architecture analyzers** — AST/import rules niezależne od custom project scripts.

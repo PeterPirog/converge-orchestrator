@@ -77,13 +77,20 @@ Implemented:
 - SHA-256 freezing of every accepted RED test artifact, with GREEN requiring the exact frozen tests
   to remain unchanged and the same deterministic test gate to pass;
 - bounded RED repair/replan path and dedicated HITL that permits replan/stop only, never bypass of
-  missing RED evidence into integration.
+  missing RED evidence into integration;
+- deterministic final-diff risk classification before semantic review for secret material, new secret
+  dependencies, destructive migrations, public Python API compatibility and auth/authz changes;
+- hard-block secret-material policy with redacted evidence and suppression of external reviewer/raw
+  diff propagation until blocking material is removed;
+- risk HITL approval bound to the SHA-256 of the exact candidate diff, so any repair invalidates stale
+  approval and forces reclassification;
+- Planner risk flags remain advisory/HITL signals and cannot manufacture deterministic hard-block
+  evidence.
 
 Remaining:
 
 - deterministic AST/import architecture rules independent from custom project scripts;
-- explicit public-API compatibility adapters;
-- destructive migration / secret / public-API / auth risk classifier;
+- broader cross-language compatibility adapters and automated safe-shim/roll-forward strategies;
 - fault-recovery tests for killed orchestrator/OpenCode/CI failures.
 
 ## v0.4 — reusable configuration and service/control plane — in progress
@@ -126,8 +133,8 @@ Implemented:
 
 Next priorities:
 
-- risk classifier and public-API/data-migration/secret/auth compatibility adapters;
 - crash/chaos hardening including stale worktree cleanup and killed-process recovery;
+- broader public-API/data-migration compatibility adapters beyond deterministic risk detection;
 - provider/model fallback policy with bounded retries and evidence;
 - branch-protection/required-check discovery and stronger remote-origin validation;
 - PostgreSQL checkpointer/control registry for multi-worker deployment;
