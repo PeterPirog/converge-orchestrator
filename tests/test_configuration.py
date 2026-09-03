@@ -300,6 +300,8 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
     profiles = raw["models"]["profiles"]
+    assert profiles["scout"]["model"] == "deepseek-v4-flash:cloud"
+    assert profiles["scout"]["context_tokens"] == 1048576
     assert profiles["planner"]["model"] == "deepseek-v4-pro:cloud"
     assert profiles["planner"]["context_tokens"] == 1048576
     assert profiles["builder"]["model"] == "kimi-k2.7-code:cloud"
@@ -309,12 +311,14 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert profiles["security"]["model"] == "gpt-oss:120b"
     assert profiles["security"]["context_tokens"] == 131072
     assert all(profile["request_body"] == {} for profile in profiles.values())
+    assert raw["agents"]["scout"]["steps"] == 12
     assert raw["agents"]["planner"]["steps"] == 18
     assert raw["agents"]["builder"]["steps"] == 60
     assert raw["agents"]["correctness_reviewer"]["steps"] == 24
     assert raw["agents"]["architecture_reviewer"]["steps"] == 24
     assert raw["agents"]["security_reviewer"]["steps"] == 24
     assert set(raw["agents"]) == {
+        "scout",
         "planner",
         "builder",
         "correctness_reviewer",
