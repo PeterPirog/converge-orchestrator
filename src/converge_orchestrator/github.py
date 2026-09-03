@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from .models import CIResult, ProjectConfig, PullRequestInfo
 from .shell import run
@@ -45,6 +46,33 @@ class GitHubAdapter:
         output = self._gh(args, timeout=timeout)
         return json.loads(output or "{}")
 
+    @staticmethod
+    def _pull_info(response: dict[str, Any]) -> PullRequestInfo:
+        return PullRequestInfo(
+            number=int(response["number"]),
+            url=response["html_url"],
+            head_sha=response["head"]["sha"],
+            state=response["state"],
+        )
+
+    def find_open_pull_request(self, *, head: str, base: str) -> PullRequestInfo | None:
+        """Find the unique open PR for this task branch after a checkpoint race/crash."""
+        owner, separator, _ = self.repo.partition("/")
+        if not separator:
+            raise GitHubError(f"Invalid github_repo: {self.repo}")
+        query = urlencode({"state": "open", "head": f"{owner}:{head}", "base": base})
+        output = self._gh(["api", f"repos/{self.repo}/pulls?{query}"])
+        payload = json.loads(output or "[]")
+        if not isinstance(payload, list):
+            raise GitHubError("GitHub pull request search returned a non-list payload")
+        if len(payload) > 1:
+            raise GitHubError(f"Multiple open pull requests found for branch {head}")
+        if not payload:
+            return None
+        if not isinstance(payload[0], dict):
+            raise GitHubError("GitHub pull request search returned an invalid item")
+        return self._pull_info(payload[0])
+
     def create_pull_request(
         self,
         *,
@@ -58,21 +86,24 @@ class GitHubAdapter:
             method="POST",
             fields={"title": title, "head": head, "base": base, "body": body},
         )
-        return PullRequestInfo(
-            number=int(response["number"]),
-            url=response["html_url"],
-            head_sha=response["head"]["sha"],
-            state=response["state"],
-        )
+        return self._pull_info(response)
+
+    def ensure_pull_request(
+        self,
+        *,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+    ) -> PullRequestInfo:
+        existing = self.find_open_pull_request(head=head, base=base)
+        if existing is not None:
+            return existing
+        return self.create_pull_request(head=head, base=base, title=title, body=body)
 
     def get_pull_request(self, number: int) -> PullRequestInfo:
         response = self._api_json(f"repos/{self.repo}/pulls/{number}")
-        return PullRequestInfo(
-            number=int(response["number"]),
-            url=response["html_url"],
-            head_sha=response["head"]["sha"],
-            state=response["state"],
-        )
+        return self._pull_info(response)
 
     def close_pull_request(self, number: int) -> PullRequestInfo:
         response = self._api_json(
@@ -80,12 +111,7 @@ class GitHubAdapter:
             method="PATCH",
             fields={"state": "closed"},
         )
-        return PullRequestInfo(
-            number=int(response["number"]),
-            url=response["html_url"],
-            head_sha=response["head"]["sha"],
-            state=response["state"],
-        )
+        return self._pull_info(response)
 
     def ci_status(self, head_sha: str) -> CIResult:
         checks_payload = self._api_json(f"repos/{self.repo}/commits/{head_sha}/check-runs")
@@ -138,6 +164,12 @@ class GitHubAdapter:
         return latest.model_copy(update={"status": "timeout"})
 
     def merge(self, number: int) -> str:
+        current = self._api_json(f"repos/{self.repo}/pulls/{number}")
+        if current.get("merged"):
+            merged_sha = current.get("merge_commit_sha")
+            if not merged_sha:
+                raise GitHubError("Merged pull request does not expose merge_commit_sha")
+            return str(merged_sha)
         response = self._api_json(
             f"repos/{self.repo}/pulls/{number}/merge",
             method="PUT",

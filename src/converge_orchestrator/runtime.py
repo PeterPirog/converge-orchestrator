@@ -26,7 +26,16 @@ _TERMINAL_STATUSES = {
     "stopped",
     "ci_pass",
 }
-_ACTIVE_STATUSES = {"queued", "running", "pause_requested", "paused", "interrupted", "recoverable"}
+_ACTIVE_STATUSES = {
+    "queued",
+    "running",
+    "pause_requested",
+    "paused",
+    "interrupted",
+    "recoverable",
+}
+_LEASE_TTL_SECONDS = 120
+_LEASE_HEARTBEAT_SECONDS = 30.0
 
 
 def _interrupt_payload(snapshot: Any) -> dict[str, Any] | None:
@@ -48,6 +57,7 @@ class RunController:
         self.registry = ControlRegistry(registry_path)
         self._workers: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
+        self._lease_owner = f"controller-{uuid4().hex}"
 
     def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
         cfg = load_config(config_path)
@@ -130,7 +140,9 @@ class RunController:
         record = self.registry.get_run(run_id)
         snapshot = self._snapshot(record)
         with self._lock:
-            worker_alive = bool(self._workers.get(run_id) and self._workers[run_id].is_alive())
+            worker_alive = bool(
+                self._workers.get(run_id) and self._workers[run_id].is_alive()
+            )
         status = record["status"]
         if snapshot.get("interrupt"):
             kind = snapshot["interrupt"].get("kind")
@@ -179,18 +191,50 @@ class RunController:
             existing = self._workers.get(run_id)
             if existing and existing.is_alive():
                 raise RuntimeError("Run is already executing")
-            worker = threading.Thread(
-                target=self._execute,
-                args=(run_id, input_value),
-                name=f"converge-{run_id[:8]}",
-                daemon=True,
-            )
-            self._workers[run_id] = worker
-            self.registry.update_run(run_id, status="running")
-            worker.start()
+            if not self.registry.claim_run_lease(
+                run_id,
+                self._lease_owner,
+                _LEASE_TTL_SECONDS,
+            ):
+                raise RuntimeError("Run is leased by another active controller")
+            try:
+                worker = threading.Thread(
+                    target=self._execute,
+                    args=(run_id, input_value),
+                    name=f"converge-{run_id[:8]}",
+                    daemon=True,
+                )
+                self._workers[run_id] = worker
+                self.registry.update_run(run_id, status="running")
+                worker.start()
+            except Exception:
+                self._workers.pop(run_id, None)
+                self.registry.release_run_lease(run_id, self._lease_owner)
+                raise
+
+    def _lease_heartbeat(self, run_id: str, stop: threading.Event) -> None:
+        while not stop.wait(_LEASE_HEARTBEAT_SECONDS):
+            try:
+                renewed = self.registry.renew_run_lease(
+                    run_id,
+                    self._lease_owner,
+                    _LEASE_TTL_SECONDS,
+                )
+            except sqlite3.Error:
+                continue
+            if not renewed:
+                return
 
     def _execute(self, run_id: str, input_value: Any) -> None:
         record = self.registry.get_run(run_id)
+        lease_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._lease_heartbeat,
+            args=(run_id, lease_stop),
+            name=f"converge-lease-{run_id[:8]}",
+            daemon=True,
+        )
+        heartbeat.start()
         try:
             graph, db, graph_config = self._open_graph(record)
             try:
@@ -225,6 +269,9 @@ class RunController:
         except Exception as exc:
             self.registry.update_run(run_id, status="failed", error=str(exc), finished=True)
         finally:
+            lease_stop.set()
+            heartbeat.join(timeout=1)
+            self.registry.release_run_lease(run_id, self._lease_owner)
             with self._lock:
                 self._workers.pop(run_id, None)
 

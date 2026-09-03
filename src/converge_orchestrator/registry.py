@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return _utcnow().isoformat()
 
 
 class ControlRegistry:
@@ -46,13 +50,23 @@ class ControlRegistry:
                     active_task_id TEXT,
                     started_at TEXT NOT NULL,
                     finished_at TEXT,
-                    error TEXT
+                    error TEXT,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id, started_at);
                 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(active_task_id);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(runs)").fetchall()
+            }
+            if "lease_owner" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN lease_owner TEXT")
+            if "lease_expires_at" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN lease_expires_at TEXT")
 
     def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
         now = _now()
@@ -102,6 +116,59 @@ class ControlRegistry:
             )
         return self.get_run(run_id)
 
+    def claim_run_lease(self, run_id: str, owner: str, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        now = _utcnow()
+        expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT finished_at, lease_owner, lease_expires_at FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if row["finished_at"]:
+                return False
+            current_owner = row["lease_owner"]
+            raw_expiry = row["lease_expires_at"]
+            expiry = datetime.fromisoformat(raw_expiry) if raw_expiry else None
+            if current_owner and current_owner != owner and expiry and expiry > now:
+                return False
+            db.execute(
+                "UPDATE runs SET lease_owner = ?, lease_expires_at = ? WHERE id = ?",
+                (owner, expires_at, run_id),
+            )
+        return True
+
+    def renew_run_lease(self, run_id: str, owner: str, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        expires_at = (_utcnow() + timedelta(seconds=ttl_seconds)).isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE runs
+                SET lease_expires_at = ?
+                WHERE id = ? AND lease_owner = ? AND finished_at IS NULL
+                """,
+                (expires_at, run_id, owner),
+            )
+        return cursor.rowcount == 1
+
+    def release_run_lease(self, run_id: str, owner: str) -> bool:
+        with self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE runs
+                SET lease_owner = NULL, lease_expires_at = NULL
+                WHERE id = ? AND lease_owner = ?
+                """,
+                (run_id, owner),
+            )
+        return cursor.rowcount == 1
+
     def update_run(
         self,
         run_id: str,
@@ -127,7 +194,13 @@ class ControlRegistry:
             fields.append("error = ?")
             values.append(error)
         if finished:
-            fields.append("finished_at = ?")
+            fields.extend(
+                [
+                    "finished_at = ?",
+                    "lease_owner = NULL",
+                    "lease_expires_at = NULL",
+                ]
+            )
             values.append(_now())
         if not fields:
             return
