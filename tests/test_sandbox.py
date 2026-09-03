@@ -14,8 +14,8 @@ from converge_orchestrator.sandbox import ExecutionSandbox, SandboxPreflightErro
 
 def _container_config(tmp_path: Path) -> ProjectConfig:
     repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
+    repo.mkdir(exist_ok=True)
+    (repo / ".git").mkdir(exist_ok=True)
     requirements = tmp_path / "architecture.md"
     requirements.write_text("System must remain isolated.\n", encoding="utf-8")
     return ProjectConfig(
