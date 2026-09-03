@@ -254,4 +254,9 @@ def test_active_graph_measures_scope_only_after_quality_commands(tmp_path: Path)
         result = quality(state)
 
     assert order == ["quality", "scope"]
-    assert [item["name"] for item in result["quality_results"]] == ["tests", "diff_scope"]
+    assert [item["name"] for item in result["quality_results"]] == [
+        "tdd_green",
+        "tests",
+        "diff_scope",
+    ]
+    assert result["quality_results"][0]["required"] is False
