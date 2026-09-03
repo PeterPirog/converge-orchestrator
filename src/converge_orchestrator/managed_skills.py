@@ -98,12 +98,12 @@ def effective_role_skills(role: str) -> tuple[str, ...]:
     return _DEFAULT_ROLE_SKILLS.get(role, ())
 
 
-def materialize_managed_skills(config: ProjectConfig) -> Path:
-    """Create trusted runtime Skills outside the target repository and return config directory."""
-    root = config.state_dir / "opencode-runtime"
+def materialize_managed_skills(config: ProjectConfig, role: str) -> Path:
+    """Create only the trusted Skills assigned to one role and return its config directory."""
+    root = config.state_dir / "opencode-runtime" / role
     skills_root = root / "skills"
-    for name, body in _MANAGED_SKILLS.items():
+    for name in effective_role_skills(role):
         target = skills_root / name / "SKILL.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body.rstrip() + "\n", encoding="utf-8")
+        target.write_text(_MANAGED_SKILLS[name].rstrip() + "\n", encoding="utf-8")
     return root
