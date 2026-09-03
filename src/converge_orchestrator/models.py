@@ -102,6 +102,7 @@ class StackProfile(BaseModel):
 
 
 class ProjectConfig(BaseModel):
+    version: Literal[1] = 1
     project_name: str | None = None
     repo_path: Path
     requirements_path: Path
