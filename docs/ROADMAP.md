@@ -37,13 +37,14 @@ Implemented:
   to a concrete producer;
 - unrelated check runs remain evidence but do not satisfy or fail an authoritative required-check
   policy;
+- explicit opt-in flaky GitHub Actions classification with exact check names, a durable per-head retry
+  ledger and strict per-check retry caps; mixed, ambiguous or unclassified failures are never retried;
 - CI matrix on Python 3.11–3.13;
 - ownership-aware stale worktree cleanup with durable resource records and protected active,
   recoverable, interrupted and CI-wait runs.
 
 Remaining hardening:
 
-- explicit flaky-job classification before any selective CI retry;
 - optional issue/backlog synchronization.
 
 ## v0.3 — compliance, stack portability and safety — substantially complete
@@ -103,20 +104,17 @@ Implemented:
 
 Next priorities, in order:
 
-1. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence so a
-   transient CI failure does not trigger unnecessary code repair/replanning.
-2. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
+1. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
-3. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
+2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
-4. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
+3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
    core autonomous path is operationally hardened.
 
 ## v0.5 — production autonomous operation
 
 Planned:
 
-- flake-aware CI retry only for explicitly classified flaky jobs;
 - cost/token/time budgets per project and run;
 - provider-reported token/cost telemetry and aggregated per-role health statistics;
 - project-specific pinned sandbox images and deployment profile;
