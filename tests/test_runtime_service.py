@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -37,6 +38,7 @@ def _unfinished_record() -> dict:
         "id": "run-1",
         "project_id": "project",
         "thread_id": "thread-1",
+        "status": "running",
         "finished_at": None,
     }
 
@@ -67,8 +69,8 @@ def test_restore_ci_waits_rehydrates_timer_from_checkpoint() -> None:
 def test_restore_recoverable_run_schedules_automatic_langgraph_resume() -> None:
     controller = _controller()
     _one_unfinished_run(controller)
-    controller._snapshot = Mock(  # type: ignore[method-assign]
-        return_value={"interrupt": None, "next": ["quality"]}
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {"status": "built"}, "interrupt": None, "next": ["quality"]}
     )
     controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
 
@@ -80,11 +82,28 @@ def test_restore_recoverable_run_schedules_automatic_langgraph_resume() -> None:
     controller._schedule_recoverable.assert_called_once_with("run-1")
 
 
+def test_restore_precheckpoint_run_schedules_initial_recovery() -> None:
+    controller = _controller()
+    _one_unfinished_run(controller)
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {}, "interrupt": None, "next": []}
+    )
+    controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
+
+    controller._restore_recoverable_runs()
+
+    controller.registry.update_run.assert_called_once_with(
+        "run-1", status="recoverable", node="start"
+    )
+    controller._schedule_recoverable.assert_called_once_with("run-1")
+
+
 def test_restore_does_not_resume_human_or_controlled_interrupt() -> None:
     controller = _controller()
     _one_unfinished_run(controller)
-    controller._snapshot = Mock(  # type: ignore[method-assign]
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
         return_value={
+            "values": {"status": "interrupted"},
             "interrupt": {"kind": "risk_policy"},
             "next": ["human"],
         }
@@ -102,8 +121,8 @@ def test_automatic_recovery_resumes_existing_thread_without_new_input() -> None:
     record = _unfinished_record()
     controller.registry.get_run.return_value = record
     controller._timer_generations["run-1"] = 3
-    controller._snapshot = Mock(  # type: ignore[method-assign]
-        return_value={"interrupt": None, "next": ["quality"]}
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {"status": "built"}, "interrupt": None, "next": ["quality"]}
     )
     controller._submit = Mock()  # type: ignore[method-assign]
 
@@ -112,12 +131,56 @@ def test_automatic_recovery_resumes_existing_thread_without_new_input() -> None:
     controller._submit.assert_called_once_with("run-1", None)
 
 
+def test_automatic_precheckpoint_recovery_replays_original_initial_input() -> None:
+    controller = _controller()
+    record = {**_unfinished_record(), "status": "recoverable"}
+    controller.registry.get_run.return_value = record
+    controller.registry.get_project.return_value = {"config_path": "/tmp/project.yaml"}
+    controller._timer_generations["run-1"] = 5
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {}, "interrupt": None, "next": []}
+    )
+    controller._submit = Mock()  # type: ignore[method-assign]
+
+    controller._resume_recoverable("run-1", 5)
+
+    controller._submit.assert_called_once_with(
+        "run-1",
+        {
+            "project_id": "project",
+            "config_path": "/tmp/project.yaml",
+            "run_id": "run-1",
+            "thread_id": "thread-1",
+        },
+    )
+
+
+def test_recovery_inspection_failure_never_restarts_from_empty_state() -> None:
+    controller = _controller()
+    record = _unfinished_record()
+    controller._open_graph = Mock(  # type: ignore[method-assign]
+        side_effect=sqlite3.DatabaseError("corrupt checkpoint")
+    )
+
+    snapshot = controller._recovery_snapshot(record)
+
+    assert snapshot is None
+    controller.registry.update_run.assert_called_once()
+    update = controller.registry.update_run.call_args
+    assert update.args[0] == "run-1"
+    assert "checkpoint inspection failed" in update.kwargs["error"]
+
+
 def test_automatic_recovery_retries_when_another_controller_holds_lease() -> None:
     controller = _controller()
     controller.registry.get_run.return_value = _unfinished_record()
     controller._timer_generations["run-1"] = 4
-    controller._snapshot = Mock(  # type: ignore[method-assign]
-        return_value={"interrupt": None, "next": ["integrate"]}
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={
+            "values": {"status": "pushed"},
+            "interrupt": None,
+            "next": ["integrate"],
+        }
     )
     controller._submit = Mock(  # type: ignore[method-assign]
         side_effect=RuntimeError("Run is leased by another active controller")

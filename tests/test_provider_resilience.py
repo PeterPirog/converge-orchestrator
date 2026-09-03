@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import types
 from pathlib import Path
 from unittest.mock import patch
@@ -150,3 +151,72 @@ def test_context_budget_failure_skips_futile_retries_and_uses_larger_fallback(
     assert attempts[1]["model_profile"] == "fallback"
     assert attempts[1]["ok"] is True
 
+
+def test_real_executor_process_death_retries_same_prompt_and_model(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, provider_retries=1)
+    cfg.opencode_binary = sys.executable
+    adapter = OpenCodeAdapter(cfg)
+    executor = cfg.repo_path / "run"
+    executor.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import json",
+                "import os",
+                "import sys",
+                "from pathlib import Path",
+                "state_dir = Path(os.environ['OPENCODE_CONFIG']).parent",
+                "ledger = state_dir / 'executor-process-attempts.jsonl'",
+                "existing = (",
+                "    ledger.read_text(encoding='utf-8').splitlines()",
+                "    if ledger.exists()",
+                "    else []",
+                ")",
+                "record = {'argv': sys.argv[1:], 'prompt': sys.argv[-1]}",
+                "with ledger.open('a', encoding='utf-8') as fh:",
+                "    fh.write(json.dumps(record, sort_keys=True) + '\\n')",
+                "if not existing:",
+                "    os._exit(91)",
+                "print('{\"task\": \"recovered\"}')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = "Plan one immutable target"
+    result = adapter.invoke("planner", prompt, cfg.repo_path)
+
+    assert result.ok is True
+    attempts = result.context["provider_attempts"]
+    assert [(item["returncode"], item["failure_kind"], item["ok"]) for item in attempts] == [
+        (91, "process_failure", False),
+        (0, None, True),
+    ]
+    assert result.context["fallback_used"] is False
+    assert result.context["selected_model"] == "openwebui/primary-model"
+
+    process_records = [
+        json.loads(line)
+        for line in (cfg.state_dir / "executor-process-attempts.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(process_records) == 2
+    assert [item["prompt"] for item in process_records] == [prompt, prompt]
+    for record in process_records:
+        argv = record["argv"]
+        assert argv[argv.index("--model") + 1] == "openwebui/primary-model"
+        assert "--continue" not in argv
+        assert "--session" not in argv
+
+    health = [
+        json.loads(line)
+        for line in (cfg.state_dir / "provider-health.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(health) == 2
+    assert [item["returncode"] for item in health] == [91, 0]
+    assert all(item["model"] == "openwebui/primary-model" for item in health)
+    assert all("output" not in item for item in health)

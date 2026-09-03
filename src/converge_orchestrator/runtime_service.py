@@ -16,6 +16,12 @@ from .runtime import RunController
 
 _CONTENTION_RETRY_SECONDS = 5
 _AUTO_RECOVERY_DELAY_SECONDS = 0.05
+_PRECHECKPOINT_RECOVERY_STATUSES = {
+    "queued",
+    "running",
+    "pause_requested",
+    "recoverable",
+}
 
 
 def _wake_datetime(value: str) -> datetime:
@@ -144,6 +150,33 @@ class ScheduledRunController(RunController):
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}
         return graph, db, graph_config
 
+    def _recovery_snapshot(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        """Read restart state without confusing storage failure with a missing first checkpoint."""
+        try:
+            graph, db, graph_config = self._open_graph(record)
+            try:
+                return self._snapshot_from_graph(graph, graph_config)
+            finally:
+                db.close()
+        except Exception as exc:
+            self.registry.update_run(
+                record["id"],
+                error=(
+                    "automatic checkpoint inspection failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+            return None
+
+    def _initial_recovery_input(self, record: dict[str, Any]) -> dict[str, Any]:
+        project = self.registry.get_project(record["project_id"])
+        return {
+            "project_id": record["project_id"],
+            "config_path": project["config_path"],
+            "run_id": record["id"],
+            "thread_id": record["thread_id"],
+        }
+
     def _unfinished_records(self):
         for project in self.registry.list_projects():
             for record in self.registry.runs_for_project(project["id"]):
@@ -166,12 +199,20 @@ class ScheduledRunController(RunController):
                 )
 
     def _restore_recoverable_runs(self) -> None:
-        """Automatically resume durable non-HITL checkpoints after service restart."""
+        """Automatically resume durable and pre-first-checkpoint machine work after restart."""
         for record in self._unfinished_records():
-            snapshot = self._snapshot(record)
-            if snapshot.get("interrupt") or not snapshot.get("next"):
+            snapshot = self._recovery_snapshot(record)
+            if snapshot is None or snapshot.get("interrupt"):
                 continue
-            node = str(snapshot["next"][0])
+            if snapshot.get("next"):
+                node = str(snapshot["next"][0])
+            elif (
+                not snapshot.get("values")
+                and record.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+            ):
+                node = "start"
+            else:
+                continue
             self.registry.update_run(
                 record["id"],
                 status="recoverable",
@@ -267,11 +308,20 @@ class ScheduledRunController(RunController):
         if record["finished_at"]:
             return
 
-        snapshot = self._snapshot(record)
-        if snapshot.get("interrupt") or not snapshot.get("next"):
+        snapshot = self._recovery_snapshot(record)
+        if snapshot is None or snapshot.get("interrupt"):
+            return
+        if snapshot.get("next"):
+            input_value: Any = None
+        elif (
+            not snapshot.get("values")
+            and record.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
+        ):
+            input_value = self._initial_recovery_input(record)
+        else:
             return
         try:
-            self._submit(run_id, None)
+            self._submit(run_id, input_value)
         except RuntimeError as exc:
             if not _is_contention_error(exc):
                 self.registry.update_run(
