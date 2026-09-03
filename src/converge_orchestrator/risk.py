@@ -101,8 +101,9 @@ _AUTH_SEGMENTS = {
     "session",
 }
 _AUTH_PRIMITIVE = re.compile(
-    r"(?i)\b(?:auth(?:enticate|orize|entication|orization)?|permissions?|roles?|scopes?|jwt|oauth|"
-    r"oidc|sessions?|tokens?|password|credential|principal|identity|policy|access[_ -]?control)\b"
+    r"(?i)(?<![A-Za-z0-9])(?:auth(?:enticate|orize|entication|orization)?|permissions?|roles?|"
+    r"scopes?|jwt|oauth|oidc|sessions?|tokens?|password|credential|principal|identity|policy|"
+    r"access[_ -]?control)(?![A-Za-z0-9])"
 )
 _AUTH_WEAKENING = re.compile(
     r"(?i)(?:verify\s*=\s*false|skip[_ -]?auth|bypass[_ -]?auth|allow[_ -]?anonymous|"
