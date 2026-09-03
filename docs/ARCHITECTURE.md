@@ -295,6 +295,11 @@ continues from the same durable checkpoint.
 Human approval is not a generic override. A risk-policy interrupt can be approved, edited or rejected;
 failed deterministic tests, review or CI cannot be approved away.
 
+Compatibility policy is also deterministic. Python AST comparison protects public symbols and
+signatures. Node manifest comparison protects existing package exports, CLI commands and legacy
+entry points while allowing additive entries to proceed autonomously. See
+[COMPATIBILITY_POLICY.md](COMPATIBILITY_POLICY.md).
+
 ## GitHub integration
 
 The deterministic adapter uses `gh api`, keeping credentials in the host/GitHub CLI credential store
@@ -313,8 +318,9 @@ repeated inability to make deterministic progress.
 
 ## Remaining hardening boundary
 
-The container sandbox, fresh-session context budgets, OpenWebUI operator bridge and bounded model
-fallback are implemented. Production deployments still need project-specific pinned sandbox images,
-cross-language architecture/compatibility analyzers, broader kill/restart chaos fixtures and shared
-multi-worker state/observability. None of those gaps is a reason to weaken the deterministic LangGraph
-core, immutable intent, one-writer boundary or integration gates.
+The container sandbox, fresh-session context budgets, OpenWebUI operator bridge, bounded model
+fallback and initial Python/Node compatibility adapters are implemented. Production deployments still
+need project-specific pinned sandbox images, source-level Node/Go/Rust compatibility analyzers,
+broader kill/restart chaos fixtures and shared multi-worker state/observability. None of those gaps is
+a reason to weaken the deterministic LangGraph core, immutable intent, one-writer boundary or
+integration gates.

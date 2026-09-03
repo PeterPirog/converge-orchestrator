@@ -61,14 +61,14 @@ Implemented:
   limits, tmpfs, allowlisted environment forwarding and controlled networks;
 - deterministic TDD baseline, test-only RED, novel failure marker, frozen test hashes and GREEN for
   behavior-changing tasks;
-- deterministic final-diff risk classification for secrets, destructive migrations, public Python API
-  changes and auth/authz weakening;
+- deterministic final-diff risk classification for secrets, destructive migrations, public Python
+  API changes, Node package entry-point compatibility and auth/authz weakening;
 - hard-block secret policy before semantic review and risk approval bound to the exact candidate diff.
 - monotonic Python AST/import boundary enforcement independent from project-provided scripts.
 
 Remaining:
 
-- broader cross-language compatibility adapters and safe shim/roll-forward strategies;
+- source-level Node plus Go/Rust compatibility adapters and broader safe roll-forward strategies;
 - broader chaos suite covering killed service/OpenCode/provider processes and stale resources.
 
 ## v0.4 — reusable configuration and service/control plane — substantially complete
@@ -93,15 +93,13 @@ Implemented:
 
 Next priorities, in order:
 
-1. **Cross-language compatibility adapters** — public API and migration safety beyond Python plus safe
-   shims/roll-forward strategies that reduce HITL.
-2. **Crash/chaos completion** — end-to-end kill/restart tests of service, OpenCode/provider,
+1. **Crash/chaos completion** — end-to-end kill/restart tests of service, OpenCode/provider,
    integration checkpoint races and CI wait restoration.
-3. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence.
-4. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
+2. **Flake-aware CI policy** — retry only explicitly classified flaky jobs with bounded evidence.
+3. **Production state/observability** — PostgreSQL checkpointer/control registry, metrics/tracing,
    backup and multi-worker deployment hardening.
-5. **Cross-language architecture analyzers** — import/dependency rules beyond the implemented Python
-   AST boundary gate.
+4. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
+   implemented Python AST and Node package-manifest policies.
 
 ## v0.5 — production autonomous operation
 

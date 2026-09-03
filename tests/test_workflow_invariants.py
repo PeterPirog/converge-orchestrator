@@ -45,6 +45,8 @@ def test_builder_and_repair_receive_only_target_requirement_statements() -> None
         assert "ARCH-002 | architecture.md:L20-L20" in text
         assert "Domain must not depend on infrastructure." in text
         assert "Unrelated requirement that Builder should not receive." not in text
+        assert "Node" in text
+        assert "entry point" in text
 
 
 def test_integrator_rechecks_spec_hash_immediately_before_commit(tmp_path: Path) -> None:
