@@ -142,7 +142,8 @@ def test_adapter_does_not_mount_full_state_into_agent_runtime(tmp_path: Path) ->
     adapter = OpenCodeAdapter(cfg)
     completed = types.SimpleNamespace(returncode=0, stdout="ok")
 
-    with patch("converge_orchestrator.opencode.ExecutionSandbox.run", return_value=completed) as run:
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with patch(target, return_value=completed) as run:
         result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
 
     assert result.ok
