@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import re
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -321,6 +322,34 @@ class RequirementVerification(BaseModel):
     gates: list[GateResult] = Field(default_factory=list)
 
 
+class TDDPlan(BaseModel):
+    """Pre-implementation evidence contract for tasks that change observable behavior."""
+
+    mode: Literal["required", "not_applicable"] = "not_applicable"
+    test_paths: list[str] = Field(default_factory=list)
+    test_gate: str | None = None
+    expected_failure_pattern: str | None = None
+    rationale: str = ""
+
+    @model_validator(mode="after")
+    def validate_required_red_evidence(self) -> TDDPlan:
+        if self.mode != "required":
+            return self
+        if not self.test_paths:
+            raise ValueError("tdd.test_paths are required when tdd.mode=required")
+        if not self.expected_failure_pattern:
+            raise ValueError(
+                "tdd.expected_failure_pattern is required when tdd.mode=required"
+            )
+        if len(self.expected_failure_pattern.strip()) < 4:
+            raise ValueError("tdd.expected_failure_pattern is too broad")
+        try:
+            re.compile(self.expected_failure_pattern)
+        except re.error as exc:
+            raise ValueError(f"invalid tdd.expected_failure_pattern regex: {exc}") from exc
+        return self
+
+
 class TaskEnvelope(BaseModel):
     id: str
     requirement_ids: list[str]
@@ -332,6 +361,24 @@ class TaskEnvelope(BaseModel):
     max_diff_lines: int | None = None
     risk: Literal["low", "medium", "high"] = "medium"
     risk_flags: list[str] = Field(default_factory=list)
+    change_kind: Literal[
+        "behavior",
+        "refactor",
+        "docs",
+        "config",
+        "test_only",
+        "other",
+    ] = "other"
+    tdd: TDDPlan = Field(default_factory=TDDPlan)
+
+    @model_validator(mode="after")
+    def behavior_changes_require_tdd_contract(self) -> TaskEnvelope:
+        if self.change_kind == "behavior" and self.tdd.mode != "required":
+            raise ValueError(
+                "behavior-changing tasks require tdd.mode=required; plan test infrastructure first "
+                "when no deterministic test gate exists"
+            )
+        return self
 
 
 class ReviewFinding(BaseModel):
@@ -389,6 +436,9 @@ class WorkflowState(TypedDict, total=False):
     task: dict[str, Any] | None
     worktree: str | None
     branch: str | None
+    tdd_baseline_result: dict[str, Any] | None
+    tdd_red_result: dict[str, Any] | None
+    tdd_red_attempts: int
     quality_results: list[dict[str, Any]]
     review_result: dict[str, Any] | None
     repair_attempts: int
