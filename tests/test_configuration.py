@@ -249,4 +249,13 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["project"]["repo_path"]
     assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
+    assert raw["models"]["profiles"]["planner"]["model"] == "deepseek-v4-pro:cloud"
+    assert raw["models"]["profiles"]["builder"]["model"] == "kimi-k2.7-code:cloud"
+    assert raw["models"]["profiles"]["reviewer"]["model"] == "glm-5.3-flash:cloud"
+    assert raw["models"]["profiles"]["planner"]["request_body"] == {}
+    assert raw["models"]["profiles"]["builder"]["request_body"] == {}
+    assert raw["models"]["profiles"]["reviewer"]["request_body"] == {}
+    assert raw["agents"]["planner"]["steps"] == 18
+    assert raw["agents"]["builder"]["steps"] == 60
+    assert raw["agents"]["reviewer"]["steps"] == 24
     assert set(raw["agents"]) == {"planner", "builder", "reviewer"}
