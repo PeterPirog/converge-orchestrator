@@ -6,12 +6,16 @@ import subprocess
 from pathlib import Path
 
 from .compliance import ComplianceEngine
-from .git import changed_files, diff_line_count, paths_within_allowlist
+from .git import GitError, changed_files, current_head, diff_line_count, paths_within_allowlist
 from .inspector import inspect_repository
 from .models import GateResult, ProjectConfig, QualityGate, RequirementStatus, TaskEnvelope
 from .sandbox import ExecutionSandbox
 from .spec import compile_contract
-from .verification import run_requirement_verifiers
+from .verification import (
+    load_baseline_verification_cache,
+    run_requirement_verifiers,
+    write_baseline_verification_cache,
+)
 
 
 def _command_key(gate: QualityGate) -> tuple[str, ...]:
@@ -98,6 +102,43 @@ def run_quality_gates(config: ProjectConfig, cwd: Path) -> list[GateResult]:
     ]
 
 
+def _baseline_requirement_verifiers(config: ProjectConfig, contract):  # type: ignore[no-untyped-def]
+    try:
+        base_commit = current_head(config.repo_path)
+    except GitError:
+        # Some embedders/tests use a filesystem baseline without Git metadata. Cache identity cannot
+        # be proven there, so execute deterministic evidence normally instead of guessing a key.
+        return (
+            run_requirement_verifiers(
+                config,
+                config.repo_path,
+                contract.requirements,
+                writable_cwd=False,
+            ),
+            False,
+        )
+    cached = load_baseline_verification_cache(
+        config,
+        base_commit=base_commit,
+        requirements_sha256=contract.source.sha256,
+    )
+    if cached is not None:
+        return cached, True
+    results = run_requirement_verifiers(
+        config,
+        config.repo_path,
+        contract.requirements,
+        writable_cwd=False,
+    )
+    write_baseline_verification_cache(
+        config,
+        base_commit=base_commit,
+        requirements_sha256=contract.source.sha256,
+        results=results,
+    )
+    return results, False
+
+
 def _convergence_details(
     config: ProjectConfig,
     cwd: Path,
@@ -111,12 +152,7 @@ def _convergence_details(
         }
 
     contract = compile_contract(config.requirements_path)
-    baseline_results = run_requirement_verifiers(
-        config,
-        config.repo_path,
-        contract.requirements,
-        writable_cwd=False,
-    )
+    baseline_results, baseline_cache_hit = _baseline_requirement_verifiers(config, contract)
     candidate_results = run_requirement_verifiers(
         config,
         cwd,
@@ -166,6 +202,7 @@ def _convergence_details(
         "targeted_configured": targeted,
         "target_improved": improved,
         "target_progress_required": bool(targeted),
+        "baseline_cache_hit": baseline_cache_hit,
         "baseline": baseline_status,
         "candidate": candidate_status,
         "evidence": evidence,

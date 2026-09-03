@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -11,6 +13,75 @@ from .models import (
     RequirementVerification,
 )
 from .sandbox import ExecutionSandbox
+
+_CACHE_VERSION = 1
+
+
+def verifier_config_sha256(config: ProjectConfig) -> str:
+    """Fingerprint only deterministic verifier policy relevant to cached results."""
+    payload = {
+        requirement_id: [gate.model_dump(mode="json") for gate in gates]
+        for requirement_id, gates in sorted(config.requirement_verifiers.items())
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def write_baseline_verification_cache(
+    config: ProjectConfig,
+    *,
+    base_commit: str,
+    requirements_sha256: str,
+    results: list[RequirementVerification],
+) -> None:
+    """Persist derivative verifier evidence atomically outside the target repository."""
+    path = config.state_dir / "baseline-verification.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": _CACHE_VERSION,
+        "base_commit": base_commit,
+        "requirements_sha256": requirements_sha256,
+        "verifier_config_sha256": verifier_config_sha256(config),
+        "results": [result.model_dump(mode="json") for result in results],
+    }
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def load_baseline_verification_cache(
+    config: ProjectConfig,
+    *,
+    base_commit: str,
+    requirements_sha256: str,
+) -> list[RequirementVerification] | None:
+    """Load cache only when code, immutable requirements and verifier policy all match."""
+    path = config.state_dir / "baseline-verification.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != _CACHE_VERSION:
+            return None
+        if payload.get("base_commit") != base_commit:
+            return None
+        if payload.get("requirements_sha256") != requirements_sha256:
+            return None
+        if payload.get("verifier_config_sha256") != verifier_config_sha256(config):
+            return None
+        raw_results = payload.get("results")
+        if not isinstance(raw_results, list):
+            return None
+        return [RequirementVerification.model_validate(item) for item in raw_results]
+    except (OSError, ValueError, TypeError):
+        # Cache is derivative evidence. Corruption must trigger fresh deterministic execution,
+        # never make a policy decision and never require HITL by itself.
+        return None
 
 
 def _run_gate(

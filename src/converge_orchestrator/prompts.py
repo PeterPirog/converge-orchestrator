@@ -22,9 +22,10 @@ def task_requirements(
 
 
 def planner_prompt(requirements: list[Requirement], iteration: int) -> str:
+    target_id = requirements[0].id if len(requirements) == 1 else "ARCH-017"
     schema = {
-        "id": "ARCH-017-0038",
-        "requirement_ids": ["ARCH-017"],
+        "id": f"{target_id}-0038",
+        "requirement_ids": [target_id],
         "title": "Bounded task title",
         "objective": "One measurable objective",
         "constraints": ["Do not change public API"],
@@ -42,10 +43,22 @@ def planner_prompt(requirements: list[Requirement], iteration: int) -> str:
             "rationale": "Why red-before-green is applicable or not applicable",
         },
     }
+    if len(requirements) == 1:
+        selection_instruction = f"""The deterministic convergence scheduler selected {target_id}.
+Plan ONE smallest high-value change for exactly this requirement. `requirement_ids` MUST be
+exactly ["{target_id}"]. Do not switch to another requirement even if another change looks easier.
+Inspect the repository to find the smallest evidence-backed gap for this target."""
+        requirements_label = "DETERMINISTIC TARGET REQUIREMENT"
+    else:
+        # Compatibility path for callers that do not use the service target scheduler.
+        selection_instruction = (
+            "Select ONE smallest high-value change that moves the repository toward compliance."
+        )
+        requirements_label = "REQUIREMENTS"
     return f"""You are the planning agent in an autonomous software convergence system.
 The architecture requirements are immutable. Never propose changing them.
-Select ONE smallest high-value change that moves the repository toward compliance.
-Inspect the repository before deciding. Avoid broad rewrites and unrelated modernization.
+{selection_instruction}
+Avoid broad rewrites and unrelated modernization.
 Classify the task honestly:
 - behavior: changes observable runtime behavior, fixes a behavioral bug, or adds behavior;
 - refactor: preserves observable behavior;
@@ -63,7 +76,7 @@ For refactor/docs/config/test_only/other use tdd.mode=not_applicable with a conc
 Return ONLY JSON matching this shape: {json.dumps(schema)}
 Iteration: {iteration}
 
-REQUIREMENTS:
+{requirements_label}:
 {contract_excerpt(requirements)}
 """
 
