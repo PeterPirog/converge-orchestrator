@@ -20,6 +20,7 @@ from .git import (
     delete_remote_branch,
     diff,
     ensure_clean,
+    existing_candidate_commit,
     push,
     update_base,
 )
@@ -604,14 +605,20 @@ def integrate(state: WorkflowState) -> WorkflowState:
         return spec_stop(state)
     task = TaskEnvelope.model_validate(state["task"])
     worktree = Path(state["worktree"])
-    commit = commit_all(worktree, f"feat: {task.title}")
+    created_commit = commit_all(worktree, f"feat: {task.title}")
+    commit = created_commit or existing_candidate_commit(worktree, cfg.base_branch)
     if commit:
         push(worktree, state["branch"])
     store = _evidence(state)
     store.append_event(
         state["run_id"],
         "pushed",
-        {"task_id": task.id, "branch": state["branch"], "commit_sha": commit},
+        {
+            "task_id": task.id,
+            "branch": state["branch"],
+            "commit_sha": commit,
+            "recovered_existing_commit": bool(commit and not created_commit),
+        },
     )
     compliance = ComplianceSnapshot.model_validate(state["compliance"])
     gates = [GateResult.model_validate(item) for item in state["quality_results"]]
@@ -678,7 +685,7 @@ def create_pr(state: WorkflowState) -> WorkflowState:
     if existing:
         pr = adapter.get_pull_request(int(existing["number"]))
     else:
-        pr = adapter.create_pull_request(
+        pr = adapter.ensure_pull_request(
             head=state["branch"],
             base=cfg.base_branch,
             title=f"[Converge] {task.title}",
