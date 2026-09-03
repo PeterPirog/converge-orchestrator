@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .runtime import RunController
+from .runtime_service import ScheduledRunController
 
 
 class ProjectRegistration(BaseModel):
@@ -48,7 +48,7 @@ def create_app(
     path = registry_path or Path(
         os.environ.get("CONVERGE_CONTROL_DB", ".converge/control.sqlite")
     )
-    controller = RunController(path)
+    controller = ScheduledRunController(path)
     token = api_token if api_token is not None else os.environ.get("CONVERGE_API_TOKEN")
     app = FastAPI(
         title="Converge Orchestrator API",
