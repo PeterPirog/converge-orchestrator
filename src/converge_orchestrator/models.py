@@ -6,7 +6,6 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field, model_validator
 
-
 _REVIEW_AGENT_ROLES = {
     "reviewer",
     "correctness_reviewer",
