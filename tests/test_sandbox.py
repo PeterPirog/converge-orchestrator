@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import types
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +45,10 @@ def _env_names(argv: list[str]) -> set[str]:
     return names
 
 
+def _internal_network_result():
+    return types.SimpleNamespace(returncode=0, stdout="true\n")
+
+
 def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     tmp_path: Path,
     monkeypatch,
@@ -54,7 +59,13 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     monkeypatch.setenv("HOST_ONLY_SECRET", "must-not-enter-container")
     completed = types.SimpleNamespace(returncode=0, stdout="ok")
 
-    with patch("converge_orchestrator.sandbox.subprocess.run", return_value=completed) as run:
+    with (
+        patch(
+            "converge_orchestrator.sandbox.run_configured",
+            return_value=_internal_network_result(),
+        ),
+        patch("converge_orchestrator.sandbox.subprocess.run", return_value=completed) as run,
+    ):
         result = ExecutionSandbox(cfg).run(
             ["opencode", "run"],
             cwd=cfg.repo_path,
@@ -78,15 +89,24 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     assert "HOST_ONLY_SECRET" not in passed
 
 
-def test_builder_worktree_is_writable_but_shared_git_metadata_is_read_only(
-    tmp_path: Path,
-) -> None:
+def test_builder_worktree_and_git_pointer_have_distinct_permissions(tmp_path: Path) -> None:
     cfg = _container_config(tmp_path)
     worktree = tmp_path / "state" / "worktrees" / "arch-001"
     worktree.mkdir(parents=True)
+    worktree_git = worktree / ".git"
+    worktree_git.write_text(
+        f"gitdir: {cfg.repo_path / '.git' / 'worktrees' / 'arch-001'}\n",
+        encoding="utf-8",
+    )
     completed = types.SimpleNamespace(returncode=0, stdout="ok")
 
-    with patch("converge_orchestrator.sandbox.subprocess.run", return_value=completed) as run:
+    with (
+        patch(
+            "converge_orchestrator.sandbox.run_configured",
+            return_value=_internal_network_result(),
+        ),
+        patch("converge_orchestrator.sandbox.subprocess.run", return_value=completed) as run,
+    ):
         ExecutionSandbox(cfg).run(
             ["opencode", "run"],
             cwd=worktree,
@@ -96,9 +116,15 @@ def test_builder_worktree_is_writable_but_shared_git_metadata_is_read_only(
 
     argv = run.call_args.args[0]
     mounts = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--mount"]
-    worktree_mount = next(mount for mount in mounts if str(worktree) in mount)
+    worktree_mount = next(
+        mount for mount in mounts if f"src={worktree},dst={worktree}" in mount
+    )
+    pointer_mount = next(
+        mount for mount in mounts if f"src={worktree_git},dst={worktree_git}" in mount
+    )
     git_mount = next(mount for mount in mounts if str(cfg.repo_path / ".git") in mount)
     assert not worktree_mount.endswith(",readonly")
+    assert pointer_mount.endswith(",readonly")
     assert git_mount.endswith(",readonly")
 
 
@@ -118,10 +144,19 @@ def test_quality_network_is_separate_from_agent_network(tmp_path: Path) -> None:
     assert argv[argv.index("--network") + 1] == "none"
 
 
-def test_agent_container_rejects_none_or_host_network_when_internal_is_required(
-    tmp_path: Path,
-) -> None:
+def test_agent_container_requires_a_real_docker_internal_network(tmp_path: Path) -> None:
     cfg = _container_config(tmp_path)
+    external_network = types.SimpleNamespace(returncode=0, stdout="false\n")
+
+    with patch("converge_orchestrator.sandbox.run_configured", return_value=external_network):
+        with pytest.raises(SandboxPreflightError, match="not Docker-internal"):
+            ExecutionSandbox(cfg).run(
+                ["opencode", "run"],
+                cwd=cfg.repo_path,
+                scope="agent",
+                writable_cwd=False,
+            )
+
     for network in ("none", "host"):
         cfg.sandbox.agent_network = network
         with pytest.raises(SandboxPreflightError, match="named internal agent network"):
@@ -131,6 +166,30 @@ def test_agent_container_rejects_none_or_host_network_when_internal_is_required(
                 scope="agent",
                 writable_cwd=False,
             )
+
+
+def test_timed_out_container_is_force_removed(tmp_path: Path) -> None:
+    cfg = _container_config(tmp_path)
+    timeout = subprocess.TimeoutExpired(cmd=["docker", "run"], timeout=7)
+    cleaned = types.SimpleNamespace(returncode=0, stdout="removed")
+
+    with patch(
+        "converge_orchestrator.sandbox.subprocess.run",
+        side_effect=[timeout, cleaned],
+    ) as run:
+        with pytest.raises(subprocess.TimeoutExpired):
+            ExecutionSandbox(cfg).run(
+                ["python", "-m", "pytest"],
+                cwd=cfg.repo_path,
+                timeout=7,
+                scope="quality",
+                writable_cwd=True,
+            )
+
+    assert run.call_count == 2
+    cleanup = run.call_args_list[1].args[0]
+    assert cleanup[:3] == ["docker", "rm", "-f"]
+    assert cleanup[3].startswith("converge-")
 
 
 def test_active_graph_measures_scope_only_after_quality_commands(tmp_path: Path) -> None:
