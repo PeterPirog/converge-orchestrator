@@ -12,7 +12,7 @@ from langgraph.types import Command
 from .config import load_config
 from .graph_service import build_graph
 from .remote import RemoteValidationError, validate_origin_repository
-from .runtime import RunController, _TERMINAL_STATUSES
+from .runtime import _TERMINAL_STATUSES, RunController
 
 _CONTENTION_RETRY_SECONDS = 5
 _AUTO_RECOVERY_DELAY_SECONDS = 0.05
