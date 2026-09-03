@@ -58,6 +58,11 @@ Stale-resource garbage collection now uses durable ownership records and only re
 recorded path/branch still match Git and whose owner run is terminal. Active, paused, interrupted,
 recoverable and `ci_wait` runs remain protected. Ambiguous or foreign resources fail closed.
 
-Remaining end-to-end chaos tests should additionally kill the service/OpenCode/provider around worktree creation,
-integration, PR creation and CI waiting, then verify that the same run and task converge without
-losing candidate changes or duplicating side effects.
+The process-level chaos fixture now kills the whole service after worktree creation and an
+uncommitted candidate write, but before the node output checkpoint. A fresh controller waits for the
+abandoned lease to expire, resumes the same LangGraph thread, adopts the exact owned worktree and
+proves that the uncheckpointed candidate remains intact with no duplicate branch or worktree.
+
+Remaining end-to-end chaos tests should kill the service/OpenCode/provider around integration, PR
+creation and CI waiting, then verify that the same run and task converge without losing candidate
+changes or duplicating side effects.
