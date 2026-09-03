@@ -281,6 +281,12 @@ def _add_provider_model(
         existing["limit"] = new_limit
 
 
+def _runtime_gateway_base_url(config: ProjectConfig) -> str | None:
+    if config.sandbox.mode == "container" and config.sandbox.agent_gateway_base_url:
+        return config.sandbox.agent_gateway_base_url
+    return config.model_gateway.base_url
+
+
 def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
     """Build stable OpenCode config without materializing any secret value."""
     payload: dict[str, Any] = {"$schema": "https://opencode.ai/config.json"}
@@ -295,7 +301,7 @@ def build_opencode_config(config: ProjectConfig) -> dict[str, Any]:
                 continue
             _add_provider_model(provider_models, profile, model_id)
 
-        options: dict[str, Any] = {"baseURL": gateway.base_url}
+        options: dict[str, Any] = {"baseURL": _runtime_gateway_base_url(config)}
         if gateway.api_key_env:
             options["apiKey"] = f"{{env:{gateway.api_key_env}}}"
         if gateway.headers:
