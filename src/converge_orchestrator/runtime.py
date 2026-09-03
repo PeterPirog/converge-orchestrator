@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from .config import load_config
 from .control import ControlSignals
 from .evidence import EvidenceStore
 from .graph import build_graph
-from .registry import ControlRegistry
+from .storage import (
+    create_control_registry,
+    is_database_error,
+    open_checkpointer,
+    setup_checkpoint_storage,
+)
 from .workflow import bootstrap
 
 _TERMINAL_STATUSES = {
@@ -53,8 +56,10 @@ def _interrupt_payload(snapshot: Any) -> dict[str, Any] | None:
 class RunController:
     """Coordinates API requests with durable LangGraph checkpoints and run metadata."""
 
-    def __init__(self, registry_path: Path):
-        self.registry = ControlRegistry(registry_path)
+    def __init__(self, registry_path: Path, postgres_dsn: str | None = None):
+        self._postgres_dsn = postgres_dsn
+        setup_checkpoint_storage(postgres_dsn)
+        self.registry = create_control_registry(registry_path, postgres_dsn)
         self._workers: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
         self._lease_owner = f"controller-{uuid4().hex}"
@@ -220,7 +225,9 @@ class RunController:
                     self._lease_owner,
                     _LEASE_TTL_SECONDS,
                 )
-            except sqlite3.Error:
+            except Exception as exc:
+                if not is_database_error(exc):
+                    raise
                 continue
             if not renewed:
                 return
@@ -282,14 +289,22 @@ class RunController:
                 return self._snapshot_from_graph(graph, graph_config)
             finally:
                 db.close()
-        except (sqlite3.DatabaseError, KeyError, ValueError):
+        except (KeyError, ValueError):
             return {"values": {}, "next": [], "interrupt": None}
+        except Exception as exc:
+            if is_database_error(exc):
+                return {"values": {}, "next": [], "interrupt": None}
+            raise
 
     def _open_graph(self, record: dict[str, Any]):
         project = self.registry.get_project(record["project_id"])
         cfg = load_config(project["config_path"])
-        db = sqlite3.connect(cfg.state_dir / "langgraph.sqlite", check_same_thread=False)
-        graph = build_graph(checkpointer=SqliteSaver(db))
+        checkpointer, db = open_checkpointer(cfg.state_dir, self._postgres_dsn)
+        try:
+            graph = build_graph(checkpointer=checkpointer)
+        except Exception:
+            db.close()
+            raise
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}
         return graph, db, graph_config
 
