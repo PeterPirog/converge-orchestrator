@@ -55,7 +55,11 @@ class DurableFakeGitHubAdapter:
         if self.path.exists():
             return PullRequestInfo.model_validate_json(self.path.read_text(encoding="utf-8"))
 
-        creates = int(self.creates_path.read_text(encoding="utf-8")) if self.creates_path.exists() else 0
+        creates = (
+            int(self.creates_path.read_text(encoding="utf-8"))
+            if self.creates_path.exists()
+            else 0
+        )
         creates += 1
         self.creates_path.write_text(str(creates), encoding="utf-8")
         pr = PullRequestInfo(
