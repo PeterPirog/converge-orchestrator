@@ -21,7 +21,12 @@ from .graph import (
     tdd_red_gate,
 )
 from .models import WorkflowState
-from .targeting import route_after_targeted_plan, targeted_plan
+from .targeting import (
+    planner_human_gate,
+    route_after_planner_human,
+    route_after_targeted_plan,
+    targeted_plan,
+)
 
 
 def build_graph(checkpointer: Any = None):
@@ -41,6 +46,7 @@ def build_graph(checkpointer: Any = None):
         ("pause_merge", wf.pause_before_merge),
         ("scout", scout),
         ("plan", targeted_plan),
+        ("planner_human", planner_human_gate),
         ("prepare_worktree", wf.prepare_worktree),
         ("tdd_baseline", tdd_baseline),
         ("tdd_red_build", tdd_red_build),
@@ -78,7 +84,18 @@ def build_graph(checkpointer: Any = None):
     graph.add_conditional_edges(
         "plan",
         route_after_targeted_plan,
-        {"prepare": "prepare_worktree", "human": "human", "end": END},
+        {
+            "prepare": "prepare_worktree",
+            "retry": "plan",
+            "replan": "replan",
+            "human": "planner_human",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "planner_human",
+        route_after_planner_human,
+        {"retry": "plan", "end": END},
     )
     graph.add_edge("prepare_worktree", "tdd_baseline")
     graph.add_conditional_edges(

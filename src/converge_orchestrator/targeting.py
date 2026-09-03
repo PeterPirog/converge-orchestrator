@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from typing import Literal
 
-from . import graph as active_graph
+from langgraph.types import interrupt
+
 from . import workflow as wf
 from .compliance import ComplianceEngine
 from .config import load_config
+from .context import AdvisorySection, PromptEnvelope, build_working_memory
 from .models import (
     ComplianceSnapshot,
     ProjectConfig,
@@ -15,12 +18,15 @@ from .models import (
     TaskEnvelope,
     WorkflowState,
 )
+from .opencode import OpenCodeAdapter
+from .prompts import planner_prompt
 from .verification import (
     load_baseline_verification_cache,
     run_requirement_verifiers,
     write_baseline_verification_cache,
 )
 
+_MAX_PLAN_ATTEMPTS = 2
 _STATUS_PRIORITY = {
     RequirementStatus.FAIL: 0,
     RequirementStatus.PARTIAL: 1,
@@ -123,15 +129,224 @@ def _target_evidence(
     }
 
 
-def targeted_plan(state: WorkflowState) -> WorkflowState:
-    """Refresh objective baseline evidence, select one gap, then invoke the existing Planner.
+def _planner_control(baseline: dict, target_id: str) -> dict:
+    raw = baseline.get("planner_control")
+    if not isinstance(raw, dict) or raw.get("target_requirement_id") != target_id:
+        return {
+            "target_requirement_id": target_id,
+            "attempts": 0,
+            "last_error": None,
+            "last_failure_kind": None,
+        }
+    return dict(raw)
 
-    The Planner receives exactly one immutable requirement. The full authoritative contract remains
-    in durable state and is restored before subsequent Builder/reviewer nodes execute.
-    """
+
+def _planner_advisory(
+    state: WorkflowState,
+    baseline: dict,
+    control: dict,
+) -> tuple[list[AdvisorySection], dict]:
+    snapshot = baseline.get("repo_scout")
+    memory = build_working_memory(state)
+    advisory: list[AdvisorySection] = []
+    if snapshot:
+        advisory.append(
+            AdvisorySection(
+                "repository scout snapshot",
+                json.dumps(snapshot, ensure_ascii=False, indent=2),
+            )
+        )
+    advisory.append(
+        AdvisorySection(
+            "working memory",
+            json.dumps(memory, ensure_ascii=False, indent=2),
+        )
+    )
+    last_error = control.get("last_error")
+    if last_error:
+        advisory.append(
+            AdvisorySection(
+                "planner validation feedback",
+                (
+                    "The previous plan was deterministically rejected. Correct only this contract "
+                    "error; the immutable target is unchanged:\n"
+                    f"{str(last_error)[:2000]}"
+                ),
+            )
+        )
+    return advisory, memory
+
+
+def _planner_failure(
+    state: WorkflowState,
+    *,
+    baseline: dict,
+    target: Requirement,
+    attempt: int,
+    kind: Literal["contract", "execution"],
+    error: str,
+    output_tail: str = "",
+) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    clipped_error = error.strip()[:2000]
+    control = {
+        "target_requirement_id": target.id,
+        "attempts": attempt,
+        "last_error": clipped_error,
+        "last_failure_kind": kind,
+    }
+    if attempt < _MAX_PLAN_ATTEMPTS:
+        status = "planner_retry"
+    elif kind == "contract" and state.get("replan_attempts", 0) < cfg.max_replans:
+        status = "planner_replan_required"
+        control["attempts"] = 0
+    else:
+        status = "planner_human_required"
+
+    updated_baseline = dict(baseline)
+    updated_baseline["planner_control"] = control
+    payload = {
+        "target_requirement_id": target.id,
+        "attempt": attempt,
+        "max_attempts": _MAX_PLAN_ATTEMPTS,
+        "failure_kind": kind,
+        "error": clipped_error,
+        "output_tail": output_tail[-2000:],
+        "next_status": status,
+    }
+    store = wf._evidence(state)
+    iteration = state.get("iteration", 0) + 1
+    store.write_json(
+        state["run_id"],
+        "run",
+        f"planner-validation-{iteration:04d}-attempt-{attempt:02d}.json",
+        payload,
+    )
+    store.append_event(state["run_id"], "planner_rejected", payload)
+    return {
+        **state,
+        "baseline": updated_baseline,
+        "task": None,
+        "status": status,
+        "message": clipped_error,
+    }
+
+
+def _invoke_target_planner(
+    state: WorkflowState,
+    *,
+    baseline: dict,
+    target: Requirement,
+    control: dict,
+) -> WorkflowState:
+    cfg = load_config(state["config_path"])
+    iteration = state.get("iteration", 0) + 1
+    attempt = int(control.get("attempts", 0)) + 1
+    narrowed: WorkflowState = {
+        **state,
+        "requirements": [target.model_dump(mode="json")],
+        "baseline": baseline,
+    }
+    advisory, memory = _planner_advisory(narrowed, baseline, control)
+    prompt = PromptEnvelope(
+        core=planner_prompt([target], iteration),
+        advisory=tuple(advisory),
+    )
+    store = wf._evidence(state)
+    store.write_json(
+        state["run_id"],
+        "run",
+        f"working-memory-{iteration:04d}-plan-{attempt:02d}.json",
+        memory,
+    )
+    result = OpenCodeAdapter(cfg).invoke("planner", prompt, cfg.repo_path)
+    if result.context:
+        store.write_json(
+            state["run_id"],
+            "run",
+            f"context-plan-{iteration:04d}-attempt-{attempt:02d}.json",
+            result.context,
+        )
+    if not result.ok:
+        return _planner_failure(
+            state,
+            baseline=baseline,
+            target=target,
+            attempt=attempt,
+            kind="execution",
+            error=f"Planner execution failed: {result.output[-1200:]}",
+            output_tail=result.output,
+        )
+
+    try:
+        task = TaskEnvelope.model_validate(wf._json_object(result.output))
+    except (ValueError, TypeError) as exc:
+        return _planner_failure(
+            state,
+            baseline=baseline,
+            target=target,
+            attempt=attempt,
+            kind="contract",
+            error=f"Planner returned an invalid Task Envelope: {exc}",
+            output_tail=result.output,
+        )
+    if task.requirement_ids != [target.id]:
+        return _planner_failure(
+            state,
+            baseline=baseline,
+            target=target,
+            attempt=attempt,
+            kind="contract",
+            error=(
+                "Planner drifted from deterministic target: "
+                f"expected requirement_ids=[{target.id!r}], got {task.requirement_ids!r}"
+            ),
+            output_tail=result.output,
+        )
+
+    success_baseline = dict(baseline)
+    success_baseline["planner_control"] = {
+        "target_requirement_id": target.id,
+        "attempts": 0,
+        "last_error": None,
+        "last_failure_kind": None,
+    }
+    next_state: WorkflowState = {
+        **state,
+        "baseline": success_baseline,
+        "task": task.model_dump(mode="json"),
+        "iteration": iteration,
+        "risk_flags": task.risk_flags,
+        "approved_risk_flags": [],
+        "tdd_baseline_result": None,
+        "tdd_red_result": None,
+        "tdd_red_attempts": 0,
+        "status": "planned",
+    }
+    store.write_json(state["run_id"], task.id, "task.json", next_state["task"])
+    snapshot = baseline.get("repo_scout") or {}
+    store.append_event(
+        state["run_id"],
+        "planned",
+        {
+            "task_id": task.id,
+            "target_requirement_id": target.id,
+            "planner_attempt": attempt,
+            "change_kind": task.change_kind,
+            "tdd_mode": task.tdd.mode,
+            "scout_base_commit": snapshot.get("base_commit"),
+            "context_budget_status": (
+                result.context.get("budget_status") if result.context else None
+            ),
+        },
+    )
+    return next_state
+
+
+def targeted_plan(state: WorkflowState) -> WorkflowState:
+    """Select one objective gap and produce a bounded Task Envelope for only that target."""
     cfg = load_config(state["config_path"])
     requirements = wf._requirements(state)
-    full_requirements = list(state["requirements"])
     compliance = ComplianceSnapshot.model_validate(state["compliance"])
     verifications, cache_hit = _baseline_verifications(cfg, state, requirements)
     if verifications:
@@ -160,17 +375,26 @@ def targeted_plan(state: WorkflowState) -> WorkflowState:
 
     store = wf._evidence(prepared)
     iteration = state.get("iteration", 0) + 1
-    store.write_json(
-        state["run_id"],
-        "run",
-        f"target-selection-{iteration:04d}.json",
-        evidence,
+    previous_control = baseline.get("planner_control")
+    previous_target = (
+        previous_control.get("target_requirement_id")
+        if isinstance(previous_control, dict)
+        else None
     )
-    store.append_event(state["run_id"], "target_selected", evidence)
+    if previous_target != (target.id if target else None):
+        store.write_json(
+            state["run_id"],
+            "run",
+            f"target-selection-{iteration:04d}.json",
+            evidence,
+        )
+        store.append_event(state["run_id"], "target_selected", evidence)
 
     if target is None:
+        baseline.pop("planner_control", None)
         return {
             **prepared,
+            "baseline": baseline,
             "task": None,
             "status": "target_converged",
             "message": "All mandatory requirements have deterministic/durable PASS status.",
@@ -182,30 +406,65 @@ def targeted_plan(state: WorkflowState) -> WorkflowState:
             "message": "Iteration budget exhausted before the next Planner invocation.",
         }
 
-    narrowed: WorkflowState = {
-        **prepared,
-        "requirements": [target.model_dump(mode="json")],
-    }
-    planned = active_graph.plan(narrowed)
-    task = TaskEnvelope.model_validate(planned["task"])
-    if task.requirement_ids != [target.id]:
-        raise ValueError(
-            "Planner drifted from deterministic target: "
-            f"expected requirement_ids=[{target.id!r}], got {task.requirement_ids!r}"
-        )
-    return {
-        **planned,
-        "requirements": full_requirements,
-        "compliance": compliance.model_dump(mode="json"),
-        "baseline": baseline,
-    }
+    control = _planner_control(baseline, target.id)
+    baseline["planner_control"] = control
+    prepared = {**prepared, "baseline": baseline}
+    return _invoke_target_planner(
+        prepared,
+        baseline=baseline,
+        target=target,
+        control=control,
+    )
 
 
 def route_after_targeted_plan(
     state: WorkflowState,
-) -> Literal["prepare", "human", "end"]:
-    if state.get("status") == "target_converged":
+) -> Literal["prepare", "retry", "replan", "human", "end"]:
+    status = state.get("status")
+    if status == "target_converged":
         return "end"
-    if state.get("status") == "iteration_budget_exhausted":
+    if status in {"iteration_budget_exhausted", "planner_human_required"}:
         return "human"
+    if status == "planner_retry":
+        return "retry"
+    if status == "planner_replan_required":
+        return "replan"
     return "prepare"
+
+
+def planner_human_gate(state: WorkflowState) -> WorkflowState:
+    """Exception-only HITL after bounded automatic Planner correction is exhausted."""
+    baseline = dict(state.get("baseline") or {})
+    control = baseline.get("planner_control") if isinstance(baseline, dict) else None
+    decision = interrupt(
+        {
+            "kind": "planner_failure_budget",
+            "reason": "Bounded automatic Planner correction was exhausted",
+            "target": (baseline.get("target_selection") or {}).get("target_requirement_id"),
+            "planner_control": control,
+            "allowed": ["retry", "stop"],
+        }
+    )
+    action = decision.get("action") if isinstance(decision, dict) else decision
+    if action == "retry":
+        if isinstance(control, dict):
+            control = dict(control)
+            control["attempts"] = 0
+            baseline["planner_control"] = control
+        return {
+            **state,
+            "baseline": baseline,
+            "replan_attempts": 0,
+            "status": "planner_human_retry",
+        }
+    if action == "stop":
+        return {
+            **state,
+            "status": "stopped",
+            "message": "Stopped after Planner failure budget was exhausted",
+        }
+    raise ValueError(f"Unsupported Planner recovery decision: {action}")
+
+
+def route_after_planner_human(state: WorkflowState) -> Literal["retry", "end"]:
+    return "retry" if state.get("status") == "planner_human_retry" else "end"
