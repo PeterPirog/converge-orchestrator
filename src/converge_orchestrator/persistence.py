@@ -12,6 +12,7 @@ from .registry_postgres import PostgresControlRegistry
 
 _DATABASE_URL_ENV = "CONVERGE_DATABASE_URL"
 _STRICT_MSGPACK_ENV = "LANGGRAPH_STRICT_MSGPACK"
+_SCHEMA_PROBE_THREAD = "__converge_schema_probe__"
 
 
 def configured_database_url() -> str | None:
@@ -67,6 +68,25 @@ def open_checkpointer(
     return PostgresSaver(db), db
 
 
+def _verify_postgres_checkpoint_schema(database_url: str) -> None:
+    """Fail at service construction instead of failing the first autonomous run."""
+    checkpointer, db = open_checkpointer(Path("."), database_url)
+    try:
+        checkpointer.get(
+            {"configurable": {"thread_id": _SCHEMA_PROBE_THREAD}}
+        )
+    except Exception as exc:
+        psycopg, _, _ = _postgres_modules()
+        if isinstance(exc, psycopg.errors.UndefinedTable):
+            raise RuntimeError(
+                "PostgreSQL checkpoint schema is not initialized; run "
+                "`converge persistence-setup` before starting workers"
+            ) from exc
+        raise
+    finally:
+        db.close()
+
+
 class PersistenceBackend:
     """Select durable control/checkpoint storage without changing LangGraph workflow semantics."""
 
@@ -80,6 +100,7 @@ class PersistenceBackend:
         if self.database_url:
             _require_strict_msgpack()
             self.registry = PostgresControlRegistry(self.database_url)
+            _verify_postgres_checkpoint_schema(self.database_url)
         else:
             self.registry = ControlRegistry(self.control_db_path)
 
