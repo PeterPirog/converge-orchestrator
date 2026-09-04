@@ -149,7 +149,7 @@ failing `pg_dump` aborts the backup.
 
 ## Restore preflight
 
-Restore is deliberately split into a read-only planning phase and a later explicit apply phase. Run:
+Restore is deliberately split into a read-only planning phase and an explicit apply phase. Run:
 
 ```bash
 converge-backup restore-plan /srv/backups/converge-2026-09-04
@@ -172,24 +172,64 @@ without writing deployment state. It checks, among other invariants:
 
 A blocked plan is printed as structured evidence and exits non-zero. A ready plan contains a
 `confirmation_token`, which is a SHA-256 binding of the backup manifest digest and the exact sanitized
-restore plan. It is intended for the later apply command to require an explicit operator decision tied
-to that exact preflight result. Changing the backup or target state must require a new plan/token.
+restore plan. SQLite binds the exact normalized database path. PostgreSQL additionally contributes a
+secret-free digest of the configured connection target, so changing the configured target database
+invalidates an earlier token without serializing its password or connection URL.
 
 The plan never prints `CONVERGE_DATABASE_URL`. For PostgreSQL it reports only a sanitized configured or
 unconfigured target classification.
 
-### Current restore status
+## SQLite restore apply
 
-`restore-plan` is implemented; destructive restore **apply is not implemented yet**. There is no
-`--force` path and the preflight itself does not create repositories, state directories or databases.
-Do not overwrite a live deployment manually based only on a ready plan.
+SQLite deployments have an explicit write-capable restore command:
 
-The apply phase is intentionally separate because restoration changes durable control/checkpoint state
-and filesystem identity. It must recompute preflight immediately before writing, require the exact
-operator-provided confirmation token, refuse existing targets, and use transactional/staged publication
-where the backend allows it. Until that phase is implemented and tested, `create`, `verify` and
-`restore-plan` are data-protection and recovery-planning primitives rather than a complete disaster
-recovery workflow.
+```bash
+converge-backup restore-apply /srv/backups/converge-2026-09-04 \
+  --confirmation-token <token-from-restore-plan>
+```
+
+This command is intentionally an **operator action**, not a LangGraph node and not an agent tool. On a
+new restore attempt it repeats backup verification and restore preflight immediately before the first
+write and requires the exact token from that ready preflight. There is no `--force` option.
+
+The restore uses staged publication and restores the durable control registry **last**. Before the
+control database becomes visible it restores and verifies:
+
+1. immutable requirements and project configuration with their manifest hashes;
+2. each Git repository at the exact manifest HEAD, with a clean working tree, the original Converge
+   workspace identity and a canonical GitHub `origin` when `github.repo` is configured;
+3. the exact state/evidence file set, state-store identity and LangGraph SQLite checkpoint;
+4. an empty worktree location rather than stale task worktrees.
+
+SQLite database artifacts are checked with `PRAGMA quick_check`. Existing targets are never overwritten.
+A matching target is accepted only during recovery of a journaled restore and only after deterministic
+content/identity validation.
+
+### Process-crash recovery
+
+Because configuration, repositories and state may live on different filesystems, Converge does not
+claim a globally atomic filesystem transaction. Instead it keeps a local mode-0600 restore journal and
+uses retry-safe `ensure` semantics around every publication boundary. If a process dies after an exact
+target was published but before the journal checkpoint, rerunning the same command with the **same
+confirmation token** validates and adopts that exact target and continues.
+
+A target recorded as published that later disappears, becomes dirty or changes content is not silently
+re-created: restore fails closed. The stored plan is itself re-bound to the original confirmation token
+before a resumed write. The control registry database is published last, so a failure during earlier
+filesystem restoration does not expose the partial deployment through normal Converge discovery.
+
+This recovery contract is for process interruption. It is not a claim of power-loss atomicity across
+independent filesystems; deployment-level storage durability and filesystem guarantees still apply.
+
+## Current PostgreSQL restore status
+
+PostgreSQL **restore apply is not implemented yet**. `restore-plan` supports PostgreSQL and binds the
+confirmation token to the configured target, but `restore-apply` rejects a PostgreSQL backup before
+writing anything. A production PostgreSQL apply must preserve the same no-force contract and define a
+safe, tested commit/recovery boundary around `pg_restore --single-transaction --exit-on-error` before
+it is enabled.
+
+Do not manually overwrite a live PostgreSQL deployment based only on a ready plan.
 
 ## Verification
 
@@ -203,4 +243,6 @@ integrity, tamper detection, unfinished-run blocking, worktree ownership blockin
 blocking, symlink rejection and secret-free PostgreSQL command arguments. Restore-preflight tests build
 a real backup, simulate loss of the original deployment, validate exact empty restore targets, reject
 broken symlinks and mismatched Git HEAD/backend artifacts, and prove that PostgreSQL credentials are not
-included in the serialized plan.
+included in the serialized plan. SQLite restore-apply tests prove complete reconstruction, storage
+identity preservation, wrong-token no-write behavior, database-last publication and process-crash
+recovery across the publication/journal checkpoint race.
