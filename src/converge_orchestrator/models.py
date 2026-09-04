@@ -233,6 +233,14 @@ class SandboxConfig(BaseModel):
         return self
 
 
+class RunBudgetConfig(BaseModel):
+    """Finite per-run envelope that remains pinned with the normalized run configuration."""
+
+    max_wall_time_seconds: int = Field(default=86400, ge=60)
+    max_model_attempts: int = Field(default=512, ge=1)
+    max_estimated_tokens: int = Field(default=8_000_000, ge=1024)
+
+
 class ProjectConfig(BaseModel):
     version: Literal[1] = 1
     project_name: str | None = None
@@ -265,6 +273,7 @@ class ProjectConfig(BaseModel):
     max_parallel_reviews: int = Field(default=3, ge=1, le=16)
     context_input_fraction: float = Field(default=0.70, gt=0.10, le=0.95)
     context_output_reserve_tokens: int = Field(default=4096, ge=256)
+    run_budget: RunBudgetConfig = Field(default_factory=RunBudgetConfig)
     ci_poll_seconds: int = 15
     ci_timeout_seconds: int = 1800
     auto_merge: bool = False
@@ -333,6 +342,7 @@ class ProjectConfig(BaseModel):
             "max_parallel_reviews",
             "context_input_fraction",
             "context_output_reserve_tokens",
+            "run_budget",
         ):
             copy_value(key, workflow, key)
         return data
