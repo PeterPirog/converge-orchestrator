@@ -52,7 +52,6 @@ class RunBudgetIntegrityError(RuntimeError):
     """Budget evidence is missing or malformed after a run has started."""
 
 
-
 def bind_run_id(run_id: str) -> Token[str | None]:
     return _CURRENT_RUN_ID.set(run_id)
 
@@ -132,6 +131,7 @@ def _status(
     *,
     now: datetime | None = None,
     reason: str | None = None,
+    include_model_limits: bool = True,
 ) -> RunBudgetStatus:
     current = _coerce_utc(now or _utcnow())
     elapsed = max(0.0, (current - ledger.started_at).total_seconds())
@@ -142,7 +142,8 @@ def _status(
             f"wall time {elapsed:.1f}s reached limit {budget.max_wall_time_seconds}s"
         )
     elif (
-        exhausted_reason is None
+        include_model_limits
+        and exhausted_reason is None
         and ledger.model_attempts_reserved >= budget.max_model_attempts
     ):
         exhausted_reason = (
@@ -150,7 +151,8 @@ def _status(
             f"{budget.max_model_attempts}"
         )
     elif (
-        exhausted_reason is None
+        include_model_limits
+        and exhausted_reason is None
         and ledger.estimated_tokens_reserved >= budget.max_estimated_tokens
     ):
         exhausted_reason = (
@@ -187,6 +189,26 @@ def assert_run_budget(
     now: datetime | None = None,
 ) -> RunBudgetStatus:
     status = run_budget_status(config, run_id, now=now)
+    if status.exhausted:
+        raise RunBudgetExceeded(status)
+    return status
+
+
+def assert_run_wall_time(
+    config: ProjectConfig,
+    run_id: str,
+    *,
+    now: datetime | None = None,
+) -> RunBudgetStatus:
+    """Gate a durable controller resume without blocking deterministic completion at token limits."""
+
+    with _BUDGET_LOCK:
+        status = _status(
+            config,
+            _read(budget_path(config, run_id), run_id),
+            now=now,
+            include_model_limits=False,
+        )
     if status.exhausted:
         raise RunBudgetExceeded(status)
     return status
