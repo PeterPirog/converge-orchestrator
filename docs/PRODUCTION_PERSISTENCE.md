@@ -213,10 +213,22 @@ uses retry-safe `ensure` semantics around every publication boundary. If a proce
 target was published but before the journal checkpoint, rerunning the same command with the **same
 confirmation token** validates and adopts that exact target and continues.
 
+The fully published journal is retained as a completion receipt instead of being deleted immediately
+before returning success. This closes the final process-crash window: if the process dies after the
+last database publication or integrity check but before the operator receives the response, the same
+command and token deterministically validate the restored deployment and return success again rather
+than creating an avoidable HITL/manual-cleanup path.
+
+A completed receipt does not permanently consume the backup. If a later disaster removes every restore
+target, ordinary read-only preflight becomes ready again. Only when that fresh preflight reproduces the
+same confirmation token may Converge atomically reset the receipt and start a new restore cycle. Partial
+loss, changed targets or a changed token remain fail-closed.
+
 A target recorded as published that later disappears, becomes dirty or changes content is not silently
-re-created: restore fails closed. The stored plan is itself re-bound to the original confirmation token
-before a resumed write. The control registry database is published last, so a failure during earlier
-filesystem restoration does not expose the partial deployment through normal Converge discovery.
+re-created during recovery of an incomplete cycle. The stored plan is itself re-bound to the original
+confirmation token before a resumed write. The control registry database is published last, so a
+failure during earlier filesystem restoration does not expose the partial deployment through normal
+Converge discovery.
 
 This recovery contract is for process interruption. It is not a claim of power-loss atomicity across
 independent filesystems; deployment-level storage durability and filesystem guarantees still apply.
@@ -244,5 +256,6 @@ blocking, symlink rejection and secret-free PostgreSQL command arguments. Restor
 a real backup, simulate loss of the original deployment, validate exact empty restore targets, reject
 broken symlinks and mismatched Git HEAD/backend artifacts, and prove that PostgreSQL credentials are not
 included in the serialized plan. SQLite restore-apply tests prove complete reconstruction, storage
-identity preservation, wrong-token no-write behavior, database-last publication and process-crash
-recovery across the publication/journal checkpoint race.
+identity preservation, wrong-token no-write behavior, database-last publication, recovery across the
+publication/journal checkpoint race, idempotent completion-receipt replay and safe reuse after a later
+full target loss.
