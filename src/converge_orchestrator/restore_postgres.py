@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from .backup import BackupManifest, verify_deployment_backup
+from .postgres_client import libpq_env
 from .restore import (
     RestoreError,
     RestorePlan,
@@ -207,8 +208,10 @@ def _apply_restore_script(
     psql: str,
     database_url: str,
 ) -> None:
-    env = os.environ.copy()
-    env["PGDATABASE"] = database_url
+    try:
+        env = libpq_env(database_url, base=os.environ)
+    except RuntimeError as exc:
+        raise RestoreApplyError(str(exc)) from exc
     try:
         result = subprocess.run(
             [
