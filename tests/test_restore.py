@@ -353,7 +353,9 @@ def test_sqlite_restore_apply_publishes_control_database_last(tmp_path: Path) ->
     assert control_db.is_file()
 
 
-def test_resume_rejects_disappeared_target_already_checkpointed_as_published(tmp_path: Path) -> None:
+def test_resume_rejects_disappeared_target_already_checkpointed_as_published(
+    tmp_path: Path,
+) -> None:
     backup, control_db, _, _, _, requirements = _lost_sqlite_deployment(tmp_path)
     plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
     original = restore_apply._ensure_file
@@ -379,7 +381,10 @@ def test_resume_rejects_disappeared_target_already_checkpointed_as_published(tmp
 
     assert requirements.is_file()
     requirements.unlink()
-    with pytest.raises(restore_apply.RestoreApplyError, match="published restore target disappeared"):
+    with pytest.raises(
+        restore_apply.RestoreApplyError,
+        match="published restore target disappeared",
+    ):
         restore_apply.apply_sqlite_restore(
             backup,
             confirmation_token=plan.confirmation_token,
