@@ -16,6 +16,7 @@ For a fresh clone, PyCharm, OpenCode and OpenWebUI setup use:
 - [OpenWebUI operator bridge](docs/OPENWEBUI_OPERATOR.md)
 - [Complete `converge.yaml` configuration reference](docs/CONFIGURATION.md)
 - [Agent model routing](docs/MODEL_ROUTING.md)
+- [Production persistence and disaster recovery](docs/PRODUCTION_PERSISTENCE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Reference-design convergence audit](docs/CONVERGENCE_AUDIT.md)
 - [Roadmap](docs/ROADMAP.md)
@@ -53,6 +54,11 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 - workspace and state-store affinity that fail closed before cross-clone/cross-state recovery;
 - CLI and API share the same `ScheduledRunController`, lease and recovery semantics;
 - automatic recovery of durable machine work and machine-managed CI waits without unnecessary HITL;
+- coordinated deployment backup, offline integrity verification and read-only restore preflight;
+- crash-resumable SQLite and PostgreSQL restore apply with exact operator confirmation, database-last
+  publication and deterministic recovery of interrupted publication boundaries;
+- PostgreSQL restore receipt committed atomically with restored database state, so process death after
+  database commit but before local journal acknowledgement does not require an ambiguous second restore;
 - FastAPI endpoints for bootstrap, run status, pause/resume, HITL decision, compliance and evidence;
 - optional Bearer authentication for the FastAPI control plane;
 - OpenWebUI Workspace Tool operator bridge with explicit confirmation before every mutation;
@@ -74,7 +80,9 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 - GitHub CLI (`gh`) when GitHub PR/CI integration is enabled;
 - an existing local clone with `origin`;
 - a separate Markdown architecture/specification file;
-- optional OpenWebUI/OpenAI-compatible gateway and API key for model routing.
+- optional OpenWebUI/OpenAI-compatible gateway and API key for model routing;
+- for PostgreSQL persistence/backup/restore: the optional `postgres` package extra and compatible
+  `pg_dump`, `pg_restore` and `psql` client tools.
 
 OpenCode 2 / `opencode2` is currently a separate beta product and is **not** the default runtime target
 of this repository. Converge targets stable `opencode` configuration semantics.
@@ -85,6 +93,12 @@ of this repository. Converge targets stable `opencode` configuration semantics.
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
 pip install -e '.[dev]'
+```
+
+For PostgreSQL-backed production persistence and disaster recovery:
+
+```bash
+pip install -e '.[dev,postgres]'
 ```
 
 ## Recommended filesystem layout
@@ -287,6 +301,27 @@ When `quality.auto_discover: true`, Converge conservatively discovers commands s
 metadata for Python, Node, Go and Rust. Explicit `quality.gates` remain authoritative. Missing tools
 and timeouts are normalized into deterministic gate failures rather than converted into model opinion.
 
+## Production persistence and disaster recovery
+
+SQLite remains the zero-configuration local backend. Set `CONVERGE_DATABASE_URL` for shared PostgreSQL
+control-registry and LangGraph checkpoint state and run `converge persistence-setup` before production
+workers.
+
+Deployment recovery is deliberately outside agent/LangGraph authority. Operators use:
+
+```bash
+converge-backup create /srv/backups/converge-2026-09-04
+converge-backup verify /srv/backups/converge-2026-09-04
+converge-backup restore-plan /srv/backups/converge-2026-09-04
+converge-backup restore-apply /srv/backups/converge-2026-09-04 \
+  --confirmation-token <token-from-ready-plan>
+```
+
+There is no force bypass. Both SQLite and PostgreSQL restore database state last after exact filesystem
+reconstruction. PostgreSQL commits a plan-bound restore receipt in the same transaction as the restored
+database, allowing a retry after process death at the database-commit/local-journal boundary without
+blindly restoring the database twice. See [PRODUCTION_PERSISTENCE.md](docs/PRODUCTION_PERSISTENCE.md).
+
 ## Control-plane API
 
 Start the service with:
@@ -399,8 +434,11 @@ pip check
 Converge does not claim universal architectural compliance. Machine-verifiable requirement evidence is
 supported, but semantic requirements still depend on independent review when no deterministic verifier
 exists. Arbitrary multi-host workers must still see the project's bound Git workspace and bound durable
-state store; an external scheduler/storage topology must preserve those affinities. Backup/restore
-automation, production metrics/tracing and deployment orchestration remain separate hardening work.
+state store; an external scheduler/storage topology must preserve those affinities. Coordinated
+backup/verify/plan/apply recovery exists for both SQLite and PostgreSQL, but independent multi-node
+operation still requires deliberate shared/external artifact storage and deployment-level durability.
+Production tracing, pinned deployment images and broader source-level Node/Go/Rust compatibility policy
+remain hardening work.
 
 OpenWebUI is supported in two deliberately separated roles: **model gateway** for OpenCode and
 **operator surface** through a confirmed Workspace Tool over FastAPI. Durable state, retry/repair
