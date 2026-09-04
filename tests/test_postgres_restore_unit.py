@@ -101,23 +101,37 @@ def test_psql_restore_keeps_database_url_out_of_argv(tmp_path: Path) -> None:
     script.write_text("SELECT 1;\n", encoding="utf-8")
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
     database_url = "postgresql://user:super-secret@database/converge"
+    client_env = {
+        "PGHOST": "database",
+        "PGDATABASE": "converge",
+        "PGUSER": "user",
+        "PGPASSWORD": "super-secret",
+    }
 
-    with patch(
-        "converge_orchestrator.restore_postgres.subprocess.run",
-        return_value=completed,
-    ) as runner:
+    with (
+        patch(
+            "converge_orchestrator.restore_postgres.libpq_env",
+            return_value=client_env,
+        ) as env_builder,
+        patch(
+            "converge_orchestrator.restore_postgres.subprocess.run",
+            return_value=completed,
+        ) as runner,
+    ):
         restore_postgres._apply_restore_script(
             script=script,
             psql="/usr/bin/psql",
             database_url=database_url,
         )
 
+    env_builder.assert_called_once()
     command = runner.call_args.args[0]
     assert database_url not in command
     assert "super-secret" not in " ".join(str(part) for part in command)
     assert "--single-transaction" in command
     assert "--set=ON_ERROR_STOP=1" in command
-    assert runner.call_args.kwargs["env"]["PGDATABASE"] == database_url
+    assert runner.call_args.kwargs["env"]["PGDATABASE"] == "converge"
+    assert runner.call_args.kwargs["env"]["PGPASSWORD"] == "super-secret"
 
 
 def test_exact_server_receipt_is_adopted_without_second_restore(tmp_path: Path) -> None:
