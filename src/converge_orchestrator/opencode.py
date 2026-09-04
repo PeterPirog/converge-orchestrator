@@ -266,6 +266,7 @@ class OpenCodeAdapter:
         model = resolve_agent_model(self.config, agent_cfg, model_profile)
         variant = resolve_agent_variant(self.config, agent_cfg, model_profile)
         budget_reservation: dict | None = None
+        attempt_timeout = agent_cfg.timeout_seconds
         if run_id is not None:
             budget_reservation = reserve_model_attempt(
                 self.config,
@@ -274,6 +275,10 @@ class OpenCodeAdapter:
                 model=model,
                 estimated_input_tokens=context_report.estimated_input_tokens,
                 output_reserve_tokens=self._output_reserve_tokens(model_profile),
+            )
+            attempt_timeout = min(
+                attempt_timeout,
+                int(budget_reservation["provider_timeout_seconds"]),
             )
         if model:
             cmd += ["--model", model]
@@ -300,7 +305,7 @@ class OpenCodeAdapter:
             result = ExecutionSandbox(self.config).run(
                 cmd,
                 cwd=cwd,
-                timeout=agent_cfg.timeout_seconds,
+                timeout=attempt_timeout,
                 env={
                     "OPENCODE_CONFIG": str(generated_config),
                     "OPENCODE_CONFIG_DIR": str(managed_config_dir),
