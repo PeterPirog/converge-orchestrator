@@ -50,6 +50,35 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
+def _ci_payload(*, required_checks: bool = True) -> dict:
+    policy = {
+        "kind": "remote_policy",
+        "base_branch": "main",
+        "protected": True,
+        "authoritative": True,
+        "source": "branch_protection",
+        "strict": True,
+        "required_checks": (
+            [{"context": "test", "app_id": 15368}] if required_checks else []
+        ),
+    }
+    return {
+        "status": "pass",
+        "head_sha": "a" * 40,
+        "checks": [
+            policy,
+            {
+                "kind": "check_run",
+                "name": "test",
+                "app_id": 15368,
+                "status": "completed",
+                "conclusion": "success",
+                "required": required_checks,
+            },
+        ],
+    }
+
+
 def _task_bundle(cfg: ProjectConfig, run_id: str, task_id: str, requirement_id: str) -> None:
     task_dir = cfg.state_dir / "evidence" / run_id / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +113,7 @@ def _task_bundle(cfg: ProjectConfig, run_id: str, task_id: str, requirement_id: 
             "head_sha": "a" * 40,
         },
     )
-    _write_json(task_dir / "ci.json", {"status": "pass"})
+    _write_json(task_dir / "ci.json", _ci_payload())
 
 
 def _status(cfg: ProjectConfig, run_id: str) -> dict:
@@ -192,6 +221,23 @@ def test_external_acceptance_passes_only_with_complete_machine_and_supervisor_ev
     assert report.ready is True
     assert report.merged_task_ids == ["ARCH-001-1", "ARCH-002-1"]
     assert all(check.ok for check in report.checks)
+
+
+def test_external_acceptance_requires_authoritative_required_ci_policy(tmp_path: Path) -> None:
+    cfg, run_id, status = _complete_run(tmp_path)
+    task_dir = cfg.state_dir / "evidence" / run_id / "ARCH-001-1"
+    _write_json(task_dir / "ci.json", _ci_payload(required_checks=False))
+
+    report = evaluate_external_acceptance(
+        cfg,
+        status,
+        supervisor_evidence=_supervisor(run_id),
+    )
+
+    assert report.ready is False
+    check = next(item for item in report.checks if item.name == "task:ARCH-001-1:ci")
+    assert check.ok is False
+    assert "required_checks=0" in check.evidence
 
 
 def test_external_acceptance_requires_process_restart_hitl_and_final_audit_proof(
