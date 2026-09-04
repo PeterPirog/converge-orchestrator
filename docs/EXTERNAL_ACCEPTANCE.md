@@ -26,6 +26,19 @@ Before starting the live run:
    requirements, prompts, evidence or repository files;
 8. configure `auto_merge: true` and the required correctness, architecture and security review lanes.
 
+Before spending model/runtime budget, run the acceptance-specific preflight:
+
+```bash
+converge-acceptance preflight --config /absolute/path/to/converge.yaml
+```
+
+This reuses the same deterministic local acceptance constraints as the live supervisor and queries the
+production GitHub policy adapter for the configured base branch. It fails closed if GitHub policy cannot
+be read authoritatively, the branch has no required status checks, origin/repository identity does not
+match, or GitHub authentication/transport is unavailable. `supervise` runs the same preflight
+automatically, so a target that cannot satisfy the release CI gate is rejected before the controller or
+any model session is started. The preflight output contains only non-secret policy metadata.
+
 The target must exercise at least two independently useful mandatory requirements so convergence
 requires at least two merged task/PR/CI cycles. Do not split one trivial edit into artificial tasks
 merely to reach the count.
