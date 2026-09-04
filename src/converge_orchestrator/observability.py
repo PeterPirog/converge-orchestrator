@@ -33,7 +33,9 @@ def collect_registry_snapshot(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return low-cardinality operational state derived only from durable registry records."""
-    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    observed_at = _as_utc(now) if now is not None else datetime.now(UTC)
+    if observed_at is None:
+        raise ValueError("now must be a valid datetime")
     projects = registry.list_projects()
     runs = [run for project in projects for run in registry.runs_for_project(str(project["id"]))]
 
