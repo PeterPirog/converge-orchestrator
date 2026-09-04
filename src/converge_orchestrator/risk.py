@@ -720,7 +720,8 @@ def _node_published_source_export_findings(
                             disposition="observe",
                             path=target_path,
                             evidence=(
-                                "public Node source export surface could not be proven after change: "
+                                "public Node source export surface could not be proven "
+                                "after change: "
                                 f"{manifest_path}:{entry} -> {target}"
                             ),
                         )
