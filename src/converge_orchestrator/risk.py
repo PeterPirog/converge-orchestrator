@@ -692,6 +692,17 @@ def _node_package_root(manifest_path: str) -> str:
     return PurePosixPath(manifest_path).parent.as_posix()
 
 
+def _trace_node_source(
+    reader: Callable[[str], str | None],
+    probes: set[str],
+) -> Callable[[str], str | None]:
+    def traced(path: str) -> str | None:
+        probes.add(path)
+        return reader(path)
+
+    return traced
+
+
 def _node_published_source_export_findings(
     paths: list[str],
     base_source: Callable[[str], str | None],
@@ -728,14 +739,8 @@ def _node_published_source_export_findings(
 
                 base_probes: set[str] = set()
                 candidate_probes: set[str] = set()
-
-                def traced_base(path: str) -> str | None:
-                    base_probes.add(path)
-                    return base_source(path)
-
-                def traced_candidate(path: str) -> str | None:
-                    candidate_probes.add(path)
-                    return candidate_source(path)
+                traced_base = _trace_node_source(base_source, base_probes)
+                traced_candidate = _trace_node_source(candidate_source, candidate_probes)
 
                 package_root = _node_package_root(manifest_path)
                 baseline_surface = resolve_node_export_surface(
