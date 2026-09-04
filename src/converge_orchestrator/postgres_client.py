@@ -34,7 +34,7 @@ _LIBPQ_ENV = {
     "sslmode": "PGSSLMODE",
     "sslpassword": "PGSSLPASSWORD",
     "sslrootcert": "PGSSLROOTCERT",
-    "sslsni": "PGSSNI",
+    "sslsni": "PGSSLSNI",
     "ssl_min_protocol_version": "PGSSLMINPROTOCOLVERSION",
     "ssl_max_protocol_version": "PGSSLMAXPROTOCOLVERSION",
     "target_session_attrs": "PGTARGETSESSIONATTRS",
