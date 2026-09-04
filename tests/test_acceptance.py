@@ -38,7 +38,7 @@ def _config(tmp_path: Path, *, github_repo: str = "example/target") -> ProjectCo
             "quality_network": "none",
         },
         agents={
-            role: {"agent": f"converge-{role.replace('_', '-') }"}
+            role: {"agent": f"converge-{role.replace('_', '-')}"}
             for role in _REVIEW_ROLES
         },
         review_roles=_REVIEW_ROLES,
@@ -57,7 +57,10 @@ def _task_bundle(cfg: ProjectConfig, run_id: str, task_id: str, requirement_id: 
         task_dir / "task.json",
         {"id": task_id, "requirement_ids": [requirement_id]},
     )
-    (task_dir / "diff.patch").write_text("diff --git a/a.py b/a.py\n+change\n", encoding="utf-8")
+    (task_dir / "diff.patch").write_text(
+        "diff --git a/a.py b/a.py\n+change\n",
+        encoding="utf-8",
+    )
     _write_json(
         task_dir / "quality.json",
         [
@@ -76,7 +79,10 @@ def _task_bundle(cfg: ProjectConfig, run_id: str, task_id: str, requirement_id: 
     _write_json(task_dir / "risk.json", {"findings": [], "flags": []})
     _write_json(
         task_dir / "pr.json",
-        {"url": f"https://github.com/example/target/pull/{task_id[-1]}", "head_sha": "a" * 40},
+        {
+            "url": f"https://github.com/example/target/pull/{task_id[-1]}",
+            "head_sha": "a" * 40,
+        },
     )
     _write_json(task_dir / "ci.json", {"status": "pass"})
 
@@ -104,7 +110,11 @@ def _status(cfg: ProjectConfig, run_id: str) -> dict:
     }
 
 
-def _supervisor(run_id: str, *, target_repository: str = "example/target") -> ExternalSupervisorEvidence:
+def _supervisor(
+    run_id: str,
+    *,
+    target_repository: str = "example/target",
+) -> ExternalSupervisorEvidence:
     return ExternalSupervisorEvidence.model_validate(
         {
             "run_id": run_id,
