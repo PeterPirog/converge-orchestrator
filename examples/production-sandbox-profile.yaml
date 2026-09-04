@@ -1,0 +1,26 @@
+# Production sandbox policy fragment
+#
+# Merge these sections into the project's complete converge.yaml. The image must be built/published by
+# the project deployment pipeline and referenced by immutable registry digest. Do not put secrets here.
+
+sandbox:
+  mode: container
+  engine: docker
+  image: ghcr.io/acme/payments-converge-runtime@sha256:REPLACE_WITH_64_HEX_DIGEST
+  agent_network: converge-ai
+  quality_network: none
+  agent_gateway_base_url: http://open-webui:8080/api
+  require_internal_agent_network: true
+  read_only_root: true
+  pids_limit: 512
+  memory: 8g
+  cpus: 4.0
+  tmpfs_size: 2g
+  pass_env: []
+  user: host
+
+workflow:
+  run_budget:
+    max_wall_time_seconds: 86400
+    max_model_attempts: 512
+    max_estimated_tokens: 8000000
