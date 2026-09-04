@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from converge_orchestrator import restore_apply
 from converge_orchestrator.backup import create_deployment_backup
 from converge_orchestrator.registry import ControlRegistry
 from converge_orchestrator.restore import plan_deployment_restore
@@ -220,3 +221,125 @@ def test_postgres_confirmation_token_changes_when_database_target_changes(tmp_pa
 
     assert first.database_target == second.database_target == "postgres:configured"
     assert first.confirmation_token != second.confirmation_token
+
+
+def test_sqlite_restore_apply_rebuilds_deployment_and_storage_identity(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    result = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+
+    assert result.status == "restored"
+    assert result.resumed is False
+    assert result.projects == ["fixture"]
+    assert config.is_file()
+    assert requirements.is_file()
+    assert repo.is_dir()
+    assert state_dir.is_dir()
+    assert control_db.is_file()
+
+    registry = ControlRegistry(control_db)
+    project = registry.get_project("fixture")
+    assert workspace_id(repo) == project["workspace_id"]
+    assert state_store_id(state_dir) == project["state_store_id"]
+
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == plan.projects[0].repo_head
+
+    checkpoint = sqlite3.connect(state_dir / "langgraph.sqlite")
+    try:
+        assert checkpoint.execute("SELECT value FROM durable").fetchone()[0] == "checkpoint"
+    finally:
+        checkpoint.close()
+    assert json.loads((state_dir / "evidence.json").read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_sqlite_restore_apply_wrong_token_writes_nothing(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+
+    with pytest.raises(restore_apply.RestoreApplyError, match="confirmation token"):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token="0" * 64,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert not control_db.exists()
+    assert not repo.exists()
+    assert not state_dir.exists()
+    assert not config.exists()
+    assert not requirements.exists()
+
+
+def test_sqlite_restore_apply_recovers_publish_before_journal_checkpoint(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    with (
+        patch.object(restore_apply, "_write_journal", side_effect=SystemExit("process died")),
+        pytest.raises(SystemExit, match="process died"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert requirements.is_file()
+    assert not control_db.exists()
+
+    recovered = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+
+    assert recovered.resumed is True
+    assert control_db.is_file()
+    assert repo.is_dir()
+    assert state_dir.is_dir()
+    assert config.is_file()
+
+
+def test_sqlite_restore_apply_publishes_control_database_last(tmp_path: Path) -> None:
+    backup, control_db, _, _, _, _ = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    with (
+        patch.object(
+            restore_apply,
+            "_ensure_state",
+            side_effect=restore_apply.RestoreApplyError("simulated state failure"),
+        ),
+        pytest.raises(restore_apply.RestoreApplyError, match="simulated state failure"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert not control_db.exists()
+
+    recovered = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert recovered.resumed is True
+    assert control_db.is_file()
