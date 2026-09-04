@@ -36,12 +36,13 @@ _DEFAULT_REEXPORT_MAX_EDGES = 64
 class NodeExportSurface:
     """Syntactic export surface for one JavaScript/TypeScript module.
 
-    `complete` means the consumer-visible names are fully proven for this module. Direct parsing leaves
-    wildcard re-exports incomplete until `resolve_node_export_surface` resolves their local module graph.
+    `complete` means the consumer-visible names are fully proven for this module. Direct parsing
+    leaves wildcard re-exports incomplete until `resolve_node_export_surface` resolves their local
+    module graph.
 
-    `minimum_arguments` contains only callable declarations whose call shape is structurally provable.
-    `source_paths` records modules that contributed to a resolved surface so callers can bind findings
-    to the actual candidate diff.
+    `minimum_arguments` contains only callable declarations whose call shape is structurally
+    provable. `source_paths` records modules that contributed to a resolved surface so callers can
+    bind findings to the actual candidate diff.
     """
 
     symbols: frozenset[str]
@@ -239,8 +240,8 @@ def node_export_surface(path: str, source_text: str | None) -> NodeExportSurface
     """Parse one JS/TS module without executing target repository code.
 
     The TypeScript Tree-sitter grammar is a real syntax parser and accepts JavaScript as a subset.
-    TSX grammar is used for JSX-bearing extensions. Wildcard re-exports are captured structurally but
-    remain incomplete until a bounded local resolver proves their target graph.
+    TSX grammar is used for JSX-bearing extensions. Wildcard re-exports are captured structurally
+    but remain incomplete until a bounded local resolver proves their target graph.
     """
 
     if source_text is None or not is_node_source_path(path):
@@ -372,8 +373,8 @@ def resolve_node_export_surface(
 
     Resolution is intentionally narrower than Node/TypeScript module resolution. Only relative paths
     confined to the package root are considered. Extensionless specifiers are accepted only when one
-    supported source/index candidate exists. Cycles, ambiguity, external packages and exhausted budgets
-    return an incomplete surface instead of guessed compatibility evidence.
+    supported source/index candidate exists. Cycles, ambiguity, external packages and exhausted
+    budgets return an incomplete surface instead of guessed compatibility evidence.
     """
 
     if max_depth < 0 or max_modules < 1 or max_edges < 1:
