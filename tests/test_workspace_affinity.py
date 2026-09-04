@@ -108,6 +108,24 @@ def test_registry_project_binding_rejects_different_state_store(tmp_path: Path) 
         )
 
 
+def test_registry_rejects_state_store_reuse_by_another_project(tmp_path: Path) -> None:
+    registry = ControlRegistry(tmp_path / "control.sqlite")
+    registry.register_project(
+        "payments",
+        tmp_path / "payments.yaml",
+        workspace_id="workspace-a",
+        state_store_id="state-shared",
+    )
+
+    with pytest.raises(ValueError, match="already assigned to project payments"):
+        registry.register_project(
+            "orders",
+            tmp_path / "orders.yaml",
+            workspace_id="workspace-b",
+            state_store_id="state-shared",
+        )
+
+
 def test_legacy_unbound_project_can_be_bound_once(tmp_path: Path) -> None:
     registry = ControlRegistry(tmp_path / "control.sqlite")
     config = tmp_path / "project.yaml"
