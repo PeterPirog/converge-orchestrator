@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from tree_sitter import Language, Node, Parser
 import tree_sitter_typescript as ts_typescript
+from tree_sitter import Language, Node, Parser
 
 _SUPPORTED_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
 _VARIABLE_DECLARATIONS = {"lexical_declaration", "variable_declaration", "using_declaration"}
