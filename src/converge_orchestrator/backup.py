@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .config import load_config
 from .git import GitError, current_head
 from .models import ProjectConfig
+from .postgres_client import libpq_env
 from .shell import run
 from .workspace_identity import assert_state_store_affinity, assert_workspace_affinity
 from .workspace_ownership import WorkspaceOwnershipStore
@@ -198,8 +199,10 @@ def _postgres_backup(database_url: str, destination: Path) -> None:
     if executable is None:
         raise BackupError("PostgreSQL backup requires pg_dump on PATH")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["PGDATABASE"] = database_url
+    try:
+        env = libpq_env(database_url, base=os.environ)
+    except RuntimeError as exc:
+        raise BackupError(str(exc)) from exc
     result = subprocess.run(
         [executable, "--format=custom", "--file", str(destination)],
         env=env,

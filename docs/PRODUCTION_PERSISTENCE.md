@@ -103,11 +103,17 @@ The command uses the same persistence selection as the runtime:
 
 - without `CONVERGE_DATABASE_URL`, the SQLite control registry and each project's LangGraph SQLite
   checkpoint database are copied using SQLite's online backup API;
-- with `CONVERGE_DATABASE_URL`, PostgreSQL is captured with `pg_dump --format=custom`; the database URL
-  is passed through `PGDATABASE`, not command-line arguments;
+- with `CONVERGE_DATABASE_URL`, PostgreSQL is captured with `pg_dump --format=custom`; the configured
+  URI/conninfo is parsed into an isolated libpq `PG*` environment and credentials are never placed in
+  command-line arguments;
 - every registered repository is captured as a Git bundle;
 - project configuration, immutable requirements and non-transient state/evidence files are copied;
 - raw worktree directories and raw SQLite WAL/SHM files are not copied.
+
+The PostgreSQL CLI environment deliberately removes inherited libpq connection variables before applying
+the configured target. A stale `PGHOST`, `PGSERVICE`, `PGDATABASE`, password or TLS option therefore
+cannot silently redirect `pg_dump` or `psql` away from the target represented by
+`CONVERGE_DATABASE_URL`.
 
 ### Quiescence requirement
 
@@ -143,9 +149,9 @@ cryptographic signature against an attacker who can rewrite both payload and man
 
 ### PostgreSQL prerequisite
 
-`pg_dump` must be installed on the worker that creates a PostgreSQL-backed backup and should match the
-major PostgreSQL server version according to normal PostgreSQL operational practice. A missing or
-failing `pg_dump` aborts the backup.
+`pg_dump`, `pg_restore` and `psql` must be installed on the worker that performs PostgreSQL backup or
+restore. The PostgreSQL client major version should be compatible with the server according to normal
+PostgreSQL operational practice. A missing or failing required client aborts the operation.
 
 ## Restore preflight
 
@@ -179,9 +185,9 @@ invalidates an earlier token without serializing its password or connection URL.
 The plan never prints `CONVERGE_DATABASE_URL`. For PostgreSQL it reports only a sanitized configured or
 unconfigured target classification.
 
-## SQLite restore apply
+## Restore apply: common safety contract
 
-SQLite deployments have an explicit write-capable restore command:
+Both persistence backends use the same explicit operator boundary:
 
 ```bash
 converge-backup restore-apply /srv/backups/converge-2026-09-04 \
@@ -190,65 +196,81 @@ converge-backup restore-apply /srv/backups/converge-2026-09-04 \
 
 This command is intentionally an **operator action**, not a LangGraph node and not an agent tool. On a
 new restore attempt it repeats backup verification and restore preflight immediately before the first
-write and requires the exact token from that ready preflight. There is no `--force` option.
+write and requires the exact token from that ready preflight. There is no `--force` option and an LLM
+cannot authorize or waive a failed restore invariant.
 
-The restore uses staged publication and restores the durable control registry **last**. Before the
-control database becomes visible it restores and verifies:
+The filesystem restore uses staged publication and restores the durable database **last**. Before the
+database becomes visible it restores and verifies:
 
 1. immutable requirements and project configuration with their manifest hashes;
 2. each Git repository at the exact manifest HEAD, with a clean working tree, the original Converge
    workspace identity and a canonical GitHub `origin` when `github.repo` is configured;
-3. the exact state/evidence file set, state-store identity and LangGraph SQLite checkpoint;
+3. the exact state/evidence file set and state-store identity; SQLite backups also restore the local
+   LangGraph SQLite checkpoint while PostgreSQL checkpoints come from the database archive;
 4. an empty worktree location rather than stale task worktrees.
 
-SQLite database artifacts are checked with `PRAGMA quick_check`. Existing targets are never overwritten.
-A matching target is accepted only during recovery of a journaled restore and only after deterministic
-content/identity validation.
+Existing targets are never blindly overwritten. A matching target is accepted only during recovery of
+a journaled restore and only after deterministic content/identity validation.
 
-### Process-crash recovery
+## SQLite restore apply
 
-Because configuration, repositories and state may live on different filesystems, Converge does not
-claim a globally atomic filesystem transaction. Instead it keeps a local mode-0600 restore journal and
-uses retry-safe `ensure` semantics around every publication boundary. If a process dies after an exact
-target was published but before the journal checkpoint, rerunning the same command with the **same
-confirmation token** validates and adopts that exact target and continues.
+SQLite database artifacts are published last and checked with `PRAGMA quick_check`. Configuration,
+repositories and state can live on different filesystems, so Converge does not claim a globally atomic
+filesystem transaction. Instead it keeps a local mode-0600 restore journal and uses retry-safe `ensure`
+semantics around every publication boundary.
 
+If a process dies after an exact target was published but before the journal checkpoint, rerunning the
+same command with the **same confirmation token** validates and adopts that exact target and continues.
 The fully published journal is retained as a completion receipt instead of being deleted immediately
-before returning success. This closes the final process-crash window: if the process dies after the
-last database publication or integrity check but before the operator receives the response, the same
-command and token deterministically validate the restored deployment and return success again rather
-than creating an avoidable HITL/manual-cleanup path.
+before returning success. This closes the final process-crash window between the last database
+publication/integrity check and the operator receiving the response.
 
 A completed receipt does not permanently consume the backup. If a later disaster removes every restore
 target, ordinary read-only preflight becomes ready again. Only when that fresh preflight reproduces the
 same confirmation token may Converge atomically reset the receipt and start a new restore cycle. Partial
 loss, changed targets or a changed token remain fail-closed.
 
-A target recorded as published that later disappears, becomes dirty or changes content is not silently
-re-created during recovery of an incomplete cycle. The stored plan is itself re-bound to the original
-confirmation token before a resumed write. The control registry database is published last, so a
-failure during earlier filesystem restoration does not expose the partial deployment through normal
-Converge discovery.
+## PostgreSQL restore apply
 
-This recovery contract is for process interruption. It is not a claim of power-loss atomicity across
-independent filesystems; deployment-level storage durability and filesystem guarantees still apply.
+For PostgreSQL, Converge first verifies that the custom archive is readable by `pg_restore`. It then
+materializes the verified archive into a temporary SQL script before opening the restore transaction.
+A Converge restore receipt containing only deterministic plan identity is appended to that script:
 
-## Current PostgreSQL restore status
+- protocol version;
+- backup manifest SHA-256;
+- exact confirmation token;
+- secret-free database-target binding.
 
-PostgreSQL **restore apply is not implemented yet**. `restore-plan` supports PostgreSQL and binds the
-confirmation token to the configured target, but `restore-apply` rejects a PostgreSQL backup before
-writing anything. A production PostgreSQL apply must preserve the same no-force contract and define a
-safe, tested commit/recovery boundary around `pg_restore --single-transaction --exit-on-error` before
-it is enabled.
+The complete script is executed through `psql --no-psqlrc --single-transaction
+--set=ON_ERROR_STOP=1`. The receipt therefore commits in the **same PostgreSQL transaction** as the
+restored control registry and LangGraph checkpoint state.
 
-Do not manually overwrite a live PostgreSQL deployment based only on a ready plan.
+This closes the critical server-commit/local-journal race without routine HITL. If PostgreSQL commits
+successfully and the Converge process dies before the local restore journal can record the `database`
+publication, the next invocation reads the server-side receipt. An exact receipt is adopted and the
+database restore is not repeated. A non-empty target without the exact receipt, a different receipt or
+a published receipt that later changes/disappears fails closed.
+
+The database remains the last deployment publication: a failed filesystem restoration cannot expose a
+partially runnable Converge control registry. PostgreSQL connection secrets remain outside argv,
+restore plans, journals and evidence.
+
+This recovery contract proves the explicit boundary where the server transaction has committed but the
+local acknowledgement has not. It is not a claim of power-loss atomicity across independent filesystems;
+deployment-level storage durability and filesystem guarantees still apply.
 
 ## Verification
 
 CI contains a focused PostgreSQL integration job, separate from the Python 3.11-3.13 unit matrix. It
-proves that two registry instances observe the same project/run data, lease acquisition is mutually
-exclusive across instances, and a LangGraph checkpoint survives closing one database connection and
-opening another.
+uses a real PostgreSQL server and validates the installed `pg_dump`, `pg_restore` and `psql` clients.
+The persistence tests prove shared registry/checkpoint behavior and mutually exclusive lease acquisition.
+The restore tests create isolated source and target databases, capture a real Converge deployment,
+restore the registry plus LangGraph checkpoint and filesystem, and then read the recovered state through
+the normal persistence layer.
+
+A second real PostgreSQL restore test terminates a subprocess abruptly after the database transaction
+and server receipt are committed but before the local journal records database publication. Re-running
+the exact plan/token must adopt that receipt; the test explicitly forbids a second database restore.
 
 Backup tests use real Git and SQLite and cover successful capture, Git bundle validity, checkpoint
 integrity, tamper detection, unfinished-run blocking, worktree ownership blocking, dirty-repository
@@ -258,4 +280,5 @@ broken symlinks and mismatched Git HEAD/backend artifacts, and prove that Postgr
 included in the serialized plan. SQLite restore-apply tests prove complete reconstruction, storage
 identity preservation, wrong-token no-write behavior, database-last publication, recovery across the
 publication/journal checkpoint race, idempotent completion-receipt replay and safe reuse after a later
-full target loss.
+full target loss. Dedicated libpq-environment tests prove that stale inherited PostgreSQL target settings
+are removed before invoking database CLI tools.

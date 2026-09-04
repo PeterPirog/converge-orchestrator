@@ -14,6 +14,7 @@ from .persistence import (
 )
 from .restore import RestoreError, plan_deployment_restore
 from .restore_apply import RestoreApplyError, apply_sqlite_restore
+from .restore_postgres import apply_postgres_restore
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -84,14 +85,24 @@ def restore_plan(root: BackupPath) -> None:
 
 @app.command("restore-apply")
 def restore_apply(root: BackupPath, confirmation_token: ConfirmationToken) -> None:
-    """Apply or resume an explicitly approved SQLite deployment restore."""
+    """Apply or resume an explicitly approved SQLite or PostgreSQL deployment restore."""
     try:
-        result = apply_sqlite_restore(
-            root,
-            confirmation_token=confirmation_token,
-            control_db_path=configured_control_db_path(),
-            database_url=configured_database_url(),
-        )
+        control_db_path = configured_control_db_path()
+        database_url = configured_database_url()
+        if database_url:
+            result = apply_postgres_restore(
+                root,
+                confirmation_token=confirmation_token,
+                control_db_path=control_db_path,
+                database_url=database_url,
+            )
+        else:
+            result = apply_sqlite_restore(
+                root,
+                confirmation_token=confirmation_token,
+                control_db_path=control_db_path,
+                database_url=None,
+            )
     except (BackupError, RestoreApplyError, RestoreError, RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     console.print_json(data=result.model_dump(mode="json"))
