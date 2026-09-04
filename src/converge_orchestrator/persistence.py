@@ -11,6 +11,7 @@ from .registry import ControlRegistry
 from .registry_postgres import PostgresControlRegistry
 
 _DATABASE_URL_ENV = "CONVERGE_DATABASE_URL"
+_CONTROL_DB_ENV = "CONVERGE_CONTROL_DB"
 _STRICT_MSGPACK_ENV = "LANGGRAPH_STRICT_MSGPACK"
 _SCHEMA_PROBE_THREAD = "__converge_schema_probe__"
 
@@ -18,6 +19,14 @@ _SCHEMA_PROBE_THREAD = "__converge_schema_probe__"
 def configured_database_url() -> str | None:
     value = os.environ.get(_DATABASE_URL_ENV)
     return value.strip() if value and value.strip() else None
+
+
+def configured_control_db_path() -> Path:
+    """Return the shared control-registry path used by CLI and API in SQLite mode."""
+    value = os.environ.get(_CONTROL_DB_ENV)
+    if value and value.strip():
+        return Path(value.strip()).expanduser().resolve()
+    return Path(".converge/control.sqlite").resolve()
 
 
 def _require_strict_msgpack() -> None:

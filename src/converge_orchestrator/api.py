@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .persistence import configured_control_db_path
 from .runtime_service import ScheduledRunController
 
 
@@ -45,9 +46,7 @@ def create_app(
     registry_path: Path | None = None,
     api_token: str | None = None,
 ) -> FastAPI:
-    path = registry_path or Path(
-        os.environ.get("CONVERGE_CONTROL_DB", ".converge/control.sqlite")
-    )
+    path = registry_path or configured_control_db_path()
     controller = ScheduledRunController(path)
     token = api_token if api_token is not None else os.environ.get("CONVERGE_API_TOKEN")
     app = FastAPI(

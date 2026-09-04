@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import re
 import shutil
+import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
 
 from .config import load_config
-from .graph_service import build_graph
 from .inspector import inspect_repository
 from .model_gateway import (
     ModelGatewayError,
@@ -20,8 +21,13 @@ from .opencode_config import (
     resolve_agent_model,
     resolve_agent_variant,
 )
-from .persistence import configured_database_url, open_checkpointer, setup_postgres
+from .persistence import (
+    configured_control_db_path,
+    configured_database_url,
+    setup_postgres,
+)
 from .quality import effective_quality_gates
+from .runtime_service import ScheduledRunController
 from .sandbox import ExecutionSandbox, SandboxPreflightError
 from .spec import compile_contract, is_read_only, sha256_file
 
@@ -29,16 +35,109 @@ app = typer.Typer(no_args_is_help=True)
 console = Console()
 
 ConfigOption = Annotated[Path, typer.Option("--config", exists=True, readable=True)]
-ThreadOption = Annotated[str, typer.Option("--thread-id")]
+ThreadOption = Annotated[
+    str | None,
+    typer.Option(
+        "--thread-id",
+        help="Optional unique LangGraph thread ID; generated automatically when omitted.",
+    ),
+]
+ProjectIdOption = Annotated[
+    str | None,
+    typer.Option(
+        "--project-id",
+        help="Control-plane project ID; defaults to project.name or the config filename stem.",
+    ),
+]
 OfflineOption = Annotated[
     bool,
     typer.Option("--offline", help="Skip live model-gateway connectivity checks."),
 ]
 
+_PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+_CLI_STATUS_POLL_SECONDS = 1.0
+_CLI_RECONCILE_SECONDS = 5.0
+
 
 def _require_executable(binary: str, label: str) -> None:
     if shutil.which(binary) is None:
         raise typer.BadParameter(f"{label} executable not found on PATH: {binary}")
+
+
+def _resolve_cli_project_id(config: Path, cfg: Any, explicit: str | None) -> str:
+    project_id = explicit or cfg.project_name or config.stem
+    if not project_id or not _PROJECT_ID_PATTERN.fullmatch(project_id):
+        raise typer.BadParameter(
+            "CLI project ID must match [A-Za-z0-9_.-]+; set project.name or --project-id"
+        )
+    return project_id
+
+
+def _select_or_start_run(
+    controller: ScheduledRunController,
+    project_id: str,
+    thread_id: str | None,
+) -> dict[str, Any]:
+    history = controller.registry.runs_for_project(project_id)
+    unfinished = [record for record in history if not record.get("finished_at")]
+    if len(unfinished) > 1:
+        raise RuntimeError(
+            f"Project {project_id} has multiple unfinished runs; refusing ambiguous CLI recovery"
+        )
+    if unfinished:
+        record = unfinished[0]
+        if thread_id is not None and record.get("thread_id") != thread_id:
+            raise RuntimeError(
+                f"Project {project_id} already has active run {record['id']} on thread "
+                f"{record.get('thread_id')}; omit --thread-id or use that active thread"
+            )
+        return record
+
+    if thread_id is not None:
+        for record in history:
+            if record.get("thread_id") == thread_id:
+                raise RuntimeError(
+                    f"Thread {thread_id} already belongs to finished run {record['id']}; "
+                    "omit --thread-id or choose a new unique thread ID"
+                )
+    return controller.start_run(project_id, thread_id=thread_id)
+
+
+def _wait_until_terminal_or_human_interrupt(
+    controller: ScheduledRunController,
+    run_id: str,
+    poll_seconds: float = _CLI_STATUS_POLL_SECONDS,
+    reconcile_seconds: float = _CLI_RECONCILE_SECONDS,
+) -> dict[str, Any]:
+    if poll_seconds <= 0:
+        raise ValueError("poll_seconds must be positive")
+    if reconcile_seconds <= 0:
+        raise ValueError("reconcile_seconds must be positive")
+
+    next_reconcile = time.monotonic() + reconcile_seconds
+    while True:
+        record = controller.registry.get_run(run_id)
+        if record.get("finished_at"):
+            return controller.status(run_id)
+
+        if record.get("status") in {"paused", "interrupted"}:
+            result = controller.status(run_id)
+            interrupt_payload = result.get("interrupt")
+            if interrupt_payload and interrupt_payload.get("kind") != "ci_wait":
+                return result
+            next_reconcile = time.monotonic() + reconcile_seconds
+        elif time.monotonic() >= next_reconcile:
+            # A synchronous CLI process can outlive an in-memory recovery timer. Reconcile the
+            # durable checkpoint periodically so recoverable/CI states self-heal without HITL.
+            result = controller.status(run_id)
+            if result.get("finished_at"):
+                return result
+            interrupt_payload = result.get("interrupt")
+            if interrupt_payload and interrupt_payload.get("kind") != "ci_wait":
+                return result
+            next_reconcile = time.monotonic() + reconcile_seconds
+
+        time.sleep(poll_seconds)
 
 
 @app.command("models")
@@ -168,20 +267,28 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
 @app.command()
 def run(
     config: ConfigOption,
-    thread_id: ThreadOption = "default",
+    thread_id: ThreadOption = None,
+    project_id: ProjectIdOption = None,
 ) -> None:
-    """Run the autonomous convergence loop until a terminal state or interrupt."""
-    cfg = load_config(config)
-    checkpointer, db = open_checkpointer(cfg.state_dir)
+    """Run or recover one durable project run until terminal state or human interrupt."""
+    resolved_config = config.expanduser().resolve()
+    cfg = load_config(resolved_config)
+    resolved_project_id = _resolve_cli_project_id(
+        resolved_config,
+        cfg,
+        project_id,
+    )
     try:
-        graph = build_graph(checkpointer=checkpointer)
-        graph_config = {"configurable": {"thread_id": thread_id}}
-        result = graph.invoke(
-            {"config_path": str(config.resolve()), "thread_id": thread_id},
-            config=graph_config,
+        controller = ScheduledRunController(
+            configured_control_db_path(),
+            restore_on_start=False,
         )
-    finally:
-        db.close()
+        controller.register_project(resolved_project_id, resolved_config)
+        controller.restore_durable_runs(resolved_project_id)
+        record = _select_or_start_run(controller, resolved_project_id, thread_id)
+        result = _wait_until_terminal_or_human_interrupt(controller, str(record["id"]))
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
     console.print_json(data=result)
 
 

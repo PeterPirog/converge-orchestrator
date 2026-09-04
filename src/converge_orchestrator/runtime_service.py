@@ -75,12 +75,19 @@ class ScheduledRunController(RunController):
         self,
         registry_path: Path,
         database_url: str | None = None,
+        *,
+        restore_on_start: bool = True,
     ):
         super().__init__(registry_path, database_url=database_url)
         self._timers: dict[str, threading.Timer] = {}
         self._timer_generations: dict[str, int] = {}
-        self._restore_ci_waits()
-        self._restore_recoverable_runs()
+        if restore_on_start:
+            self.restore_durable_runs()
+
+    def restore_durable_runs(self, project_id: str | None = None) -> None:
+        """Restore all local durable work or only one explicitly selected project."""
+        self._restore_ci_waits(project_id)
+        self._restore_recoverable_runs(project_id)
 
     def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
         cfg = load_config(config_path)
@@ -89,13 +96,34 @@ class ScheduledRunController(RunController):
                 validate_origin_repository(cfg.repo_path, cfg.github_repo)
             except RemoteValidationError as exc:
                 raise ValueError(str(exc)) from exc
-        return super().register_project(project_id, config_path)
+        try:
+            previous = self.registry.get_project(project_id)
+        except KeyError:
+            previous = None
+        needs_rebind_recovery = bool(
+            previous
+            and (
+                not previous.get("workspace_id")
+                or not previous.get("state_store_id")
+            )
+        )
+        result = super().register_project(project_id, config_path)
+        if needs_rebind_recovery:
+            # Legacy rows were deliberately not auto-recovered before their physical bindings were
+            # known. Explicit re-registration is the one safe point to retry their durable work.
+            self.restore_durable_runs(project_id)
+        return result
 
-    def start_run(self, project_id: str) -> dict[str, Any]:
+    def start_run(
+        self,
+        project_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
         for existing in self.registry.runs_for_project(project_id):
             if existing["status"] == "waiting_ci" and not existing["finished_at"]:
                 raise RuntimeError(f"Project already has active run {existing['id']}")
-        return super().start_run(project_id)
+        return super().start_run(project_id, thread_id=thread_id)
 
     def resume(self, run_id: str) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
@@ -127,15 +155,45 @@ class ScheduledRunController(RunController):
     def status(self, run_id: str) -> dict[str, Any]:
         result = super().status(run_id)
         interrupt_payload = result.get("interrupt")
+        remote_worker_active = bool(result.get("remote_worker_active"))
+        worker_alive = bool(result.get("worker_alive"))
+        terminal_status = _terminal_checkpoint_status(result)
+        if (
+            terminal_status is not None
+            and not worker_alive
+            and not remote_worker_active
+            and not result.get("finished_at")
+        ):
+            # The graph may have durably completed immediately before the process lost
+            # the registry update. Later status reconciliation closes that crash window
+            # without rerunning.
+            self.registry.update_run(
+                run_id,
+                status=terminal_status,
+                node="done",
+                finished=True,
+            )
+            self._cancel_timer(run_id)
+            persisted = self.registry.get_run(run_id)
+            for key in (
+                "values",
+                "next",
+                "interrupt",
+                "worker_alive",
+                "remote_worker_active",
+            ):
+                persisted[key] = result.get(key)
+            return persisted
         if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
             self.registry.update_run(run_id, status="waiting_ci", node="ci_wait")
             result["status"] = "waiting_ci"
-            if not result.get("worker_alive"):
+            if not worker_alive and not remote_worker_active:
                 self._schedule_ci_wait(run_id, str(interrupt_payload["wake_at"]))
         elif (
             not interrupt_payload
             and result.get("next")
-            and not result.get("worker_alive")
+            and not worker_alive
+            and not remote_worker_active
             and not result.get("finished_at")
         ):
             self.registry.update_run(
@@ -146,7 +204,8 @@ class ScheduledRunController(RunController):
             result["status"] = "recoverable"
             self._schedule_recoverable(run_id)
         elif (
-            not result.get("worker_alive")
+            not worker_alive
+            and not remote_worker_active
             and not result.get("finished_at")
             and result.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
             and _is_initial_input_checkpoint(result, result)
@@ -221,16 +280,25 @@ class ScheduledRunController(RunController):
             "thread_id": record["thread_id"],
         }
 
-    def _unfinished_records(self):
-        for project in self.registry.list_projects():
+    def _unfinished_records(self, project_id: str | None = None):
+        if project_id is None:
+            projects = self.registry.list_projects()
+        else:
+            try:
+                projects = [self.registry.get_project(project_id)]
+            except KeyError:
+                projects = []
+        for project in projects:
             if not self._project_is_local(project):
                 continue
             for record in self.registry.runs_for_project(project["id"]):
                 if not record["finished_at"]:
                     yield record
 
-    def _restore_ci_waits(self) -> None:
-        for record in self._unfinished_records():
+    def _restore_ci_waits(self, project_id: str | None = None) -> None:
+        for record in self._unfinished_records(project_id):
+            if self._foreign_lease_active(record):
+                continue
             snapshot = self._snapshot(record)
             interrupt_payload = snapshot.get("interrupt")
             if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
@@ -244,9 +312,11 @@ class ScheduledRunController(RunController):
                     str(interrupt_payload["wake_at"]),
                 )
 
-    def _restore_recoverable_runs(self) -> None:
+    def _restore_recoverable_runs(self, project_id: str | None = None) -> None:
         """Reconcile terminal state or resume durable machine work after restart."""
-        for record in self._unfinished_records():
+        for record in self._unfinished_records(project_id):
+            if self._foreign_lease_active(record):
+                continue
             snapshot = self._recovery_snapshot(record)
             if snapshot is None or snapshot.get("interrupt"):
                 continue
@@ -340,6 +410,8 @@ class ScheduledRunController(RunController):
             return
         if record["finished_at"]:
             return
+        if self._foreign_lease_active(record):
+            return
 
         snapshot = self._snapshot(record)
         interrupt_payload = snapshot.get("interrupt")
@@ -364,7 +436,7 @@ class ScheduledRunController(RunController):
             record = self.registry.get_run(run_id)
         except KeyError:
             return
-        if record["finished_at"]:
+        if record["finished_at"] or self._foreign_lease_active(record):
             return
 
         snapshot = self._recovery_snapshot(record)
