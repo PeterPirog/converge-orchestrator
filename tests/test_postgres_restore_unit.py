@@ -77,8 +77,10 @@ def test_postgres_receipt_sql_contains_only_plan_bound_identity() -> None:
         database_target_binding="c" * 64,
     ).decode("ascii")
 
-    assert "DROP SCHEMA IF EXISTS converge_restore_meta CASCADE" in sql
-    assert "CREATE TABLE converge_restore_meta.restore_receipt" in sql
+    assert "CREATE SCHEMA IF NOT EXISTS converge_restore_meta" in sql
+    assert "CREATE TABLE IF NOT EXISTS converge_restore_meta.restore_receipt" in sql
+    assert "DELETE FROM converge_restore_meta.restore_receipt" in sql
+    assert "DROP SCHEMA" not in sql
     assert "a" * 64 in sql
     assert "b" * 64 in sql
     assert "c" * 64 in sql
@@ -168,3 +170,17 @@ def test_nonempty_target_without_receipt_fails_closed(tmp_path: Path) -> None:
                 journal=journal,
                 journal_path=tmp_path / "journal.json",
             )
+
+
+def test_malformed_receipt_never_matches() -> None:
+    assert not restore_postgres._receipt_matches(
+        {
+            "protocol_version": "invalid",
+            "backup_manifest_sha256": "a" * 64,
+            "confirmation_token": "b" * 64,
+            "database_target_binding": "c" * 64,
+        },
+        manifest_sha256="a" * 64,
+        confirmation_token="b" * 64,
+        database_target_binding="c" * 64,
+    )
