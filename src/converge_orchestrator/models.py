@@ -5,7 +5,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypedDict
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 _REVIEW_AGENT_ROLES = {
     "reviewer",
@@ -261,6 +261,8 @@ class ProjectConfig(BaseModel):
     max_replans: int = 2
     max_iterations: int = 50
     max_diff_lines_hard: int = 1000
+    max_run_seconds: int = Field(default=259200, ge=60, le=2592000)
+    max_model_attempts: int = Field(default=256, ge=1, le=10000)
     review_roles: list[str] = Field(default_factory=list)
     max_parallel_reviews: int = Field(default=3, ge=1, le=16)
     context_input_fraction: float = Field(default=0.70, gt=0.10, le=0.95)
@@ -270,6 +272,7 @@ class ProjectConfig(BaseModel):
     auto_merge: bool = False
     merge_method: Literal["merge", "squash", "rebase"] = "squash"
     require_spec_read_only: bool = True
+    _runtime_run_id: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")
     @classmethod
@@ -329,6 +332,8 @@ class ProjectConfig(BaseModel):
             "max_replans",
             "max_iterations",
             "max_diff_lines_hard",
+            "max_run_seconds",
+            "max_model_attempts",
             "review_roles",
             "max_parallel_reviews",
             "context_input_fraction",
