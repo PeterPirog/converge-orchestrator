@@ -144,22 +144,25 @@ Implemented:
   database commit but before local journal acknowledgement;
 - isolated libpq CLI connection environments for PostgreSQL backup/restore so inherited `PG*` target
   settings cannot redirect `pg_dump` or `psql` away from the configured deployment target;
+- production container sandbox execution now requires an immutable digest/content-addressed image,
+  rejects mutable tags before execution and is exercised by a real Docker CI job with an internal
+  network and read-only agent workspace;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding, persistence, sandbox and model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production sandbox reproducibility** — publish/define a project runtime profile whose container
-   image is digest-pinned, verify the digest requirement deterministically and exercise that hardened
-   container path in CI. Do not let a mutable image tag become executable production policy.
-2. **External repository acceptance** — run the complete document-to-convergence path against a
-   representative repository outside Converge itself through multiple autonomous PR/CI cycles,
-   deliberately include one controller restart and one exceptional HITL condition, and require no
-   manual code edits.
-3. **Measured provider economics** — ingest provider-reported token/cost usage where available and
+1. **External repository acceptance** — make the release gate machine-verifiable, then run the complete
+   document-to-convergence path against a representative repository outside Converge itself through
+   multiple autonomous PR/CI cycles. Deliberately include one controller restart and one exceptional
+   HITL condition, require no manual code edits, and require final independent requirements,
+   architecture, compatibility, security and evidence checks.
+2. **Measured provider economics** — ingest provider-reported token/cost usage where available and
    aggregate it by durable run/role. This improves forecasting and cost accuracy but must remain
    secondary to the already enforced conservative fail-closed resource envelope.
-4. **Broader language adapters** — extend only parser-backed, high-confidence compatibility/dependency
+3. **Broader language adapters** — extend only parser-backed, high-confidence compatibility/dependency
    rules for Node/Go/Rust where the claimed support scope requires them.
+4. **Deployment portability follow-up** — deliberately shared/external artifact storage only where
+   independent multi-node workers require it; PostgreSQL alone must never imply stateless worker safety.
 
 ## First real-repository readiness gate
 
@@ -185,6 +188,10 @@ declared ready until all of these executable criteria are met:
    compatibility and security, and the evidence bundle can reconstruct why every integrated change was
    accepted.
 
+Criteria 1-3 are implemented for the current declared Python + conservative Node scope. Criterion 4 is
+now the primary release blocker; criterion 5 must be proven as part of the same external acceptance
+run, not asserted from internal Converge tests.
+
 PDF, DOCX and other authoring formats may be used to prepare requirements, but they must not silently
 become parallel workflow authorities. They should be normalized into the reviewed immutable Markdown
 requirements artifact before orchestration starts, preserving the architecture's single Source of Truth.
@@ -196,8 +203,9 @@ Planned / partially implemented:
 - fail-closed per-run wall-time/model-attempt/conservative-token budgets are implemented; project-level
   aggregate spending policy and provider-reported billable usage remain future cost-governance work;
 - provider-reported token/cost telemetry and aggregated per-role health statistics;
-- project-specific digest-pinned sandbox images and deployment profile;
-- representative external-repository autonomous acceptance suite;
+- digest-pinned sandbox policy and real container CI proof are implemented; each target project still
+  owns the build/publish pipeline for its exact runtime image/toolchain;
+- representative external-repository autonomous acceptance gate is the current release blocker;
 - durable registry diagnostics and Prometheus metrics are implemented; OpenTelemetry and optional
   LangSmith tracing may be added without making external tracing the source of evidence;
 - multi-project dashboard/operator audit views are optional after the release gate;

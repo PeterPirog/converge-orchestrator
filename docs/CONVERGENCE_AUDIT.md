@@ -18,7 +18,7 @@ partial deliberately: agent-facing context/tools can use MCP, while Git, GitHub,
 decisions that affect safety remain deterministic code where that provides a smaller and more
 verifiable trust boundary.
 
-The earlier high-priority recovery gaps are now closed with executable evidence:
+The earlier high-priority recovery and resource-envelope gaps are closed with executable evidence:
 
 - durable run leases prevent two controllers from executing one LangGraph thread concurrently;
 - worktree creation, commit/push, PR creation and machine-managed CI wait have process-level
@@ -29,9 +29,13 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
 - SQLite is retained for local use, while PostgreSQL provides shared control-registry and LangGraph
   checkpoint persistence with real-database CI coverage;
 - each new run owns a hash-pinned normalized configuration snapshot, so changing `converge.yaml`
-  cannot silently change model, gate, retry/replan, CI or merge policy in a run already in progress;
+  cannot silently change model, gate, retry/replan, CI, budget, sandbox or merge policy in a run already
+  in progress;
 - CLI recovery resolves an existing durable run from control-registry identity before reading or
   re-registering mutable source YAML, preserving the same pinned execution policy after restart;
+- finite per-run wall-time/model-attempt/conservative-token budgets are reserved durably before model
+  execution, survive retry/restart without reset and terminate machine work instead of escalating to an
+  override-capable HITL path;
 - durable low-cardinality diagnostics/Prometheus metrics are reconstructed from shared registry state;
 - an authenticated workload-affinity probe lets an external scheduler identify which worker can safely
   execute a filesystem-bound project, using the active run's pinned configuration when one exists;
@@ -50,14 +54,16 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
   JavaScript parameter growth do not create false HITL;
 - bounded local Node wildcard re-export graphs are resolved only for relative package-confined paths,
   under explicit depth/module/edge budgets; proven named exports and TypeScript minimum-call-arity
-  evidence now propagate through unchanged public barrels, while cycles/ambiguity remain conservative.
+  evidence propagate through unchanged public barrels, while cycles/ambiguity remain conservative;
+- production container execution rejects mutable image tags, requires an immutable digest/content
+  address and is exercised by a real Docker CI job with the hardened network/read-only mount path.
 
-This does **not** mean production hardening is finished. Both SQLite and PostgreSQL deployments now have
-a complete create/verify/plan/apply recovery path for the backed-up artifacts. Independent multi-node
-deployments still require a shared/consistent project filesystem or deliberate external artifact
-storage. Python compatibility remains broader than Node because broader TypeScript signature/type
-compatibility is intentionally not guessed; Go/Rust source compatibility also remains future work.
-The next production-readiness blocker is fail-closed cost/time/model-usage governance.
+This does **not** mean the general-purpose release gate has passed. The remaining primary blocker is no
+longer an internal recovery, resource-budget or sandbox mechanism. It is an evidence-backed live run on
+a representative repository outside Converge itself, across repeated autonomous PR/CI cycles, with a
+real controller restart, one deliberately exceptional HITL decision, no manual code edits and a final
+independent requirements/architecture/compatibility/security/evidence audit. Go/Rust and broader Node
+semantics remain later portability work unless they are included in the declared release support scope.
 
 ## Convergence matrix
 
@@ -74,10 +80,10 @@ The next production-readiness blocker is fail-closed cost/time/model-usage gover
 | MCP as universal tool bus | **PARTIAL BY DESIGN** | role-scoped MCP configuration generated for OpenCode | critical Git/GitHub/test/integration authority intentionally stays deterministic rather than MCP-only |
 | OpenWebUI operator entry point | **ALIGNED** | confirmed Workspace Tool over Bearer-authenticated FastAPI; status/compliance/evidence/interrupt operations; durable state outside chat | richer dashboard is optional UX |
 | Reusable project configuration | **STRONGER** | one `converge.yaml`, relative paths, model profiles, MCP, sandbox, quality/workflow policy, per-run normalized immutable execution snapshot | GUI editor is optional |
-| Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically; bounded Node barrel analysis reduces avoidable compatibility ambiguity | additional high-confidence compatibility rules can further reduce valid escalations |
-| Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits and timeout cleanup | pinned production images and deployment hardening |
-| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry and global run budgets |
-| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and crash-safe restore for both persistence backends | optional shared/external artifact storage |
+| Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically; compatibility adapters reduce avoidable ambiguity | live external acceptance must prove this operationally |
+| Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits, digest-pinned image enforcement and real container CI | target projects must build/publish their exact pinned toolchain image |
+| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts, durable finite run envelope | provider-reported billable token/cost telemetry |
+| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and crash-safe restore for both persistence backends | external acceptance must prove the whole evidence chain on a real target |
 
 ## Canonical execution path
 
@@ -191,7 +197,8 @@ success.
 `ExecutionSandbox` covers OpenCode, quality gates and requirement verifiers. Deterministic integration
 stays outside the Builder authority. Container mode enforces read-only root, dropped capabilities,
 no-new-privileges, resource limits, tmpfs, controlled environment forwarding, network policy and
-cleanup on timeout.
+cleanup on timeout. Production container mode additionally requires a digest/content-addressed image;
+mutable tags are rejected before Docker execution and runtime uses `--pull=never`.
 
 ## Multi-node placement boundary
 
@@ -211,19 +218,23 @@ does not migrate workspaces, rewrite registry bindings or become a workflow-stat
 
 ## Current next priorities
 
-Repository evidence now moves the priority away from completed checkpoint/flake/PostgreSQL persistence,
-metrics, workload-placement, deployment backup/restore and bounded Node barrel-resolution work. The
-smallest remaining high-value areas are, in order:
+Repository evidence moves the priority away from completed checkpoint/flake/PostgreSQL persistence,
+metrics, workload-placement, deployment backup/restore, bounded Node barrel resolution, durable run
+budgets and digest-pinned sandbox work. The smallest remaining high-value areas are, in order:
 
-1. **Cost/time governance** — add fail-closed run/project wall-time and model-usage budgets with durable
-   accounting before autonomous execution can exceed its configured resource envelope. Provider usage
-   telemetry is evidence; deterministic policy owns the stop/continue decision.
-2. **Cross-language deterministic compatibility/architecture adapters** — add only high-confidence
-   parser-backed Node source-signature rules that materially reduce review ambiguity, then Go/Rust
-   public API and dependency-boundary rules. Uncertain semantics must remain conservative rather than
+1. **External repository acceptance** — use a deterministic acceptance verifier and a separate
+   supervisor to prove a representative repository outside Converge reaches convergence through at
+   least two meaningful autonomous PR/CI cycles, including one real controller restart and one
+   deliberately exceptional `risk_policy` HITL decision, with no manual code edits. The final result
+   must independently PASS requirements, architecture, compatibility, security and evidence checks.
+2. **Measured provider economics** — ingest provider-reported billable token/cost usage where available
+   and aggregate it by durable run/role. This is forecasting/optimization evidence; it must not weaken
+   the existing fail-closed conservative resource envelope.
+3. **Broader language compatibility** — add only high-confidence parser-backed Node/Go/Rust rules where
+   the declared support scope requires them. Uncertain semantics must remain conservative rather than
    guessed.
-3. **Deployment portability hardening** — digest-pinned project sandbox images and deliberately
-   shared/external artifact storage where independent multi-node workers require it.
+4. **Deployment portability follow-up** — deliberately shared/external artifact storage only where
+   independent multi-node workers require it.
 
 Optional issue synchronization, richer dashboards and broader UX must not displace these core items.
 Parallel Builders should remain disabled until a deterministic scheduler can prove non-overlapping write
@@ -231,18 +242,18 @@ sets and revalidate integration against the current main branch.
 
 ## Real-repository readiness assessment
 
-The orchestration core is already capable of a controlled Python pilot driven by frozen Markdown
-requirements: it can derive bounded work, execute one-writer changes, prove quality, independently
-review, create PRs, wait for authoritative CI and recover from controller/executor failure. That is a
-meaningful operational milestone, but it is not yet the release criterion for unattended arbitrary
-repository development.
+The orchestration core is capable of a controlled Python pilot driven by frozen Markdown requirements:
+it can derive bounded work, execute one-writer changes, prove quality, independently review, create PRs,
+wait for authoritative CI, enforce finite resource/sandbox boundaries and recover from
+controller/executor failure. That is a meaningful operational milestone, but it is not yet the release
+criterion for unattended general-purpose repository development.
 
-The general-purpose readiness gate is maintained in `ROADMAP.md`. In practical terms, the remaining
-blockers before that declaration are an explicitly bounded compatibility scope for the claimed language
-set, fail-closed cost/time/model-usage budgets, a digest-pinned production sandbox profile, and a
-representative external repository acceptance run that reaches convergence across multiple PR/CI cycles
-with restart recovery and no manual code edits. This keeps the declaration evidence-based instead of
-tied to a calendar date.
+For the currently declared **Python + conservative Node** scope, internal release criteria covering
+compatibility boundaries, durable resource budgets and digest-pinned production sandbox enforcement are
+implemented and exercised in CI. The primary remaining proof is the representative external-repository
+acceptance run maintained in `ROADMAP.md` and `EXTERNAL_ACCEPTANCE.md`. The release must remain
+"controlled pilot" until that run passes; no percentage estimate or internal unit-test count should
+substitute for that evidence.
 
 ## Target operational criterion
 
@@ -260,4 +271,6 @@ Converge is operationally converged with the reference vision when all of the fo
 - OpenWebUI controls the process without becoming durable workflow storage;
 - sandbox and role permissions bound blast radius independently of model behavior;
 - context remains bounded during long-running projects;
-- cleanup never removes resources belonging to active, recoverable, interrupted or CI-wait runs.
+- cleanup never removes resources belonging to active, recoverable, interrupted or CI-wait runs;
+- a representative external repository has passed the machine-verifiable document-to-convergence
+  acceptance gate without manual code edits.
