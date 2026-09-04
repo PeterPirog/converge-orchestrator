@@ -36,6 +36,8 @@ The earlier high-priority recovery and resource-envelope gaps are closed with ex
 - finite per-run wall-time/model-attempt/conservative-token budgets are reserved durably before model
   execution, survive retry/restart without reset and terminate machine work instead of escalating to an
   override-capable HITL path;
+- every actual operator decision is checkpointed as bounded policy metadata, while machine-managed CI
+  resumes are excluded; the external release verifier requires exactly one predeclared risk approval;
 - durable low-cardinality diagnostics/Prometheus metrics are reconstructed from shared registry state;
 - an authenticated workload-affinity probe lets an external scheduler identify which worker can safely
   execute a filesystem-bound project, using the active run's pinned configuration when one exists;

@@ -6,8 +6,30 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from converge_orchestrator.api import create_app
+from converge_orchestrator.api import _run_payload, create_app
 from converge_orchestrator.evidence import EvidenceStore
+
+
+def test_run_payload_exposes_checkpointed_human_decision_audit() -> None:
+    raw = {
+        "id": "run-1",
+        "values": {
+            "status": "human_retry_review",
+            "human_decisions": [
+                {
+                    "sequence": 1,
+                    "kind": "risk_policy",
+                    "action": "approve",
+                    "task_id": "ARCH-001-1",
+                    "risk_flags": ["forbidden_public_api_change"],
+                }
+            ],
+        },
+    }
+
+    payload = _run_payload(raw)
+
+    assert payload["state"]["human_decisions"] == raw["values"]["human_decisions"]
 
 
 def _project(tmp_path: Path) -> tuple[Path, Path]:

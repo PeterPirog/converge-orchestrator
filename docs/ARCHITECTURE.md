@@ -294,6 +294,9 @@ continues from the same durable checkpoint.
 
 Human approval is not a generic override. A risk-policy interrupt can be approved, edited or rejected;
 failed deterministic tests, review or CI cannot be approved away.
+Every actual operator decision is appended to the durable LangGraph state with its sequence, interrupt
+kind, action, task identity and applicable risk flags. Machine-managed CI wake-ups are excluded, so
+operators and release gates can distinguish exceptional HITL from autonomous recovery.
 
 Compatibility policy is also deterministic. Python AST comparison protects public symbols and
 signatures. Node manifest comparison protects existing package exports, CLI commands and legacy

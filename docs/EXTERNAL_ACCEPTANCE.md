@@ -131,6 +131,8 @@ resource budget and evidence bundle. It requires:
 - final mandatory compliance PASS;
 - a real controller PID change followed by automatic same-run recovery;
 - exactly the deliberately injected exceptional `risk_policy` HITL decision with no manual code edit;
+- exactly one checkpointed human-decision record for that `risk_policy -> approve` action, bound to
+  the predeclared expected risk flag; machine-managed CI wake-ups are not counted as HITL;
 - fresh final PASS checks for requirements, architecture, compatibility and security;
 - matching supervisor-journal and final-audit provenance artifacts.
 
@@ -153,6 +155,7 @@ The summary JSON emitted by the live supervisor has this shape:
   },
   "exceptional_hitl": {
     "kind": "risk_policy",
+    "expected_risk_flag": "forbidden_public_api_change",
     "deliberately_injected": true,
     "action": "approve",
     "no_manual_code_edit": true

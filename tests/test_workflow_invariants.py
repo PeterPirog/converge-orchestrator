@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 from converge_orchestrator.models import ProjectConfig, Requirement, TaskEnvelope
 from converge_orchestrator.prompts import builder_prompt, repair_prompt
-from converge_orchestrator.workflow import build_graph, integrate
+from converge_orchestrator.workflow import (
+    build_graph,
+    human_gate,
+    integrate,
+    record_human_decision,
+)
 
 
 def _task() -> TaskEnvelope:
@@ -85,3 +90,55 @@ def test_graph_uses_separate_spec_guards_after_bootstrap_and_writes() -> None:
     assert ("repair", "guard_quality") in edges
     assert ("guard_plan", "quality") not in edges
     assert ("bootstrap", "quality") not in edges
+
+
+def test_human_decision_audit_is_append_only_and_bounded() -> None:
+    state = {
+        "task": {"id": "ARCH-002-0001"},
+        "risk_flags": ["z-risk", "a-risk"],
+        "human_decisions": [
+            {
+                "sequence": 1,
+                "kind": "planner_failure_budget",
+                "action": "retry",
+                "task_id": "run",
+                "risk_flags": [],
+            }
+        ],
+    }
+
+    result = record_human_decision(state, kind="risk_policy", action="approve")
+
+    assert len(state["human_decisions"]) == 1
+    assert result[-1] == {
+        "sequence": 2,
+        "kind": "risk_policy",
+        "action": "approve",
+        "task_id": "ARCH-002-0001",
+        "risk_flags": ["a-risk", "z-risk"],
+    }
+
+
+def test_risk_approval_is_checkpointed_in_workflow_state() -> None:
+    state = {
+        "task": {"id": "ARCH-002-0001"},
+        "risk_flags": ["forbidden_public_api_change"],
+        "approved_risk_flags": [],
+    }
+
+    with (
+        patch("converge_orchestrator.workflow._human_kind", return_value="risk_policy"),
+        patch("converge_orchestrator.workflow.interrupt", return_value={"action": "approve"}),
+    ):
+        result = human_gate(state)  # type: ignore[arg-type]
+
+    assert result["approved_risk_flags"] == ["forbidden_public_api_change"]
+    assert result["human_decisions"] == [
+        {
+            "sequence": 1,
+            "kind": "risk_policy",
+            "action": "approve",
+            "task_id": "ARCH-002-0001",
+            "risk_flags": ["forbidden_public_api_change"],
+        }
+    ]
