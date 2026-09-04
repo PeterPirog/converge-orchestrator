@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,14 +22,14 @@ class RestoreApplyError(RuntimeError):
 
 
 class RestoreApplyResult(BaseModel):
-    status: str = "restored"
-    persistence_backend: str
+    status: Literal["restored"] = "restored"
+    persistence_backend: Literal["sqlite"] = "sqlite"
     projects: list[str]
     resumed: bool = False
 
 
 class _ApplyJournal(BaseModel):
-    version: int = _APPLY_JOURNAL_VERSION
+    version: Literal[1] = _APPLY_JOURNAL_VERSION
     confirmation_token: str
     manifest_sha256: str
     plan: dict[str, Any]
@@ -36,13 +37,21 @@ class _ApplyJournal(BaseModel):
 
 
 def _sha256(path: Path) -> str:
-    import hashlib
-
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _stable_hash(payload: Any) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _link_like(path: Path) -> bool:
@@ -60,6 +69,17 @@ def _inside(path: Path, parent: Path) -> bool:
     return True
 
 
+def _prepare_parent(target: Path) -> None:
+    """Reject link-like parents before and after creating only missing directories."""
+    for parent in target.parents:
+        if _link_like(parent):
+            raise RestoreApplyError(f"restore target has a symlinked or junction parent: {parent}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for parent in target.parents:
+        if _link_like(parent):
+            raise RestoreApplyError(f"restore target has a symlinked or junction parent: {parent}")
+
+
 def _stage_path(target: Path, token: str) -> Path:
     return target.parent / f".{target.name}.converge-restore-{token[:16]}.stage"
 
@@ -68,19 +88,27 @@ def _journal_path(root: Path, token: str) -> Path:
     return root.parent / f".{root.name}.converge-restore-{token[:16]}.json"
 
 
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _secure_atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    _prepare_parent(path)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary.replace(path)
+    if temporary.exists() or _link_like(temporary):
+        raise RestoreApplyError(f"restore journal staging path is occupied: {temporary}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _create_journal(path: Path, journal: _ApplyJournal) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_parent(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
         fd = os.open(path, flags, 0o600)
@@ -100,13 +128,16 @@ def _load_journal(path: Path) -> _ApplyJournal:
     if _link_like(path) or not path.is_file():
         raise RestoreApplyError(f"restore journal is missing or unsafe: {path}")
     try:
-        return _ApplyJournal.model_validate_json(path.read_text(encoding="utf-8"))
+        journal = _ApplyJournal.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RestoreApplyError(f"restore journal is unreadable or invalid: {path}") from exc
+    if len(journal.published) != len(set(journal.published)):
+        raise RestoreApplyError("restore journal contains duplicate publication records")
+    return journal
 
 
 def _write_journal(path: Path, journal: _ApplyJournal) -> None:
-    _atomic_json(path, journal.model_dump(mode="json"))
+    _secure_atomic_json(path, journal.model_dump(mode="json"))
 
 
 def _sqlite_quick_check(path: Path) -> None:
@@ -122,10 +153,29 @@ def _sqlite_quick_check(path: Path) -> None:
         raise RestoreApplyError(f"restored SQLite artifact failed quick_check: {path.name}")
 
 
-def _copy_file(source: Path, stage: Path, expected_sha256: str) -> None:
-    if stage.exists() or _link_like(stage):
+def _remove_stage(stage: Path) -> None:
+    if not (stage.exists() or _link_like(stage)):
+        return
+    if stage.is_dir() and not _link_like(stage):
+        shutil.rmtree(stage)
+    else:
         stage.unlink(missing_ok=True)
-    stage.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _mark_published(key: str, journal: _ApplyJournal, journal_path: Path) -> None:
+    if key not in journal.published:
+        journal.published.append(key)
+        _write_journal(journal_path, journal)
+
+
+def _published_target_must_exist(key: str, target: Path, journal: _ApplyJournal) -> None:
+    if key in journal.published and not (target.exists() or _link_like(target)):
+        raise RestoreApplyError(f"published restore target disappeared: {target}")
+
+
+def _copy_file(source: Path, stage: Path, expected_sha256: str) -> None:
+    _remove_stage(stage)
+    _prepare_parent(stage)
     shutil.copy2(source, stage)
     if _sha256(stage) != expected_sha256:
         stage.unlink(missing_ok=True)
@@ -141,23 +191,20 @@ def _ensure_file(
     journal: _ApplyJournal,
     journal_path: Path,
 ) -> None:
+    _published_target_must_exist(key, target, journal)
     if target.exists() or _link_like(target):
         if not target.is_file() or _link_like(target) or _sha256(target) != expected_sha256:
             raise RestoreApplyError(f"restore target is occupied or changed: {target}")
-        if key not in journal.published:
-            journal.published.append(key)
-            _write_journal(journal_path, journal)
+        _mark_published(key, journal, journal_path)
         return
 
+    _prepare_parent(target)
     stage = _stage_path(target, journal.confirmation_token)
     _copy_file(source, stage, expected_sha256)
-    target.parent.mkdir(parents=True, exist_ok=True)
     os.replace(stage, target)
     if _sha256(target) != expected_sha256:
         raise RestoreApplyError(f"published file validation failed: {target}")
-    if key not in journal.published:
-        journal.published.append(key)
-        _write_journal(journal_path, journal)
+    _mark_published(key, journal, journal_path)
 
 
 def _run_git(args: list[str], cwd: Path | None = None) -> str:
@@ -181,12 +228,25 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def _canonical_github_origin(project: BackupProject) -> str | None:
+    if not project.github_repo:
+        return None
+    return f"https://github.com/{project.github_repo}.git"
+
+
 def _validate_repo(target: Path, project: BackupProject) -> None:
     if _link_like(target) or not target.is_dir():
         raise RestoreApplyError(f"restored repository target is missing or unsafe: {target}")
     head = _run_git(["rev-parse", "HEAD"], cwd=target)
     if head != project.repo_head:
         raise RestoreApplyError(f"restored repository HEAD mismatch for {project.project_id}")
+    if _run_git(["status", "--porcelain=v1", "--untracked-files=all"], cwd=target):
+        raise RestoreApplyError(f"restored repository is not clean for {project.project_id}")
+    expected_origin = _canonical_github_origin(project)
+    if expected_origin is not None:
+        origin = _run_git(["remote", "get-url", "origin"], cwd=target)
+        if origin != expected_origin:
+            raise RestoreApplyError(f"restored repository origin mismatch for {project.project_id}")
     marker = target / ".git" / "converge-workspace-id"
     if _link_like(marker) or not marker.is_file():
         raise RestoreApplyError(f"restored workspace marker is missing for {project.project_id}")
@@ -202,30 +262,27 @@ def _ensure_repo(
     journal_path: Path,
 ) -> None:
     key = f"{project.project_id}:repository"
+    _published_target_must_exist(key, target, journal)
     if target.exists() or _link_like(target):
         _validate_repo(target, project)
-        if key not in journal.published:
-            journal.published.append(key)
-            _write_journal(journal_path, journal)
+        _mark_published(key, journal, journal_path)
         return
 
+    _prepare_parent(target)
     bundle = root / "projects" / project.project_id / "repository.bundle"
     stage = _stage_path(target, journal.confirmation_token)
-    if stage.exists() or _link_like(stage):
-        if stage.is_dir() and not _link_like(stage):
-            shutil.rmtree(stage)
-        else:
-            stage.unlink(missing_ok=True)
-    stage.parent.mkdir(parents=True, exist_ok=True)
+    _remove_stage(stage)
     _run_git(["clone", "--no-hardlinks", str(bundle), str(stage)])
     _run_git(["checkout", "-B", project.base_branch, project.repo_head], cwd=stage)
+    expected_origin = _canonical_github_origin(project)
+    if expected_origin is not None:
+        _run_git(["remote", "set-url", "origin", expected_origin], cwd=stage)
     marker = stage / ".git" / "converge-workspace-id"
     marker.write_text(project.workspace_id + "\n", encoding="utf-8")
     _validate_repo(stage, project)
     os.replace(stage, target)
     _validate_repo(target, project)
-    journal.published.append(key)
-    _write_journal(journal_path, journal)
+    _mark_published(key, journal, journal_path)
 
 
 def _expected_state_files(
@@ -299,21 +356,16 @@ def _ensure_state(
     if _inside(database_target, target):
         ignored.add(database_target)
 
+    _published_target_must_exist(key, target, journal)
     if target.exists() or _link_like(target):
         _validate_state(target, project, expected, ignored=ignored)
-        if key not in journal.published:
-            journal.published.append(key)
-            _write_journal(journal_path, journal)
+        _mark_published(key, journal, journal_path)
         return
 
+    _prepare_parent(target)
     source = root / "projects" / project.project_id / "state"
     stage = _stage_path(target, journal.confirmation_token)
-    if stage.exists() or _link_like(stage):
-        if stage.is_dir() and not _link_like(stage):
-            shutil.rmtree(stage)
-        else:
-            stage.unlink(missing_ok=True)
-    stage.parent.mkdir(parents=True, exist_ok=True)
+    _remove_stage(stage)
     shutil.copytree(source, stage, symlinks=False)
     checkpoint = root / "projects" / project.project_id / "langgraph.sqlite"
     if checkpoint.is_file():
@@ -329,8 +381,7 @@ def _ensure_state(
     _validate_state(stage, project, expected, ignored=stage_ignored)
     os.replace(stage, target)
     _validate_state(target, project, expected, ignored=ignored)
-    journal.published.append(key)
-    _write_journal(journal_path, journal)
+    _mark_published(key, journal, journal_path)
 
 
 def _ensure_empty_worktree(
@@ -344,24 +395,18 @@ def _ensure_empty_worktree(
     if _inside(target, state_target):
         return
     key = f"{project.project_id}:worktree"
+    _published_target_must_exist(key, target, journal)
     if target.exists() or _link_like(target):
         if _link_like(target) or not target.is_dir() or any(target.iterdir()):
             raise RestoreApplyError(f"restored worktree target is not empty: {target}")
-        if key not in journal.published:
-            journal.published.append(key)
-            _write_journal(journal_path, journal)
+        _mark_published(key, journal, journal_path)
         return
+    _prepare_parent(target)
     stage = _stage_path(target, journal.confirmation_token)
-    if stage.exists() or _link_like(stage):
-        if stage.is_dir() and not _link_like(stage):
-            shutil.rmtree(stage)
-        else:
-            stage.unlink(missing_ok=True)
-    stage.parent.mkdir(parents=True, exist_ok=True)
+    _remove_stage(stage)
     stage.mkdir()
     os.replace(stage, target)
-    journal.published.append(key)
-    _write_journal(journal_path, journal)
+    _mark_published(key, journal, journal_path)
 
 
 def _manifest_project(manifest: BackupManifest, project_id: str) -> BackupProject:
@@ -371,11 +416,51 @@ def _manifest_project(manifest: BackupManifest, project_id: str) -> BackupProjec
     return matches[0]
 
 
-def _resume_plan(journal: _ApplyJournal) -> RestorePlan:
+def _resume_plan(journal: _ApplyJournal, root: Path) -> RestorePlan:
     try:
-        return RestorePlan.model_validate(journal.plan)
+        plan = RestorePlan.model_validate(journal.plan)
     except ValueError as exc:
         raise RestoreApplyError("restore journal contains an invalid plan") from exc
+    if not plan.ready or plan.blockers:
+        raise RestoreApplyError("restore journal did not originate from a ready preflight")
+    if plan.backup != str(root):
+        raise RestoreApplyError("restore journal backup path mismatch")
+    database_binding = _stable_hash(
+        {"backend": "sqlite", "target": plan.database_target}
+    )
+    token_payload = {
+        "version": plan.version,
+        "backup_manifest_sha256": plan.backup_manifest_sha256,
+        "persistence_backend": plan.persistence_backend,
+        "database_target": plan.database_target,
+        "database_target_binding": database_binding,
+        "projects": [project.model_dump() for project in plan.projects],
+        "blockers": plan.blockers,
+    }
+    if _stable_hash(token_payload) != journal.confirmation_token:
+        raise RestoreApplyError("restore journal plan no longer matches its confirmation token")
+    return plan
+
+
+def _validate_journal_keys(
+    journal: _ApplyJournal,
+    plan: RestorePlan,
+) -> None:
+    expected = {"database"}
+    for project in plan.projects:
+        expected.update(
+            {
+                f"{project.project_id}:requirements",
+                f"{project.project_id}:config",
+                f"{project.project_id}:repository",
+                f"{project.project_id}:state",
+            }
+        )
+        if not _inside(Path(project.worktree_target), Path(project.state_target)):
+            expected.add(f"{project.project_id}:worktree")
+    unknown = sorted(set(journal.published) - expected)
+    if unknown:
+        raise RestoreApplyError(f"restore journal contains unknown publication records: {unknown}")
 
 
 def apply_sqlite_restore(
@@ -411,11 +496,12 @@ def apply_sqlite_restore(
             raise RestoreApplyError("restore journal confirmation token mismatch")
         if journal.manifest_sha256 != manifest_hash:
             raise RestoreApplyError("backup manifest changed after restore apply started")
-        plan = _resume_plan(journal)
+        plan = _resume_plan(journal, root)
         if plan.persistence_backend != "sqlite":
             raise RestoreApplyError("restore journal backend mismatch")
         if plan.database_target != str(control_db_path.expanduser().resolve()):
             raise RestoreApplyError("SQLite restore target changed after restore apply started")
+        _validate_journal_keys(journal, plan)
     else:
         plan = plan_deployment_restore(
             root,
@@ -494,7 +580,6 @@ def apply_sqlite_restore(
 
     journal_path.unlink(missing_ok=True)
     return RestoreApplyResult(
-        persistence_backend="sqlite",
         projects=[project.project_id for project in manifest.projects],
         resumed=resumed,
     )
