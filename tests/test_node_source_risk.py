@@ -179,3 +179,92 @@ def test_incomplete_baseline_surface_is_not_used_as_false_proof(tmp_path: Path) 
 
     assert "forbidden_public_api_change" not in report.flags
     assert not any("source export removed" in item.evidence for item in report.findings)
+
+
+def test_typescript_required_call_arity_increase_interrupts(tmp_path: Path) -> None:
+    manifest = '{"name":"payments","exports":"./src/index.ts"}\n'
+    report = _classify_sources(
+        tmp_path,
+        ["src/index.ts"],
+        base={
+            "package.json": manifest,
+            "src/index.ts": "export function charge(amount: number): void {}\n",
+        },
+        candidate={
+            "package.json": manifest,
+            "src/index.ts": (
+                "export function charge(amount: number, currency: string): void {}\n"
+            ),
+        },
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    finding = next(item for item in report.findings if "minimum argument count" in item.evidence)
+    assert finding.disposition == "interrupt"
+    assert finding.evidence.endswith("./src/index.ts:charge (1 -> 2)")
+
+
+def test_typescript_optional_or_default_arguments_do_not_interrupt(tmp_path: Path) -> None:
+    manifest = '{"name":"payments","exports":"./src/index.ts"}\n'
+    report = _classify_sources(
+        tmp_path,
+        ["src/index.ts"],
+        base={
+            "package.json": manifest,
+            "src/index.ts": "export function charge(amount: number): void {}\n",
+        },
+        candidate={
+            "package.json": manifest,
+            "src/index.ts": (
+                "export function charge(\n"
+                "  amount: number, currency = 'USD', note?: string, ...tags: string[]\n"
+                "): void {}\n"
+            ),
+        },
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+    assert not any("minimum argument count" in item.evidence for item in report.findings)
+
+
+def test_typescript_overload_removal_that_raises_minimum_arity_interrupts(tmp_path: Path) -> None:
+    manifest = '{"name":"payments","types":"./dist/index.d.ts"}\n'
+    report = _classify_sources(
+        tmp_path,
+        ["dist/index.d.ts"],
+        base={
+            "package.json": manifest,
+            "dist/index.d.ts": (
+                "export declare function charge(amount: number): void;\n"
+                "export declare function charge(amount: number, currency: string): void;\n"
+            ),
+        },
+        candidate={
+            "package.json": manifest,
+            "dist/index.d.ts": (
+                "export declare function charge(amount: number, currency: string): void;\n"
+            ),
+        },
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    assert any("charge (1 -> 2)" in item.evidence for item in report.findings)
+
+
+def test_plain_javascript_arity_change_is_not_treated_as_proven_break(tmp_path: Path) -> None:
+    manifest = '{"name":"payments","exports":"./src/index.js"}\n'
+    report = _classify_sources(
+        tmp_path,
+        ["src/index.js"],
+        base={
+            "package.json": manifest,
+            "src/index.js": "export function charge(amount) {}\n",
+        },
+        candidate={
+            "package.json": manifest,
+            "src/index.js": "export function charge(amount, currency) {}\n",
+        },
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+    assert not any("minimum argument count" in item.evidence for item in report.findings)
