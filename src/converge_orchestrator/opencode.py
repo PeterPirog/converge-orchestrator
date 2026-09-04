@@ -18,6 +18,11 @@ from .context import (
     prepare_prompt,
 )
 from .managed_skills import materialize_managed_skills
+from .model_usage import (
+    ModelUsageIntegrityError,
+    parse_opencode_output,
+    record_model_usage_attempt,
+)
 from .models import AgentResult, ProjectConfig, ReviewFinding, ReviewResult
 from .opencode_config import (
     materialize_opencode_config,
@@ -203,6 +208,15 @@ class OpenCodeAdapter:
                     "returncode": result.returncode,
                     "failure_kind": failure_kind,
                 }
+                result_context = result.context or {}
+                for key in (
+                    "provider_usage_status",
+                    "provider_usage",
+                    "provider_usage_persistence",
+                    "provider_usage_record",
+                ):
+                    if key in result_context:
+                        attempt[key] = result_context[key]
                 attempts.append(attempt)
                 self._append_provider_health(cwd, {"role": role, **attempt})
                 final = result
@@ -262,7 +276,14 @@ class OpenCodeAdapter:
             )
 
         agent_cfg = self.config.agents[role]
-        cmd = [self.config.opencode_binary, "run", "--agent", agent_cfg.agent]
+        cmd = [
+            self.config.opencode_binary,
+            "run",
+            "--format",
+            "json",
+            "--agent",
+            agent_cfg.agent,
+        ]
         model = resolve_agent_model(self.config, agent_cfg, model_profile)
         variant = resolve_agent_variant(self.config, agent_cfg, model_profile)
         budget_reservation: dict | None = None
@@ -323,15 +344,39 @@ class OpenCodeAdapter:
         except Exception:
             append_context_ledger(self.config, context_report, cwd)
             raise
-        context_report = finalize_report(context_report, result.stdout)
+        parsed_output = parse_opencode_output(result.stdout)
+        context_report = finalize_report(context_report, parsed_output.text)
         append_context_ledger(self.config, context_report, cwd)
         context = context_report.model_dump(mode="json")
+        context["provider_usage_status"] = parsed_output.usage_status
+        if parsed_output.usage is not None:
+            context["provider_usage"] = parsed_output.usage.model_dump(mode="json")
         if budget_reservation is not None:
             context["run_budget_reservation"] = budget_reservation
+            try:
+                usage_record = record_model_usage_attempt(
+                    self.config,
+                    run_id,
+                    reservation_attempt=int(budget_reservation["attempt"]),
+                    role=role,
+                    model=model,
+                    model_profile=model_profile,
+                    returncode=result.returncode,
+                    parsed=parsed_output,
+                )
+            except (ModelUsageIntegrityError, OSError):
+                # Measurement is observational. A telemetry write failure must never trigger an
+                # expensive provider retry or relax the independently enforced run envelope.
+                context["provider_usage_persistence"] = "failed"
+            else:
+                context["provider_usage_persistence"] = "recorded"
+                context["provider_usage_record"] = (
+                    f"model-usage/attempt-{usage_record.reservation_attempt:06d}.json"
+                )
         return AgentResult(
             role=role,
             ok=result.returncode == 0,
-            output=result.stdout,
+            output=parsed_output.text,
             returncode=result.returncode,
             context=context,
         )

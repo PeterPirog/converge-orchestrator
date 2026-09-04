@@ -26,6 +26,7 @@ from .config import (
 from .control import ControlSignals
 from .evidence import EvidenceStore
 from .graph import build_graph
+from .model_usage import summarize_model_usage
 from .persistence import PersistenceBackend
 from .workflow import bootstrap
 from .workspace_identity import (
@@ -302,6 +303,11 @@ class RunController:
         result["worker_alive"] = worker_alive
         result["remote_worker_active"] = remote_worker_active
         return result
+
+    def model_usage(self, run_id: str) -> dict[str, Any]:
+        record = self.registry.get_run(run_id)
+        cfg = self._config_for_run(record)
+        return summarize_model_usage(cfg, run_id).model_dump(mode="json")
 
     def interrupt(self, run_id: str) -> dict[str, Any] | None:
         record = self.registry.get_run(run_id)

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .affinity import project_affinity
+from .model_usage import ModelUsageIntegrityError
 from .observability import collect_registry_snapshot, render_prometheus
 from .persistence import configured_control_db_path
 from .runtime_service import ScheduledRunController
@@ -154,6 +155,15 @@ def create_app(
             return _run_payload(controller.status(run_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Run not found") from exc
+
+    @app.get("/runs/{run_id}/model-usage")
+    def get_run_model_usage(run_id: str) -> dict[str, Any]:
+        try:
+            return controller.model_usage(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Run not found") from exc
+        except ModelUsageIntegrityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/runs/{run_id}/pause", status_code=status.HTTP_202_ACCEPTED)
     def pause_run(run_id: str) -> dict[str, Any]:

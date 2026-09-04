@@ -59,6 +59,9 @@ The earlier high-priority recovery and resource-envelope gaps are closed with ex
   evidence propagate through unchanged public barrels, while cycles/ambiguity remain conservative;
 - production container execution rejects mutable image tags, requires an immutable digest/content
   address and is exercised by a real Docker CI job with the hardened network/read-only mount path.
+- stable OpenCode JSON events provide provider-reported token/cache/reasoning usage and cost; each
+  measurement is atomically bound to its conservative pre-execution reservation and can be aggregated
+  by durable run, role and model without changing execution policy.
 
 This does **not** mean the general-purpose release gate has passed. The remaining primary blocker is no
 longer an internal recovery, resource-budget or sandbox mechanism. It is an evidence-backed live run on
@@ -84,7 +87,7 @@ semantics remain later portability work unless they are included in the declared
 | Reusable project configuration | **STRONGER** | one `converge.yaml`, relative paths, model profiles, MCP, sandbox, quality/workflow policy, per-run normalized immutable execution snapshot | GUI editor is optional |
 | Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically; compatibility adapters reduce avoidable ambiguity | live external acceptance must prove this operationally |
 | Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits, digest-pinned image enforcement and real container CI | target projects must build/publish their exact pinned toolchain image |
-| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts, durable finite run envelope | provider-reported billable token/cost telemetry |
+| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts, durable finite run envelope, measured provider usage/cost evidence | cross-run forecasting is optional economics work |
 | Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and crash-safe restore for both persistence backends | external acceptance must prove the whole evidence chain on a real target |
 
 ## Canonical execution path
@@ -229,9 +232,9 @@ budgets and digest-pinned sandbox work. The smallest remaining high-value areas 
    least two meaningful autonomous PR/CI cycles, including one real controller restart and one
    deliberately exceptional `risk_policy` HITL decision, with no manual code edits. The final result
    must independently PASS requirements, architecture, compatibility, security and evidence checks.
-2. **Measured provider economics** — ingest provider-reported billable token/cost usage where available
-   and aggregate it by durable run/role. This is forecasting/optimization evidence; it must not weaken
-   the existing fail-closed conservative resource envelope.
+2. **Cross-run economics and forecasting** — per-reservation provider usage/cost and durable
+   run/role/model aggregation are implemented. Add project/fleet trends only as observational evidence;
+   they must not weaken the existing fail-closed conservative resource envelope.
 3. **Broader language compatibility** — add only high-confidence parser-backed Node/Go/Rust rules where
    the declared support scope requires them. Uncertain semantics must remain conservative rather than
    guessed.
