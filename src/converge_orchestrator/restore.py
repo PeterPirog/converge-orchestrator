@@ -55,6 +55,16 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _stable_hash(payload: dict[str, str]) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _canonical_uuid(value: str) -> bool:
     try:
         return str(UUID(value)) == value.lower()
@@ -204,6 +214,27 @@ def _postgres_target_empty(database_url: str) -> bool:
         ) from exc
 
 
+def _postgres_target_binding(database_url: str) -> str:
+    """Return a secret-free digest binding the plan to the configured PostgreSQL target."""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+    except ImportError as exc:  # pragma: no cover - optional dependency guard
+        raise RestoreError(
+            "PostgreSQL restore preflight requires `pip install 'converge-orchestrator[postgres]'`"
+        ) from exc
+
+    try:
+        parsed = conninfo_to_dict(database_url)
+    except Exception as exc:
+        raise RestoreError("PostgreSQL restore target identity could not be parsed") from exc
+
+    identity = {
+        key: str(parsed.get(key) or "")
+        for key in ("host", "hostaddr", "port", "dbname", "user", "service")
+    }
+    return _stable_hash(identity)
+
+
 def _database_artifact_blockers(root: Path, manifest: BackupManifest) -> list[str]:
     blockers: list[str] = []
     sqlite_artifact = root / "database" / "control.sqlite"
@@ -230,7 +261,7 @@ def _database_blockers(
     manifest: BackupManifest,
     control_db_path: Path,
     database_url: str | None,
-) -> tuple[str, list[str]]:
+) -> tuple[str, str, list[str]]:
     blockers: list[str] = []
     if manifest.persistence_backend == "sqlite":
         target = _target_path(
@@ -246,11 +277,18 @@ def _database_blockers(
             )
         if target.exists() or _link_like(target):
             blockers.append("SQLite control database target already exists")
-        return str(target), blockers
+        binding = _stable_hash({"backend": "sqlite", "target": str(target)})
+        return str(target), binding, blockers
 
     if not database_url:
         blockers.append("backup uses PostgreSQL but CONVERGE_DATABASE_URL is not configured")
-        return "postgres:unconfigured", blockers
+        return "postgres:unconfigured", "", blockers
+
+    try:
+        binding = _postgres_target_binding(database_url)
+    except RestoreError as exc:
+        blockers.append(str(exc))
+        binding = ""
     if shutil.which("pg_restore") is None:
         blockers.append("pg_restore executable is required for PostgreSQL restore")
     try:
@@ -260,7 +298,7 @@ def _database_blockers(
     else:
         if not empty:
             blockers.append("PostgreSQL restore target contains user relations and is not empty")
-    return "postgres:configured", blockers
+    return "postgres:configured", binding, blockers
 
 
 def _plan_token(payload: dict) -> str:
@@ -289,7 +327,7 @@ def plan_deployment_restore(
     manifest_path = root / "manifest.json"
     manifest_hash = _sha256(manifest_path)
     blockers = _database_artifact_blockers(root, manifest)
-    database_target, database_blockers = _database_blockers(
+    database_target, database_target_binding, database_blockers = _database_blockers(
         manifest,
         control_db_path,
         database_url,
@@ -413,6 +451,7 @@ def plan_deployment_restore(
         "backup_manifest_sha256": manifest_hash,
         "persistence_backend": manifest.persistence_backend,
         "database_target": database_target,
+        "database_target_binding": database_target_binding,
         "projects": [project.model_dump() for project in project_plans],
         "blockers": all_blockers,
     }
