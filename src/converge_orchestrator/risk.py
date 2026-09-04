@@ -4,6 +4,7 @@ import ast
 import difflib
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -581,6 +582,102 @@ def _node_package_contract_findings(
     return findings[:20]
 
 
+def _node_manifest_candidates(paths: list[str]) -> list[str]:
+    manifests: set[str] = set()
+    for path in paths:
+        parent = PurePosixPath(path).parent
+        while True:
+            manifest = (
+                PurePosixPath("package.json")
+                if parent == PurePosixPath(".")
+                else parent / "package.json"
+            )
+            manifests.add(manifest.as_posix())
+            if parent == PurePosixPath("."):
+                break
+            parent = parent.parent
+    return sorted(manifests)
+
+
+def _node_local_targets(entry: str, serialized: str) -> set[str]:
+    if entry == "name":
+        return set()
+    if entry.startswith("bin:"):
+        value: object = serialized
+    else:
+        try:
+            value = json.loads(serialized)
+        except (json.JSONDecodeError, TypeError):
+            return set()
+
+    targets: set[str] = set()
+
+    def collect(item: object) -> None:
+        if isinstance(item, str):
+            if item.startswith("./") and "*" not in item:
+                targets.add(item)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                collect(nested)
+            return
+        if isinstance(item, dict):
+            for nested in item.values():
+                collect(nested)
+
+    collect(value)
+    return targets
+
+
+def _node_target_path(manifest_path: str, target: str) -> str | None:
+    relative = PurePosixPath(target[2:])
+    if not relative.parts or any(part in {"", ".."} for part in relative.parts):
+        return None
+    package_dir = PurePosixPath(manifest_path).parent
+    resolved = package_dir / relative
+    return resolved.as_posix()
+
+
+def _node_published_target_findings(
+    paths: list[str],
+    base_source: Callable[[str], str | None],
+    candidate_source: Callable[[str], str | None],
+) -> list[RiskFinding]:
+    """Block definite deletion of a file still referenced by a pre-existing public Node entry."""
+    changed = set(paths)
+    findings: list[RiskFinding] = []
+    for manifest_path in _node_manifest_candidates(paths):
+        candidate_manifest = candidate_source(manifest_path)
+        if candidate_manifest is None:
+            continue
+        baseline = _node_package_contract(base_source(manifest_path))
+        current = _node_package_contract(candidate_manifest)
+        if not baseline or not current:
+            continue
+        for entry in sorted(set(baseline).intersection(current)):
+            for target in sorted(_node_local_targets(entry, current[entry])):
+                target_path = _node_target_path(manifest_path, target)
+                if target_path is None or target_path not in changed:
+                    continue
+                if base_source(target_path) is None or candidate_source(target_path) is not None:
+                    continue
+                findings.append(
+                    RiskFinding(
+                        kind="public_api_break",
+                        disposition="interrupt",
+                        flag="forbidden_public_api_change",
+                        path=target_path,
+                        evidence=(
+                            "public Node package target removed while still published: "
+                            f"{manifest_path}:{entry} -> {target}"
+                        ),
+                    )
+                )
+                if len(findings) >= 20:
+                    return findings
+    return findings
+
+
 def classify_repository_risk(
     config: ProjectConfig,
     cwd: Path,
@@ -589,9 +686,26 @@ def classify_repository_risk(
     """Classify final candidate diff without trusting Planner-provided risk flags."""
     del task  # Reserved for future task-aware adapters; diff evidence remains authoritative.
     findings: list[RiskFinding] = []
-    for path in changed_files(cwd, config.base_branch):
-        base = _read_base(cwd, config.base_branch, path)
-        candidate = _read_candidate(cwd, path)
+    paths = changed_files(cwd, config.base_branch)
+    base_cache: dict[str, str | None] = {}
+    candidate_cache: dict[str, str | None] = {}
+
+    def base_source(path: str) -> str | None:
+        if path not in base_cache:
+            base_cache[path] = _read_base(cwd, config.base_branch, path)
+        return base_cache[path]
+
+    def candidate_source(path: str) -> str | None:
+        if path not in candidate_cache:
+            candidate_cache[path] = _read_candidate(cwd, path)
+        return candidate_cache[path]
+
+    findings.extend(
+        _node_published_target_findings(paths, base_source, candidate_source)
+    )
+    for path in paths:
+        base = base_source(path)
+        candidate = candidate_source(path)
         added, removed = _changed_line_sets(base, candidate)
         findings.extend(_secret_findings(path, added))
         findings.extend(_migration_findings(path, added, removed, candidate))
