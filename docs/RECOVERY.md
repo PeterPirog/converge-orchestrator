@@ -6,7 +6,20 @@ OpenWebUI chat history and OpenCode sessions are never used to determine where a
 ## What happens after a service restart
 
 `ScheduledRunController` scans unfinished runs in the control registry and reads the matching LangGraph
-checkpoint from the project's `state_dir/langgraph.sqlite`.
+checkpoint from the run's pinned `state_dir`.
+
+Each newly created durable run first materializes a normalized configuration snapshot under
+`state_dir/run-configs/` and stores both its path and SHA-256 in the control registry. Every subsequent
+graph open, pause/resume, status reconciliation and automatic recovery reloads that exact snapshot.
+Changing the user-maintained `converge.yaml` therefore affects future runs only; it cannot silently
+change the models, quality gates, repair/replan budgets, GitHub policy or merge policy of a run that is
+already active. The snapshot is execution policy for one run and does not replace the immutable
+architecture Markdown as the Source of Truth.
+
+A missing, incomplete or hash-mismatched pinned snapshot fails closed. Recovery records the
+configuration validation error and does not fall back to the current mutable project YAML. Legacy run
+rows created before configuration pinning retain their historical project-config behavior for backward
+compatibility.
 
 | Checkpoint state | Recovery behavior |
 | --- | --- |
@@ -15,13 +28,14 @@ checkpoint from the project's `state_dir/langgraph.sqlite`.
 | controlled pause | remain paused; never auto-resume |
 | `next` node and no interrupt | mark `recoverable` and automatically resume the same LangGraph `thread_id` |
 | no checkpoint, or the exact minimal input-envelope checkpoint before the first node | reconstruct only the original minimal run input from the control registry and re-enter the same thread |
-| terminal checkpoint | no recovery action |
+| terminal checkpoint | reconcile the terminal graph status into the control registry without re-execution |
 
 A recovered graph with an executable durable checkpoint is resumed with no new task input. The already
 checkpointed state remains authoritative. Only the narrow crash window before the first executable node
 is allowed to reconstruct input. This includes both an absent checkpoint and LangGraph's exact durable
 input envelope containing only `project_id`, `config_path`, `run_id` and `thread_id`; any extra state is
-not treated as pre-node state. Reconstruction uses those same values from the durable control registry.
+not treated as pre-node state. For pinned runs, `config_path` must match the registered snapshot path,
+and reconstructed input reuses that same pinned path.
 
 Checkpoint inspection failures are fail-closed. Corrupt or unreadable checkpoint storage is recorded as
 an error and is never interpreted as an empty run. A transient SQLite `locked`/`busy` error is different:
@@ -64,6 +78,7 @@ Automatic recovery must never:
 - approve a HITL interrupt;
 - bypass a deterministic quality, TDD, review, risk or CI gate;
 - create a new LangGraph thread for an existing run;
+- replace a pinned run configuration with the current project YAML;
 - delete a worktree merely because it is old;
 - assume that an expired process lease makes the worktree disposable;
 - interpret checkpoint corruption as an absent checkpoint.
