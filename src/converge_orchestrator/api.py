@@ -7,9 +7,10 @@ from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from .observability import collect_registry_snapshot, render_prometheus
 from .persistence import configured_control_db_path
 from .runtime_service import ScheduledRunController
 
@@ -81,6 +82,18 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/diagnostics")
+    def diagnostics() -> dict[str, Any]:
+        return collect_registry_snapshot(controller.registry, controller.persistence.kind)
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def metrics() -> PlainTextResponse:
+        snapshot = collect_registry_snapshot(controller.registry, controller.persistence.kind)
+        return PlainTextResponse(
+            render_prometheus(snapshot),
+            media_type="text/plain; version=0.0.4",
+        )
 
     @app.post("/projects", status_code=status.HTTP_201_CREATED)
     def register_project(request: ProjectRegistration) -> dict[str, Any]:
