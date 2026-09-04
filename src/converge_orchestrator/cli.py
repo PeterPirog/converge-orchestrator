@@ -264,8 +264,12 @@ def run(
         project_id,
     )
     try:
-        controller = ScheduledRunController(configured_control_db_path())
+        controller = ScheduledRunController(
+            configured_control_db_path(),
+            restore_on_start=False,
+        )
         controller.register_project(resolved_project_id, resolved_config)
+        controller.restore_durable_runs(resolved_project_id)
         record = _select_or_start_run(controller, resolved_project_id, thread_id)
         result = _wait_until_terminal_or_human_interrupt(controller, str(record["id"]))
     except (RuntimeError, ValueError) as exc:
