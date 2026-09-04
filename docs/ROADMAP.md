@@ -118,13 +118,17 @@ Implemented:
 - read-only `converge-backup restore-plan` preflight that re-verifies backup semantics, destination
   emptiness, Git bundle HEAD, storage identities and backend compatibility and emits a plan-bound
   confirmation token without writing deployment state;
+- crash-resumable SQLite `restore-apply` with exact confirmation-token enforcement, staged filesystem
+  publication, database-last visibility, deterministic target validation and a durable completion
+  receipt for final-response recovery and later full-loss reuse;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding, persistence, sandbox and model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production restore apply** — implement the destructive half of restore as an explicit operator
-   action. It must recompute preflight immediately before writing, require the exact confirmation token,
-   refuse existing targets and use transactional/staged publication rather than a force-overwrite path.
+1. **PostgreSQL restore apply** — extend the already-proven preflight/apply contract to PostgreSQL. It
+   must keep the no-force operator boundary, use `pg_restore --single-transaction --exit-on-error` (or
+   an equivalently atomic server-side strategy), and prove the crash boundary after database commit but
+   before local journal acknowledgement without requiring ambiguous manual reconstruction.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the

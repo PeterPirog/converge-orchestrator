@@ -34,13 +34,17 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
   re-registering mutable source YAML, preserving the same pinned execution policy after restart;
 - durable low-cardinality diagnostics/Prometheus metrics are reconstructed from shared registry state;
 - an authenticated workload-affinity probe lets an external scheduler identify which worker can safely
-  execute a filesystem-bound project, using the active run's pinned configuration when one exists.
+  execute a filesystem-bound project, using the active run's pinned configuration when one exists;
+- globally quiesced deployment backup plus deterministic restore preflight protect database, repository,
+  immutable requirements and filesystem-backed state together;
+- SQLite deployments now have crash-resumable restore apply with database-last publication, exact target
+  validation and a durable completion receipt that closes the final process-response race.
 
-This does **not** mean production hardening is finished. The largest remaining production boundary is
-durable artifact protection: evidence, target workspaces/worktrees and some generated runtime artifacts
-are still filesystem-backed. Local-filesystem deployments now have an explicit placement contract, but
-they still need backup/restore or deliberately shared/external artifact storage to survive node/storage
-loss without manual reconstruction.
+This does **not** mean production hardening is finished. Local/SQLite deployments now have a complete
+create/verify/plan/apply recovery path for the backed-up artifacts. The largest remaining recovery gap is
+PostgreSQL restore apply, where Converge still needs a deterministic, tested boundary around server-side
+commit versus local journal acknowledgement. Independent multi-node deployments also still require a
+shared/consistent project filesystem or deliberate external artifact storage.
 
 ## Convergence matrix
 
@@ -51,7 +55,7 @@ loss without manual reconstruction.
 | Deterministic controller above LLMs | **STRONGER** | LangGraph + Pydantic state + deterministic policy; model output cannot waive gates or authorize merge | no critical gap |
 | Planner / Worker / Reviewer separation | **STRONGER** | Scout RO, Planner RO, Builder sole worktree writer, independent correctness/architecture/security reviewers RO, deterministic Integrator | specialty analyzers remain optional extensions |
 | Autonomous TDD / repair loop | **ALIGNED** | behavior tasks use baseline, test-only RED, frozen test hashes and GREEN; bounded repair and replan; no human bypass of deterministic failures | language-specific `change_kind` inference can be stronger |
-| Git isolation | **STRONGER** | one deterministic worktree per task, crash-safe adoption, ownership-aware cleanup, active/recoverable/CI-wait resource protection, explicit worker-affinity probe | filesystem workspace durability and backup/restore remain deployment work |
+| Git isolation | **STRONGER** | one deterministic worktree per task, crash-safe adoption, ownership-aware cleanup, active/recoverable/CI-wait resource protection, explicit worker-affinity probe | multi-node shared/external workspace durability remains deployment work |
 | Independent review barrier | **STRONGER** | deterministic risk scan before semantic review, three independent lanes, one reject/execution failure blocks integration, secret material blocked before reviewer exposure | additional specialty lanes are optional |
 | GitHub PR + CI | **STRONGER** | retry-safe push/PR/merge, origin validation, classic protection + effective Rulesets checks, App-ID-aware matching, checkpointable CI wait, explicit bounded flaky-job retry | GitHub remains final enforcement point for policies Converge intentionally does not duplicate |
 | MCP as universal tool bus | **PARTIAL BY DESIGN** | role-scoped MCP configuration generated for OpenCode | critical Git/GitHub/test/integration authority intentionally stays deterministic rather than MCP-only |
@@ -60,7 +64,7 @@ loss without manual reconstruction.
 | Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically | additional deterministic compatibility policy can further reduce valid escalations |
 | Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits and timeout cleanup | pinned production images and deployment hardening |
 | Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry |
-| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics | shared artifact/object storage and coordinated backup/restore |
+| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and SQLite restore | PostgreSQL restore apply plus optional shared/external artifact storage |
 
 ## Canonical execution path
 
@@ -133,6 +137,12 @@ Converge therefore treats side-effect nodes as retry-safe `ensure` operations ra
 - checkpoint corruption is never interpreted as an empty run;
 - transient checkpoint lock/busy errors schedule bounded automatic inspection retry.
 
+The same rule is now applied to SQLite disaster recovery outside the autonomous graph: every restore
+publication is an exact `ensure`, the control registry is published last, and a mode-0600 completion
+receipt remains after success so a process death between the last integrity check and returning the
+operator response is idempotently recoverable. If every target is later lost, a fresh ready preflight
+with the same token is required before that completed receipt may be reset for a new restore cycle.
+
 Process-level tests cover the worktree, commit/push, PR and `ci_wait` boundaries. The executor suite also
 proves fresh-process retry after abrupt OpenCode process death. New chaos fixtures should be added only
 when a genuinely uncovered side-effect boundary is discovered.
@@ -182,12 +192,13 @@ does not migrate workspaces, rewrite registry bindings or become a workflow-stat
 
 ## Current next priorities
 
-Repository evidence now moves the priority away from already-completed checkpoint/flake/PostgreSQL,
-metrics and workload-placement work. The smallest remaining high-value areas are, in order:
+Repository evidence now moves the priority away from already-completed checkpoint/flake/PostgreSQL
+persistence, metrics, workload-placement, backup/preflight and SQLite restore work. The smallest
+remaining high-value areas are, in order:
 
-1. **Production storage backup/restore** — coordinated protection for PostgreSQL control/checkpoint
-   state plus filesystem-backed evidence/workspaces, or deliberate migration of those artifacts to
-   shared/external storage. Backup must fail closed rather than capture an inconsistent active run.
+1. **PostgreSQL restore apply** — preserve the same no-force, exact-token operator boundary while using
+   an atomic server-side restore strategy and proving deterministic recovery when the database commit
+   succeeds immediately before the local restore journal can acknowledge it.
 2. **Cross-language deterministic compatibility/architecture adapters** — source-level Node plus Go/Rust
    public API and dependency-boundary rules, extending the current Python AST and Node manifest policy.
 3. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry only

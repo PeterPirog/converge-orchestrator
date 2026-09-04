@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from converge_orchestrator import restore_apply
 from converge_orchestrator.backup import create_deployment_backup
 from converge_orchestrator.registry import ControlRegistry
 from converge_orchestrator.restore import plan_deployment_restore
@@ -59,6 +60,7 @@ def _lost_sqlite_deployment(tmp_path: Path):
                 f'requirements_path: "{requirements}"',
                 f'state_dir: "{state_dir}"',
                 f'worktree_dir: "{worktree_dir}"',
+                'github_repo: "example/repo"',
                 "require_spec_read_only: false",
                 "agents:",
                 "  planner:",
@@ -220,3 +222,275 @@ def test_postgres_confirmation_token_changes_when_database_target_changes(tmp_pa
 
     assert first.database_target == second.database_target == "postgres:configured"
     assert first.confirmation_token != second.confirmation_token
+
+
+def test_sqlite_restore_apply_rebuilds_deployment_and_storage_identity(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    result = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+
+    assert result.status == "restored"
+    assert result.resumed is False
+    assert result.projects == ["fixture"]
+    assert config.is_file()
+    assert requirements.is_file()
+    assert repo.is_dir()
+    assert state_dir.is_dir()
+    assert control_db.is_file()
+
+    registry = ControlRegistry(control_db)
+    project = registry.get_project("fixture")
+    assert workspace_id(repo) == project["workspace_id"]
+    assert state_store_id(state_dir) == project["state_store_id"]
+
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == plan.projects[0].repo_head
+    origin = subprocess.run(
+        ["git", "-C", str(repo), "remote", "get-url", "origin"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert origin == "https://github.com/example/repo.git"
+
+    checkpoint = sqlite3.connect(state_dir / "langgraph.sqlite")
+    try:
+        assert checkpoint.execute("SELECT value FROM durable").fetchone()[0] == "checkpoint"
+    finally:
+        checkpoint.close()
+    assert json.loads((state_dir / "evidence.json").read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_sqlite_restore_apply_wrong_token_writes_nothing(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+
+    with pytest.raises(restore_apply.RestoreApplyError, match="confirmation token"):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token="0" * 64,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert not control_db.exists()
+    assert not repo.exists()
+    assert not state_dir.exists()
+    assert not config.exists()
+    assert not requirements.exists()
+
+
+def test_sqlite_restore_apply_recovers_publish_before_journal_checkpoint(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    with (
+        patch.object(restore_apply, "_write_journal", side_effect=SystemExit("process died")),
+        pytest.raises(SystemExit, match="process died"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert requirements.is_file()
+    assert not control_db.exists()
+
+    recovered = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+
+    assert recovered.resumed is True
+    assert control_db.is_file()
+    assert repo.is_dir()
+    assert state_dir.is_dir()
+    assert config.is_file()
+
+
+def test_sqlite_restore_apply_publishes_control_database_last(tmp_path: Path) -> None:
+    backup, control_db, _, _, _, _ = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    with (
+        patch.object(
+            restore_apply,
+            "_ensure_state",
+            side_effect=restore_apply.RestoreApplyError("simulated state failure"),
+        ),
+        pytest.raises(restore_apply.RestoreApplyError, match="simulated state failure"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert not control_db.exists()
+
+    recovered = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert recovered.resumed is True
+    assert control_db.is_file()
+
+
+def test_resume_rejects_disappeared_target_already_checkpointed_as_published(
+    tmp_path: Path,
+) -> None:
+    backup, control_db, _, _, _, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+    original = restore_apply._ensure_file
+    calls = 0
+
+    def fail_before_second_file(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise SystemExit("process died")
+        return original(**kwargs)
+
+    with (
+        patch.object(restore_apply, "_ensure_file", side_effect=fail_before_second_file),
+        pytest.raises(SystemExit, match="process died"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    assert requirements.is_file()
+    requirements.unlink()
+    with pytest.raises(
+        restore_apply.RestoreApplyError,
+        match="published restore target disappeared",
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+
+def test_resume_rejects_dirty_repository_instead_of_adopting_it(tmp_path: Path) -> None:
+    backup, control_db, repo, _, _, _ = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    with (
+        patch.object(
+            restore_apply,
+            "_ensure_state",
+            side_effect=SystemExit("process died after repo publish"),
+        ),
+        pytest.raises(SystemExit, match="process died after repo publish"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    (repo / "README.md").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(restore_apply.RestoreApplyError, match="repository is not clean"):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+
+def test_resume_rejects_tampered_journal_plan(tmp_path: Path) -> None:
+    backup, control_db, _, _, _, _ = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    with (
+        patch.object(restore_apply, "_write_journal", side_effect=SystemExit("process died")),
+        pytest.raises(SystemExit, match="process died"),
+    ):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+    journals = list(tmp_path.glob(".backup.converge-restore-*.json"))
+    assert len(journals) == 1
+    payload = json.loads(journals[0].read_text(encoding="utf-8"))
+    payload["plan"]["projects"][0]["repo_target"] = str(tmp_path / "other-repository")
+    journals[0].write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(restore_apply.RestoreApplyError, match="confirmation token"):
+        restore_apply.apply_sqlite_restore(
+            backup,
+            confirmation_token=plan.confirmation_token,
+            control_db_path=control_db,
+            database_url=None,
+        )
+
+
+def test_completed_restore_receipt_is_retry_safe_and_reusable_after_full_loss(
+    tmp_path: Path,
+) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    first = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert first.resumed is False
+    journals = list(tmp_path.glob(".backup.converge-restore-*.json"))
+    assert len(journals) == 1
+
+    repeated = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert repeated.resumed is True
+
+    shutil.rmtree(repo)
+    shutil.rmtree(state_dir)
+    config.unlink()
+    requirements.unlink()
+    control_db.unlink()
+
+    restored_again = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert restored_again.resumed is False
+    assert repo.is_dir()
+    assert state_dir.is_dir()
+    assert config.is_file()
+    assert requirements.is_file()
+    assert control_db.is_file()

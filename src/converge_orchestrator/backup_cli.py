@@ -13,11 +13,19 @@ from .persistence import (
     configured_database_url,
 )
 from .restore import RestoreError, plan_deployment_restore
+from .restore_apply import RestoreApplyError, apply_sqlite_restore
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 
 BackupPath = Annotated[Path, typer.Argument(help="Backup directory path.")]
+ConfirmationToken = Annotated[
+    str,
+    typer.Option(
+        "--confirmation-token",
+        help="Exact token emitted by a ready restore-plan for the current targets.",
+    ),
+]
 
 
 def _summary(status: str, root: Path, manifest) -> dict[str, object]:
@@ -72,6 +80,21 @@ def restore_plan(root: BackupPath) -> None:
     console.print_json(data=plan.model_dump(mode="json"))
     if not plan.ready:
         raise typer.Exit(code=2)
+
+
+@app.command("restore-apply")
+def restore_apply(root: BackupPath, confirmation_token: ConfirmationToken) -> None:
+    """Apply or resume an explicitly approved SQLite deployment restore."""
+    try:
+        result = apply_sqlite_restore(
+            root,
+            confirmation_token=confirmation_token,
+            control_db_path=configured_control_db_path(),
+            database_url=configured_database_url(),
+        )
+    except (BackupError, RestoreApplyError, RestoreError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(data=result.model_dump(mode="json"))
 
 
 if __name__ == "__main__":
