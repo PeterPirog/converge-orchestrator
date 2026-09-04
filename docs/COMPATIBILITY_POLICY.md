@@ -29,10 +29,20 @@ API. The preferred autonomous repair for an actual break is additive: retain the
 compatibility shim and add the new entry separately. A genuinely intentional breaking change still
 requires explicit risk approval and cannot bypass tests, independent review or CI.
 
-The adapter deliberately does not infer named source-code exports. Correctly parsing the full
-JavaScript/TypeScript module grammar and resolver rules requires a stack-native analyzer; a partial
-regex parser would create false confidence. Source-level Node, Go and Rust compatibility remain
-future adapters.
+Converge also protects the **existence of exact local files that remain published by a pre-existing
+package contract**. When a changed file is deleted, the risk classifier checks `package.json` files in
+its package/ancestor scopes. If an existing public `exports`, `bin`, `main`, `module`, `types`,
+`typings` or `browser` entry still points to that exact local file in the candidate manifest, deletion
+is a definite compatibility break and produces `forbidden_public_api_change` even when the manifest
+itself was not edited. This check is deliberately limited to exact `./...` targets that existed in the
+base revision; wildcard exports and generated targets that were never tracked are not guessed.
+Retargeting an existing public entry to a different present file remains review evidence rather than
+automatic HITL.
+
+The target-existence adapter does not infer named JavaScript or TypeScript exports and does not execute
+package code. Correctly parsing the full JavaScript/TypeScript module grammar and resolver rules
+requires a stack-native analyzer; a partial regex parser would create false confidence. Source-level
+named-export analysis plus Go and Rust compatibility remain future adapters.
 
 ## Policy boundary
 

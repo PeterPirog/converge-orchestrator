@@ -44,6 +44,28 @@ def _classify(
         return classify_repository_risk(cfg, tmp_path, _task())
 
 
+def _classify_sources(
+    tmp_path: Path,
+    paths: list[str],
+    *,
+    base: dict[str, str | None],
+    candidate: dict[str, str | None],
+):
+    cfg = _config(tmp_path)
+    with (
+        patch("converge_orchestrator.risk.changed_files", return_value=paths),
+        patch(
+            "converge_orchestrator.risk._read_base",
+            side_effect=lambda _cwd, _branch, path: base.get(path),
+        ),
+        patch(
+            "converge_orchestrator.risk._read_candidate",
+            side_effect=lambda _cwd, path: candidate.get(path),
+        ),
+    ):
+        return classify_repository_risk(cfg, tmp_path, _task())
+
+
 def test_secret_material_blocks_and_value_is_redacted(tmp_path: Path) -> None:
     secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
     report = _classify(
@@ -283,6 +305,89 @@ def test_unrelated_node_manifest_changes_do_not_interrupt(tmp_path: Path) -> Non
     )
 
     assert "forbidden_public_api_change" not in report.flags
+
+
+def test_node_deleted_published_target_interrupts_even_when_manifest_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    manifest = (
+        '{"name":"payments","exports":{'
+        '".":{"import":"./dist/index.mjs","require":"./dist/index.cjs"}},'
+        '"types":"./dist/index.d.ts"}\n'
+    )
+    report = _classify_sources(
+        tmp_path,
+        ["dist/index.mjs"],
+        base={
+            "package.json": manifest,
+            "dist/index.mjs": "export const charge = () => true;\n",
+        },
+        candidate={
+            "package.json": manifest,
+            "dist/index.mjs": None,
+        },
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    finding = next(
+        item
+        for item in report.findings
+        if "still published" in item.evidence
+    )
+    assert finding.disposition == "interrupt"
+    assert finding.path == "dist/index.mjs"
+    assert "package.json:exports:.#import -> ./dist/index.mjs" in finding.evidence
+
+
+def test_node_retargeted_public_entry_can_remove_old_target_without_hitl(
+    tmp_path: Path,
+) -> None:
+    report = _classify_sources(
+        tmp_path,
+        ["package.json", "dist/index.js", "dist/v2.js"],
+        base={
+            "package.json": '{"name":"payments","main":"./dist/index.js"}\n',
+            "dist/index.js": "module.exports = require('./runtime');\n",
+            "dist/v2.js": None,
+        },
+        candidate={
+            "package.json": '{"name":"payments","main":"./dist/v2.js"}\n',
+            "dist/index.js": None,
+            "dist/v2.js": "module.exports = require('./runtime');\n",
+        },
+    )
+
+    assert "forbidden_public_api_change" not in report.flags
+    finding = next(item for item in report.findings if item.evidence.endswith("package.json:main"))
+    assert finding.disposition == "observe"
+
+
+def test_node_nested_package_target_deletion_is_bound_to_nearest_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest = '{"name":"@example/client","types":"./dist/index.d.ts"}\n'
+    report = _classify_sources(
+        tmp_path,
+        ["packages/client/dist/index.d.ts"],
+        base={
+            "packages/client/package.json": manifest,
+            "packages/client/dist/index.d.ts": "export declare function charge(): void;\n",
+        },
+        candidate={
+            "packages/client/package.json": manifest,
+            "packages/client/dist/index.d.ts": None,
+        },
+    )
+
+    assert "forbidden_public_api_change" in report.flags
+    assert any(
+        item.evidence
+        == (
+            "public Node package target removed while still published: "
+            "packages/client/package.json:types -> ./dist/index.d.ts"
+        )
+        for item in report.findings
+    )
 
 
 def test_auth_weakening_interrupts_but_test_changes_do_not(tmp_path: Path) -> None:
