@@ -83,7 +83,7 @@ def preflight(
         typer.Option("--config", exists=True, readable=True, help="Acceptance project config."),
     ],
 ) -> None:
-    """Verify local acceptance constraints and authoritative required GitHub CI before model work."""
+    """Verify acceptance constraints and required GitHub CI before model work."""
 
     try:
         result = _acceptance_preflight(config.expanduser().resolve())
