@@ -41,13 +41,16 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
   validation and a durable completion receipt that closes the final process-response race;
 - PostgreSQL deployments have crash-safe restore apply with an exact plan-bound server receipt committed
   atomically with the restored database, allowing deterministic recovery after database commit but
-  before local journal acknowledgement without a second restore.
+  before local journal acknowledgement without a second restore;
+- exact published Node source modules now have Tree-sitter-backed direct named-export comparison, so a
+  proven exported-name removal is blocked before semantic review while ambiguous or unresolved syntax
+  remains review evidence rather than a guessed failure.
 
 This does **not** mean production hardening is finished. Both SQLite and PostgreSQL deployments now have
 a complete create/verify/plan/apply recovery path for the backed-up artifacts. Independent multi-node
 deployments still require a shared/consistent project filesystem or deliberate external artifact
-storage, and deterministic source-level compatibility policy remains materially stronger for Python
-than for Node/Go/Rust.
+storage. Python compatibility remains broader than Node because Node source signatures and wildcard
+re-export resolution are not yet deterministic; Go/Rust source compatibility also remains future work.
 
 ## Convergence matrix
 
@@ -203,10 +206,11 @@ Repository evidence now moves the priority away from completed checkpoint/flake/
 metrics, workload-placement and deployment backup/restore recovery work. The smallest remaining
 high-value areas are, in order:
 
-1. **Cross-language deterministic compatibility/architecture adapters** — source-level Node first,
-   then Go/Rust public API and dependency-boundary rules, extending the current Python AST and Node
-   manifest policy. These gates should reduce semantic-review ambiguity and therefore avoid otherwise
-   valid HITL escalations without giving models policy authority.
+1. **Cross-language deterministic compatibility/architecture adapters** — complete Node
+   source-signature compatibility and bounded re-export resolution on top of the direct named-export
+   parser, then add Go/Rust public API and dependency-boundary rules. These gates should reduce
+   semantic-review ambiguity and therefore avoid otherwise valid HITL escalations without giving
+   models policy authority.
 2. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry after
    the core operational durability path is hardened.
 3. **Deployment portability hardening** — pinned production sandbox images and deliberately

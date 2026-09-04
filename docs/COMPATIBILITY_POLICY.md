@@ -39,10 +39,33 @@ base revision; wildcard exports and generated targets that were never tracked ar
 Retargeting an existing public entry to a different present file remains review evidence rather than
 automatic HITL.
 
-The target-existence adapter does not infer named JavaScript or TypeScript exports and does not execute
-package code. Correctly parsing the full JavaScript/TypeScript module grammar and resolver rules
-requires a stack-native analyzer; a partial regex parser would create false confidence. Source-level
-named-export analysis plus Go and Rust compatibility remain future adapters.
+## Node direct source exports
+
+For exact local source modules that remain published through a pre-existing `exports`, `main`,
+`module`, `types` or `typings` entry, Converge additionally parses changed JavaScript/TypeScript source
+with the Tree-sitter TypeScript/TSX grammars. The target repository code is never imported or executed.
+The adapter compares only the direct top-level syntactic export names that it can prove from both the
+canonical base and candidate module.
+
+A direct baseline export that disappears from the same still-published module produces
+`forbidden_public_api_change`. Additive named exports proceed autonomously. Explicit aliases and
+explicit named re-exports are compared by their consumer-visible exported names, and declaration-file
+exports are covered through the same parser.
+
+The adapter deliberately fails conservative rather than pretending to understand more than the syntax
+proves:
+
+- an incomplete baseline surface is not used as evidence that a public name existed;
+- a candidate containing unresolved wildcard exports, unsupported/ambiguous export syntax or parser
+  errors produces `observe` evidence for independent review instead of a deterministic break/HITL;
+- manifest retargeting is not compared as if the old and new modules were the same public source;
+- `bin` and `browser` targets are not treated as named-module export surfaces;
+- CommonJS assignment semantics, wildcard re-export graphs, module resolution and source-level
+  function/type signature compatibility are not inferred by this slice.
+
+This boundary is intentional: the deterministic gate blocks only a compatibility break it can prove.
+The next Node compatibility work is source-signature comparison and bounded re-export resolution, not
+regex-based approximation.
 
 ## Policy boundary
 
