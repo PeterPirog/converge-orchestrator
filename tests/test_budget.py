@@ -152,6 +152,34 @@ def test_next_request_is_blocked_before_estimated_token_overrun(tmp_path: Path) 
     assert status.estimated_tokens_reserved == 0
 
 
+def test_model_attempt_timeout_is_bounded_by_remaining_run_time(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    initialize_run_budget(cfg, "run-1", started_at=started)
+
+    reservation = reserve_model_attempt(
+        cfg,
+        "run-1",
+        role="planner",
+        model="model",
+        estimated_input_tokens=1,
+        output_reserve_tokens=256,
+        now=started + timedelta(seconds=598.2),
+    )
+
+    assert reservation["provider_timeout_seconds"] == 1
+    with pytest.raises(RunBudgetExceeded, match="less than one full second"):
+        reserve_model_attempt(
+            cfg,
+            "run-1",
+            role="planner",
+            model="model",
+            estimated_input_tokens=1,
+            output_reserve_tokens=256,
+            now=started + timedelta(seconds=599.2),
+        )
+
+
 def test_wall_time_blocks_resume_but_model_limit_does_not_block_deterministic_finish(
     tmp_path: Path,
 ) -> None:
@@ -200,6 +228,7 @@ def test_provider_retry_cannot_bypass_model_attempt_budget(tmp_path: Path) -> No
         reset_run_id(token)
 
     assert runner.call_count == 1
+    assert runner.call_args.kwargs["timeout"] <= cfg.run_budget.max_wall_time_seconds
     status = run_budget_status(cfg, run_id)
     assert status.model_attempts_reserved == 1
     assert status.estimated_tokens_reserved > 0
