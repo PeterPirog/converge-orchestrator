@@ -36,6 +36,7 @@ class SupervisorRestartEvidence(BaseModel):
 
 class SupervisorExceptionEvidence(BaseModel):
     kind: str
+    expected_risk_flag: str | None = None
     deliberately_injected: bool
     action: str
     no_manual_code_edit: bool
@@ -322,6 +323,7 @@ def _budget_check(config: ProjectConfig, run_id: str) -> AcceptanceCheck:
 def _supervisor_checks(
     run_id: str,
     target_repository: str | None,
+    values: dict[str, Any],
     evidence: ExternalSupervisorEvidence | None,
 ) -> list[AcceptanceCheck]:
     if evidence is None:
@@ -355,12 +357,32 @@ def _supervisor_checks(
         and restart.automatic_recovery_observed
     )
     exception = evidence.exceptional_hitl
+    decisions = values.get("human_decisions")
+    exact_decision = (
+        decisions[0]
+        if isinstance(decisions, list)
+        and len(decisions) == 1
+        and isinstance(decisions[0], dict)
+        else None
+    )
+    expected_risk_flag = str(exception.expected_risk_flag or "").strip()
+    decision_flags = (
+        exact_decision.get("risk_flags", []) if isinstance(exact_decision, dict) else []
+    )
     exception_ok = (
         identity_ok
         and exception.deliberately_injected
         and exception.kind == "risk_policy"
-        and exception.action in {"approve", "edit"}
+        and exception.action == "approve"
         and exception.no_manual_code_edit
+        and bool(expected_risk_flag)
+        and exact_decision is not None
+        and exact_decision.get("sequence") == 1
+        and exact_decision.get("kind") == "risk_policy"
+        and exact_decision.get("action") == "approve"
+        and bool(str(exact_decision.get("task_id") or "").strip())
+        and isinstance(decision_flags, list)
+        and expected_risk_flag in decision_flags
     )
     required_audits = {
         "requirements",
@@ -388,7 +410,10 @@ def _supervisor_checks(
             exception_ok,
             (
                 f"kind={exception.kind}; injected={exception.deliberately_injected}; "
-                f"action={exception.action}; no manual code edit={exception.no_manual_code_edit}"
+                f"action={exception.action}; expected risk={expected_risk_flag or 'missing'}; "
+                "checkpointed decisions="
+                f"{len(decisions) if isinstance(decisions, list) else 'missing'}; "
+                f"no manual code edit={exception.no_manual_code_edit}"
             ),
         ),
         _check(
@@ -496,6 +521,7 @@ def evaluate_external_acceptance(
         _supervisor_checks(
             run_id,
             target_repository,
+            values,
             supervisor_evidence,
         )
     )

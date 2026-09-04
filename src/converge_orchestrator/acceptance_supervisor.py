@@ -704,6 +704,7 @@ def supervise_external_acceptance(
                 },
                 "exceptional_hitl": {
                     "kind": "risk_policy",
+                    "expected_risk_flag": expected_risk_flag,
                     "deliberately_injected": True,
                     "action": progress.hitl_action,
                     "no_manual_code_edit": progress.no_manual_code_edit,

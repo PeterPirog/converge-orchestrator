@@ -120,6 +120,8 @@ Implemented:
 - process-level PR checkpoint-race proof reusing the exact external PR through ensure semantics;
 - process-level `ci_wait` restart proof restoring the durable wake timer and automatically resuming the
   same LangGraph run/thread without HITL;
+- checkpointed operator-decision history that excludes machine-managed CI wake-ups, plus an external
+  acceptance invariant requiring exactly one predeclared `risk_policy -> approve` decision;
 - real subprocess proof that abrupt OpenCode/executor death is absorbed by a bounded primary retry
   with identical role/prompt/model and no hidden session continuation or HITL;
 - optional shared PostgreSQL production persistence for both LangGraph checkpoints and the control/run

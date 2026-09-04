@@ -72,6 +72,9 @@ def _supervisor_journal_check(
         and restart.automatic_recovery_observed
         and payload.get("hitl_done") is True
         and payload.get("hitl_action") == exception.action
+        and exception.action == "approve"
+        and payload.get("expected_risk_flag") == exception.expected_risk_flag
+        and bool(str(exception.expected_risk_flag or "").strip())
         and payload.get("no_manual_code_edit") is exception.no_manual_code_edit
         and exception.no_manual_code_edit
         and isinstance(payload.get("expected_risk_flag"), str)

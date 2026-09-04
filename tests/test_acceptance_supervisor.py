@@ -70,6 +70,7 @@ def _supervisor(run_id: str = "run-1") -> ExternalSupervisorEvidence:
             },
             "exceptional_hitl": {
                 "kind": "risk_policy",
+                "expected_risk_flag": "forbidden_public_api_change",
                 "deliberately_injected": True,
                 "action": "approve",
                 "no_manual_code_edit": True,

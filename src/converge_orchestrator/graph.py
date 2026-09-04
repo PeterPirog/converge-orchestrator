@@ -402,10 +402,25 @@ def tdd_human_gate(state: WorkflowState) -> WorkflowState:
         }
     )
     action = decision.get("action") if isinstance(decision, dict) else decision
+    human_decisions = wf.record_human_decision(
+        state,
+        kind="tdd_evidence_failure",
+        action=action,
+    )
     if action == "replan":
-        return {**state, "replan_attempts": 0, "status": "tdd_human_replan"}
+        return {
+            **state,
+            "human_decisions": human_decisions,
+            "replan_attempts": 0,
+            "status": "tdd_human_replan",
+        }
     if action == "stop":
-        return {**state, "status": "stopped", "message": "Stopped at TDD evidence gate"}
+        return {
+            **state,
+            "human_decisions": human_decisions,
+            "status": "stopped",
+            "message": "Stopped at TDD evidence gate",
+        }
     raise ValueError(f"Unsupported TDD decision: {action}")
 
 

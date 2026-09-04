@@ -39,6 +39,7 @@ def _run_payload(raw: dict[str, Any]) -> dict[str, Any]:
         "pr": values.get("pr"),
         "ci": values.get("ci"),
         "risk_flags": values.get("risk_flags", []),
+        "human_decisions": values.get("human_decisions", []),
         "message": values.get("message"),
     }
     return payload

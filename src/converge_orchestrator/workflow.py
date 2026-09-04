@@ -67,6 +67,32 @@ def _task_id(state: WorkflowState) -> str:
     return str(task.get("id")) if task else "run"
 
 
+def record_human_decision(
+    state: WorkflowState,
+    *,
+    kind: str,
+    action: object,
+) -> list[dict[str, Any]]:
+    """Return an append-only, checkpointed audit trail for actual operator decisions.
+
+    Machine-managed ``ci_wait`` resumes are deliberately excluded. The record contains only
+    bounded policy metadata already present in workflow state, never a replacement task or other
+    free-form operator payload.
+    """
+
+    history = [dict(item) for item in state.get("human_decisions", [])]
+    history.append(
+        {
+            "sequence": len(history) + 1,
+            "kind": kind,
+            "action": str(action),
+            "task_id": _task_id(state),
+            "risk_flags": sorted(str(flag) for flag in state.get("risk_flags", [])),
+        }
+    )
+    return history
+
+
 def _requirements(state: WorkflowState) -> list[Requirement]:
     return [Requirement.model_validate(item) for item in state["requirements"]]
 
@@ -140,6 +166,7 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
         "approved_risk_flags": [],
         "risk_report": None,
         "risk_fingerprint": None,
+        "human_decisions": list(state.get("human_decisions", [])),
         "status": "bootstrapped",
     }
     _write_compliance(next_state, compliance)
@@ -192,11 +219,25 @@ def _safe_point(state: WorkflowState, name: str) -> WorkflowState:
     )
     action = decision.get("action") if isinstance(decision, dict) else decision
     signals.clear_pause(state["run_id"])
+    human_decisions = record_human_decision(
+        state,
+        kind="controlled_pause",
+        action=action,
+    )
     if action == "stop":
-        return {**state, "status": "stopped", "message": "Stopped at controlled pause"}
+        return {
+            **state,
+            "human_decisions": human_decisions,
+            "status": "stopped",
+            "message": "Stopped at controlled pause",
+        }
     if action != "resume":
         raise ValueError(f"Unsupported pause decision: {action}")
-    return {**state, "status": f"resumed_at_{name}"}
+    return {
+        **state,
+        "human_decisions": human_decisions,
+        "status": f"resumed_at_{name}",
+    }
 
 
 def pause_before_plan(state: WorkflowState) -> WorkflowState:
@@ -552,8 +593,14 @@ def human_gate(state: WorkflowState) -> WorkflowState:
     )
     payload = decision if isinstance(decision, dict) else {"action": decision}
     action = payload.get("action")
+    human_decisions = record_human_decision(state, kind=kind, action=action)
     if action in {"reject", "stop"}:
-        return {**state, "status": "stopped", "message": "Stopped by human operator"}
+        return {
+            **state,
+            "human_decisions": human_decisions,
+            "status": "stopped",
+            "message": "Stopped by human operator",
+        }
     if action == "approve":
         if kind != "risk_policy":
             raise ValueError("Human approval cannot override deterministic gate or CI failures")
@@ -562,14 +609,21 @@ def human_gate(state: WorkflowState) -> WorkflowState:
         )
         return {
             **state,
+            "human_decisions": human_decisions,
             "approved_risk_flags": approved,
             "status": "human_retry_review",
         }
     if action == "retry":
         if kind == "iteration_budget":
-            return {**state, "iteration": 0, "status": "human_retry_plan"}
+            return {
+                **state,
+                "human_decisions": human_decisions,
+                "iteration": 0,
+                "status": "human_retry_plan",
+            }
         return {
             **state,
+            "human_decisions": human_decisions,
             "repair_attempts": 0,
             "replan_attempts": 0,
             "status": (
@@ -589,6 +643,7 @@ def human_gate(state: WorkflowState) -> WorkflowState:
         _discard_current_workspace(state)
         return {
             **state,
+            "human_decisions": human_decisions,
             "task": task.model_dump(mode="json"),
             "worktree": None,
             "branch": None,

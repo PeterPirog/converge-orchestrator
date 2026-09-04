@@ -446,6 +446,11 @@ def planner_human_gate(state: WorkflowState) -> WorkflowState:
         }
     )
     action = decision.get("action") if isinstance(decision, dict) else decision
+    human_decisions = wf.record_human_decision(
+        state,
+        kind="planner_failure_budget",
+        action=action,
+    )
     if action == "retry":
         if isinstance(control, dict):
             control = dict(control)
@@ -453,6 +458,7 @@ def planner_human_gate(state: WorkflowState) -> WorkflowState:
             baseline["planner_control"] = control
         return {
             **state,
+            "human_decisions": human_decisions,
             "baseline": baseline,
             "replan_attempts": 0,
             "status": "planner_human_retry",
@@ -460,6 +466,7 @@ def planner_human_gate(state: WorkflowState) -> WorkflowState:
     if action == "stop":
         return {
             **state,
+            "human_decisions": human_decisions,
             "status": "stopped",
             "message": "Stopped after Planner failure budget was exhausted",
         }

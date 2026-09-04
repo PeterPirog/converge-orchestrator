@@ -135,6 +135,15 @@ def _status(cfg: ProjectConfig, run_id: str) -> dict:
                     "ARCH-002": {"status": "pass", "evidence": ["merged"]},
                 }
             },
+            "human_decisions": [
+                {
+                    "sequence": 1,
+                    "kind": "risk_policy",
+                    "action": "approve",
+                    "task_id": "ARCH-002-1",
+                    "risk_flags": ["forbidden_public_api_change"],
+                }
+            ],
         },
     }
 
@@ -155,6 +164,7 @@ def _supervisor(
             },
             "exceptional_hitl": {
                 "kind": "risk_policy",
+                "expected_risk_flag": "forbidden_public_api_change",
                 "deliberately_injected": True,
                 "action": "approve",
                 "no_manual_code_edit": True,
@@ -289,6 +299,45 @@ def test_external_acceptance_detects_requirement_drift(tmp_path: Path) -> None:
 
     assert report.ready is False
     check = next(item for item in report.checks if item.name == "immutable_requirements")
+    assert check.ok is False
+
+
+def test_external_acceptance_requires_exactly_one_checkpointed_exceptional_hitl(
+    tmp_path: Path,
+) -> None:
+    cfg, run_id, status = _complete_run(tmp_path)
+    status["values"]["human_decisions"].append(
+        {
+            "sequence": 2,
+            "kind": "planner_failure_budget",
+            "action": "retry",
+            "task_id": "run",
+            "risk_flags": [],
+        }
+    )
+
+    report = evaluate_external_acceptance(
+        cfg,
+        status,
+        supervisor_evidence=_supervisor(run_id),
+    )
+
+    check = next(item for item in report.checks if item.name == "exceptional_hitl")
+    assert check.ok is False
+    assert "checkpointed decisions=2" in check.evidence
+
+
+def test_external_acceptance_binds_hitl_to_predeclared_risk_flag(tmp_path: Path) -> None:
+    cfg, run_id, status = _complete_run(tmp_path)
+    status["values"]["human_decisions"][0]["risk_flags"] = ["different-risk"]
+
+    report = evaluate_external_acceptance(
+        cfg,
+        status,
+        supervisor_evidence=_supervisor(run_id),
+    )
+
+    check = next(item for item in report.checks if item.name == "exceptional_hitl")
     assert check.ok is False
 
 
