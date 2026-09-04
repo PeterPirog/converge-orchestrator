@@ -9,6 +9,15 @@ from uuid import uuid4
 
 from langgraph.types import Command
 
+from .budget import (
+    RunBudgetExceeded,
+    RunBudgetIntegrityError,
+    assert_run_wall_time,
+    bind_run_id,
+    budget_path,
+    initialize_run_budget,
+    reset_run_id,
+)
 from .config import (
     load_config,
     load_run_config_snapshot,
@@ -31,6 +40,7 @@ _TERMINAL_STATUSES = {
     "completed",
     "converged",
     "failed",
+    "budget_exhausted",
     "no_changes",
     "spec_changed",
     "stopped",
@@ -316,6 +326,21 @@ class RunController:
                 matches.append({"project_id": project["id"], **bundle})
         return matches
 
+    def _enforce_submission_budget(self, record: dict[str, Any]) -> None:
+        cfg = self._config_for_run(record)
+        path = budget_path(cfg, record["id"])
+        if not path.exists():
+            if record.get("status") != "queued" or record.get("finished_at"):
+                raise RunBudgetIntegrityError(
+                    f"run budget ledger missing for active run {record['id']}"
+                )
+            initialize_run_budget(
+                cfg,
+                record["id"],
+                started_at=str(record["started_at"]),
+            )
+        assert_run_wall_time(cfg, record["id"])
+
     def _submit(self, run_id: str, input_value: Any) -> None:
         with self._lock:
             existing = self._workers.get(run_id)
@@ -327,6 +352,29 @@ class RunController:
                 _LEASE_TTL_SECONDS,
             ):
                 raise RuntimeError("Run is leased by another active controller")
+            try:
+                record = self.registry.get_run(run_id)
+                self._enforce_submission_budget(record)
+            except RunBudgetExceeded as exc:
+                self.registry.update_run(
+                    run_id,
+                    status="budget_exhausted",
+                    node="done",
+                    error=str(exc),
+                    finished=True,
+                )
+                self.registry.release_run_lease(run_id, self._lease_owner)
+                return
+            except RunBudgetIntegrityError as exc:
+                self.registry.update_run(
+                    run_id,
+                    status="failed",
+                    node="done",
+                    error=str(exc),
+                    finished=True,
+                )
+                self.registry.release_run_lease(run_id, self._lease_owner)
+                return
             try:
                 worker = threading.Thread(
                     target=self._execute,
@@ -367,6 +415,7 @@ class RunController:
             daemon=True,
         )
         heartbeat.start()
+        run_token = bind_run_id(run_id)
         try:
             graph, db, graph_config = self._open_graph(record)
             try:
@@ -398,9 +447,26 @@ class RunController:
                 active_task_id=task_id,
                 finished=finished,
             )
+        except RunBudgetExceeded as exc:
+            self.registry.update_run(
+                run_id,
+                status="budget_exhausted",
+                node="done",
+                error=str(exc),
+                finished=True,
+            )
+        except RunBudgetIntegrityError as exc:
+            self.registry.update_run(
+                run_id,
+                status="failed",
+                node="done",
+                error=str(exc),
+                finished=True,
+            )
         except Exception as exc:
             self.registry.update_run(run_id, status="failed", error=str(exc), finished=True)
         finally:
+            reset_run_id(run_token)
             lease_stop.set()
             heartbeat.join(timeout=1)
             self.registry.release_run_lease(run_id, self._lease_owner)

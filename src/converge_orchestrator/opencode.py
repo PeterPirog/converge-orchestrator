@@ -4,6 +4,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .budget import (
+    RunBudgetExceeded,
+    RunBudgetIntegrityError,
+    current_run_id,
+    reserve_model_attempt,
+)
 from .context import (
     ContextBudgetExceeded,
     PromptEnvelope,
@@ -109,17 +115,20 @@ class OpenCodeAdapter:
 
     def invoke(self, role: str, prompt: str | PromptEnvelope, cwd: Path) -> AgentResult:
         generated_config = materialize_opencode_config(self.config)
+        run_id = current_run_id()
         if role == "reviewer" and self.config.review_roles:
             return self._invoke_review_fanout(
                 prompt,
                 cwd,
                 generated_config,
+                run_id=run_id,
             )
         return self._invoke_with_resilience(
             role,
             prompt,
             cwd,
             generated_config,
+            run_id=run_id,
         )
 
     def _append_provider_health(self, cwd: Path, payload: dict) -> None:
@@ -141,6 +150,8 @@ class OpenCodeAdapter:
         prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
+        *,
+        run_id: str | None = None,
     ) -> AgentResult:
         agent_cfg = self.config.agents[role]
         profiles = [agent_cfg.model_profile, *agent_cfg.fallback_model_profiles]
@@ -162,6 +173,7 @@ class OpenCodeAdapter:
                         cwd,
                         generated_config,
                         profile_name,
+                        run_id=run_id,
                     )
                     failure_kind = (
                         None
@@ -170,6 +182,8 @@ class OpenCodeAdapter:
                         if result.returncode == 78
                         else "process_failure"
                     )
+                except (RunBudgetExceeded, RunBudgetIntegrityError):
+                    raise
                 except Exception as exc:
                     result = AgentResult(
                         role=role,
@@ -214,6 +228,12 @@ class OpenCodeAdapter:
         )
         return result.model_copy(update={"context": context})
 
+    def _output_reserve_tokens(self, model_profile: str | None) -> int:
+        configured = 0
+        if model_profile:
+            configured = self.config.model_profiles[model_profile].output_tokens or 0
+        return max(self.config.context_output_reserve_tokens, configured)
+
     def _invoke_single_attempt(
         self,
         role: str,
@@ -221,6 +241,8 @@ class OpenCodeAdapter:
         cwd: Path,
         generated_config: Path,
         model_profile: str | None,
+        *,
+        run_id: str | None = None,
     ) -> AgentResult:
         try:
             rendered_prompt, context_report = prepare_prompt(
@@ -243,6 +265,21 @@ class OpenCodeAdapter:
         cmd = [self.config.opencode_binary, "run", "--agent", agent_cfg.agent]
         model = resolve_agent_model(self.config, agent_cfg, model_profile)
         variant = resolve_agent_variant(self.config, agent_cfg, model_profile)
+        budget_reservation: dict | None = None
+        attempt_timeout = agent_cfg.timeout_seconds
+        if run_id is not None:
+            budget_reservation = reserve_model_attempt(
+                self.config,
+                run_id,
+                role=role,
+                model=model,
+                estimated_input_tokens=context_report.estimated_input_tokens,
+                output_reserve_tokens=self._output_reserve_tokens(model_profile),
+            )
+            attempt_timeout = min(
+                attempt_timeout,
+                int(budget_reservation["provider_timeout_seconds"]),
+            )
         if model:
             cmd += ["--model", model]
         if variant:
@@ -268,7 +305,7 @@ class OpenCodeAdapter:
             result = ExecutionSandbox(self.config).run(
                 cmd,
                 cwd=cwd,
-                timeout=agent_cfg.timeout_seconds,
+                timeout=attempt_timeout,
                 env={
                     "OPENCODE_CONFIG": str(generated_config),
                     "OPENCODE_CONFIG_DIR": str(managed_config_dir),
@@ -288,12 +325,15 @@ class OpenCodeAdapter:
             raise
         context_report = finalize_report(context_report, result.stdout)
         append_context_ledger(self.config, context_report, cwd)
+        context = context_report.model_dump(mode="json")
+        if budget_reservation is not None:
+            context["run_budget_reservation"] = budget_reservation
         return AgentResult(
             role=role,
             ok=result.returncode == 0,
             output=result.stdout,
             returncode=result.returncode,
-            context=context_report.model_dump(mode="json"),
+            context=context,
         )
 
     def _invoke_review_fanout(
@@ -301,6 +341,8 @@ class OpenCodeAdapter:
         prompt: str | PromptEnvelope,
         cwd: Path,
         generated_config: Path,
+        *,
+        run_id: str | None = None,
     ) -> AgentResult:
         roles = list(self.config.review_roles)
         workers = min(self.config.max_parallel_reviews, len(roles))
@@ -318,6 +360,7 @@ class OpenCodeAdapter:
                     prompt,
                     cwd,
                     generated_config,
+                    run_id=run_id,
                 )
                 for role in roles
             }
@@ -325,8 +368,15 @@ class OpenCodeAdapter:
                 try:
                     raw_results[role] = futures[role].result()
                 except Exception as exc:
-                    # Timeout/runtime faults are evidence of a failed review, not a silent skip.
+                    # Runtime faults normally become failed review evidence. Resource envelope
+                    # failures remain deterministic controller policy and must not be demoted to a
+                    # semantic reject that would trigger additional model-driven repair.
                     failures[role] = exc
+
+        for role in roles:
+            failure = failures.get(role)
+            if isinstance(failure, (RunBudgetExceeded, RunBudgetIntegrityError)):
+                raise failure
 
         reviews: dict[str, ReviewResult] = {}
         for role in roles:
