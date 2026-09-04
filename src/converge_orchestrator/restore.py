@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -61,12 +62,27 @@ def _canonical_uuid(value: str) -> bool:
         return False
 
 
+def _link_like(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction and is_junction())
+
+
 def _target_path(raw: str, label: str, blockers: list[str]) -> Path | None:
     path = Path(raw).expanduser()
     if not path.is_absolute():
         blockers.append(f"{label} is not an absolute path on this restore host")
         return None
-    return path.resolve(strict=False)
+
+    # Normalize `.`/`..` without resolving links. `Path.resolve(strict=False)` would follow a
+    # broken destination symlink and could incorrectly make that link look like an absent target.
+    normalized = Path(os.path.abspath(os.fspath(path)))
+    for parent in normalized.parents:
+        if _link_like(parent):
+            blockers.append(f"{label} has a symlinked or junction parent: {parent}")
+            break
+    return normalized
 
 
 def _required_project_artifacts(
@@ -85,15 +101,15 @@ def _required_project_artifacts(
         project_dir / "repository.bundle",
     )
     for path in required:
-        if path.is_symlink() or not path.is_file():
+        if _link_like(path) or not path.is_file():
             blockers.append(f"backup artifact missing or unsafe: {path.name}")
     state_dir = project_dir / "state"
-    if state_dir.is_symlink() or not state_dir.is_dir():
+    if _link_like(state_dir) or not state_dir.is_dir():
         blockers.append("backup state directory is missing or unsafe")
         return project_dir
 
     marker = state_dir / ".converge-state-id"
-    if marker.is_symlink() or not marker.is_file():
+    if _link_like(marker) or not marker.is_file():
         blockers.append("backup state-store identity marker is missing or unsafe")
     else:
         try:
@@ -106,11 +122,15 @@ def _required_project_artifacts(
     return project_dir
 
 
-def _check_bundle(project_dir: Path | None, project: BackupProject, blockers: list[str]) -> None:
+def _check_bundle(
+    project_dir: Path | None,
+    project: BackupProject,
+    blockers: list[str],
+) -> None:
     if project_dir is None:
         return
     bundle = project_dir / "repository.bundle"
-    if not bundle.is_file() or bundle.is_symlink():
+    if not bundle.is_file() or _link_like(bundle):
         return
     executable = shutil.which("git")
     if executable is None:
@@ -150,10 +170,10 @@ def _check_backup_project_hashes(
         return
     config = project_dir / "converge.yaml"
     requirements = project_dir / "requirements.md"
-    if config.is_file() and not config.is_symlink():
+    if config.is_file() and not _link_like(config):
         if _sha256(config) != project.config_sha256:
             blockers.append("project configuration hash does not match manifest project metadata")
-    if requirements.is_file() and not requirements.is_symlink():
+    if requirements.is_file() and not _link_like(requirements):
         if _sha256(requirements) != project.requirements_sha256:
             blockers.append("requirements hash does not match manifest project metadata")
 
@@ -188,12 +208,20 @@ def _database_artifact_blockers(root: Path, manifest: BackupManifest) -> list[st
     blockers: list[str] = []
     sqlite_artifact = root / "database" / "control.sqlite"
     postgres_artifact = root / "database" / "postgres.dump"
-    expected = sqlite_artifact if manifest.persistence_backend == "sqlite" else postgres_artifact
-    unexpected = postgres_artifact if manifest.persistence_backend == "sqlite" else sqlite_artifact
+    expected = (
+        sqlite_artifact
+        if manifest.persistence_backend == "sqlite"
+        else postgres_artifact
+    )
+    unexpected = (
+        postgres_artifact
+        if manifest.persistence_backend == "sqlite"
+        else sqlite_artifact
+    )
 
-    if expected.is_symlink() or not expected.is_file():
+    if _link_like(expected) or not expected.is_file():
         blockers.append("backup database artifact does not match declared persistence backend")
-    if unexpected.exists() or unexpected.is_symlink():
+    if unexpected.exists() or _link_like(unexpected):
         blockers.append("backup contains a database artifact for a different persistence backend")
     return blockers
 
@@ -205,12 +233,18 @@ def _database_blockers(
 ) -> tuple[str, list[str]]:
     blockers: list[str] = []
     if manifest.persistence_backend == "sqlite":
-        target = control_db_path.expanduser().resolve()
+        target = _target_path(
+            str(control_db_path),
+            "SQLite control database target",
+            blockers,
+        )
+        if target is None:
+            target = Path(os.path.abspath(os.fspath(control_db_path.expanduser())))
         if database_url:
             blockers.append(
                 "backup uses SQLite but CONVERGE_DATABASE_URL selects PostgreSQL on this host"
             )
-        if target.exists() or target.is_symlink():
+        if target.exists() or _link_like(target):
             blockers.append("SQLite control database target already exists")
         return str(target), blockers
 
@@ -230,9 +264,12 @@ def _database_blockers(
 
 
 def _plan_token(payload: dict) -> str:
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -288,8 +325,16 @@ def plan_deployment_restore(
             "requirements target",
             project_blockers,
         )
-        repo_target = _target_path(project.repo_source_path, "repository target", project_blockers)
-        state_target = _target_path(project.state_source_path, "state target", project_blockers)
+        repo_target = _target_path(
+            project.repo_source_path,
+            "repository target",
+            project_blockers,
+        )
+        state_target = _target_path(
+            project.state_source_path,
+            "state target",
+            project_blockers,
+        )
         worktree_target = _target_path(
             project.worktree_source_path,
             "worktree target",
@@ -303,7 +348,7 @@ def plan_deployment_restore(
             ("state", state_target),
             ("worktree", worktree_target),
         ):
-            if path is not None and (path.exists() or path.is_symlink()):
+            if path is not None and (path.exists() or _link_like(path)):
                 project_blockers.append(f"{label} restore target already exists")
 
         for label, path in (("repository", repo_target), ("state", state_target)):
@@ -328,16 +373,26 @@ def plan_deployment_restore(
         project_plans.append(
             RestoreProjectPlan(
                 project_id=project.project_id,
-                config_target=str(config_target) if config_target else project.config_source_path,
+                config_target=(
+                    str(config_target)
+                    if config_target
+                    else project.config_source_path
+                ),
                 requirements_target=(
                     str(requirements_target)
                     if requirements_target
                     else project.requirements_source_path
                 ),
-                repo_target=str(repo_target) if repo_target else project.repo_source_path,
-                state_target=str(state_target) if state_target else project.state_source_path,
+                repo_target=(
+                    str(repo_target) if repo_target else project.repo_source_path
+                ),
+                state_target=(
+                    str(state_target) if state_target else project.state_source_path
+                ),
                 worktree_target=(
-                    str(worktree_target) if worktree_target else project.worktree_source_path
+                    str(worktree_target)
+                    if worktree_target
+                    else project.worktree_source_path
                 ),
                 repo_head=project.repo_head,
                 workspace_id=project.workspace_id,
@@ -348,7 +403,10 @@ def plan_deployment_restore(
 
     all_blockers = [*blockers]
     for project in project_plans:
-        all_blockers.extend(f"{project.project_id}: {item}" for item in project.blockers)
+        all_blockers.extend(
+            f"{project.project_id}: {item}"
+            for item in project.blockers
+        )
 
     token_payload = {
         "version": _RESTORE_PLAN_VERSION,
