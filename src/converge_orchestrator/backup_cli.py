@@ -87,21 +87,21 @@ def restore_plan(root: BackupPath) -> None:
 def restore_apply(root: BackupPath, confirmation_token: ConfirmationToken) -> None:
     """Apply or resume an explicitly approved SQLite or PostgreSQL deployment restore."""
     try:
-        manifest = verify_deployment_backup(root)
+        control_db_path = configured_control_db_path()
         database_url = configured_database_url()
-        if manifest.persistence_backend == "postgres":
+        if database_url:
             result = apply_postgres_restore(
                 root,
                 confirmation_token=confirmation_token,
-                control_db_path=configured_control_db_path(),
+                control_db_path=control_db_path,
                 database_url=database_url,
             )
         else:
             result = apply_sqlite_restore(
                 root,
                 confirmation_token=confirmation_token,
-                control_db_path=configured_control_db_path(),
-                database_url=database_url,
+                control_db_path=control_db_path,
+                database_url=None,
             )
     except (BackupError, RestoreApplyError, RestoreError, RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
