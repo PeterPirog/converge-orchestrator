@@ -59,6 +59,8 @@ class ControlRegistry:
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id),
                     thread_id TEXT NOT NULL UNIQUE,
+                    config_snapshot_path TEXT,
+                    config_snapshot_sha256 TEXT,
                     status TEXT NOT NULL,
                     node TEXT,
                     active_task_id TEXT,
@@ -93,6 +95,10 @@ class ControlRegistry:
                 str(row["name"])
                 for row in db.execute("PRAGMA table_info(runs)").fetchall()
             }
+            if "config_snapshot_path" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN config_snapshot_path TEXT")
+            if "config_snapshot_sha256" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN config_snapshot_sha256 TEXT")
             if "lease_owner" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN lease_owner TEXT")
             if "lease_expires_at" not in run_columns:
@@ -191,14 +197,41 @@ class ControlRegistry:
             rows = db.execute("SELECT * FROM projects ORDER BY id").fetchall()
         return [dict(row) for row in rows]
 
-    def create_run(self, run_id: str, project_id: str, thread_id: str) -> dict[str, Any]:
+    def create_run(
+        self,
+        run_id: str,
+        project_id: str,
+        thread_id: str,
+        *,
+        config_snapshot_path: Path | str | None = None,
+        config_snapshot_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        if (config_snapshot_path is None) != (config_snapshot_sha256 is None):
+            raise ValueError(
+                "config_snapshot_path and config_snapshot_sha256 must be provided together"
+            )
+        resolved_snapshot = (
+            str(Path(config_snapshot_path).expanduser().resolve())
+            if config_snapshot_path is not None
+            else None
+        )
         with self._connection() as db:
             db.execute(
                 """
-                INSERT INTO runs(id, project_id, thread_id, status, started_at)
-                VALUES (?, ?, ?, 'queued', ?)
+                INSERT INTO runs(
+                    id, project_id, thread_id, config_snapshot_path,
+                    config_snapshot_sha256, status, started_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'queued', ?)
                 """,
-                (run_id, project_id, thread_id, _now()),
+                (
+                    run_id,
+                    project_id,
+                    thread_id,
+                    resolved_snapshot,
+                    config_snapshot_sha256,
+                    _now(),
+                ),
             )
         return self.get_run(run_id)
 

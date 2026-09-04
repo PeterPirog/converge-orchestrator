@@ -19,10 +19,10 @@ def _record(*, status: str = "running") -> dict:
     }
 
 
-def _initial_values() -> dict:
+def _initial_values(config_path: str = "/tmp/project.yaml") -> dict:
     return {
         "project_id": "project",
-        "config_path": "/tmp/project.yaml",
+        "config_path": config_path,
         "run_id": "run-1",
         "thread_id": "thread-1",
     }
@@ -47,6 +47,21 @@ def test_exact_initial_input_checkpoint_is_recoverable_but_extra_state_is_not() 
 
     snapshot["values"] = {**_initial_values(), "status": "running"}
     assert not _is_initial_input_checkpoint(snapshot, record)
+
+
+def test_pinned_run_initial_checkpoint_requires_exact_snapshot_path() -> None:
+    pinned = "/tmp/state/run-configs/run-1.yaml"
+    record = {
+        **_record(),
+        "config_snapshot_path": pinned,
+        "config_snapshot_sha256": "config-sha",
+    }
+
+    correct = {"values": _initial_values(pinned), "next": [], "interrupt": None}
+    stale = {"values": _initial_values("/tmp/project.yaml"), "next": [], "interrupt": None}
+
+    assert _is_initial_input_checkpoint(correct, record)
+    assert not _is_initial_input_checkpoint(stale, record)
 
 
 def test_restore_schedules_start_for_durable_initial_input_checkpoint() -> None:

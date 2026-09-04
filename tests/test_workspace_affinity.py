@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -181,21 +181,39 @@ def test_affinity_rejects_same_workspace_with_another_state_dir(tmp_path: Path) 
         assert_state_store_affinity(project, second)
 
 
-def test_recovery_scanner_never_reads_runs_for_foreign_workspace() -> None:
+def test_recovery_scanner_validates_run_affinity_before_yielding() -> None:
     controller = object.__new__(ScheduledRunController)
     controller.registry = Mock()
     controller.registry.list_projects.return_value = [
         {"id": "local", "workspace_id": "workspace-a"},
         {"id": "foreign", "workspace_id": "workspace-b"},
     ]
-    controller.registry.runs_for_project.return_value = [
-        {"id": "run-local", "finished_at": None}
+    local_record = {
+        "id": "run-local",
+        "project_id": "local",
+        "finished_at": None,
+    }
+    foreign_record = {
+        "id": "run-foreign",
+        "project_id": "foreign",
+        "finished_at": None,
+    }
+    controller.registry.runs_for_project.side_effect = [
+        [local_record],
+        [foreign_record],
     ]
-    controller._project_is_local = Mock(  # type: ignore[method-assign]
-        side_effect=lambda project: project["id"] == "local"
+
+    def validate_run(record: dict) -> Mock:
+        if record["project_id"] == "foreign":
+            raise WorkspaceAffinityError("foreign workspace")
+        return Mock()
+
+    controller._config_for_run = Mock(  # type: ignore[method-assign]
+        side_effect=validate_run
     )
 
-    assert list(controller._unfinished_records()) == [
-        {"id": "run-local", "finished_at": None}
+    assert list(controller._unfinished_records()) == [local_record]
+    assert controller.registry.runs_for_project.call_args_list == [
+        call("local"),
+        call("foreign"),
     ]
-    controller.registry.runs_for_project.assert_called_once_with("local")

@@ -26,6 +26,39 @@ def test_registry_persists_projects_and_runs(tmp_path: Path) -> None:
     assert restored["active_task_id"] == "ARCH-017-1"
 
 
+def test_registry_persists_run_config_snapshot_metadata(tmp_path: Path) -> None:
+    registry = ControlRegistry(tmp_path / "control.sqlite")
+    registry.register_project("payments", tmp_path / "project.yaml")
+    snapshot = tmp_path / ".converge" / "run-configs" / "run-1.yaml"
+
+    created = registry.create_run(
+        "run-1",
+        "payments",
+        "thread-1",
+        config_snapshot_path=snapshot,
+        config_snapshot_sha256="abc123",
+    )
+
+    assert created["config_snapshot_path"] == str(snapshot.resolve())
+    assert created["config_snapshot_sha256"] == "abc123"
+    restored = registry.get_run("run-1")
+    assert restored["config_snapshot_path"] == str(snapshot.resolve())
+    assert restored["config_snapshot_sha256"] == "abc123"
+
+
+def test_registry_rejects_partial_run_config_snapshot_metadata(tmp_path: Path) -> None:
+    registry = ControlRegistry(tmp_path / "control.sqlite")
+    registry.register_project("payments", tmp_path / "project.yaml")
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        registry.create_run(
+            "run-1",
+            "payments",
+            "thread-1",
+            config_snapshot_path=tmp_path / "run.yaml",
+        )
+
+
 def test_registry_connection_scope_closes_handle(tmp_path: Path) -> None:
     registry = ControlRegistry(tmp_path / "control.sqlite")
 

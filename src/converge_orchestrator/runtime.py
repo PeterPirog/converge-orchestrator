@@ -9,7 +9,11 @@ from uuid import uuid4
 
 from langgraph.types import Command
 
-from .config import load_config
+from .config import (
+    load_config,
+    load_run_config_snapshot,
+    materialize_run_config_snapshot,
+)
 from .control import ControlSignals
 from .evidence import EvidenceStore
 from .graph import build_graph
@@ -104,6 +108,34 @@ class RunController:
         assert_state_store_affinity(project, cfg.state_dir)
         return cfg
 
+    def _config_for_run(self, record: dict[str, Any]):
+        project = self.registry.get_project(record["project_id"])
+        snapshot_path = record.get("config_snapshot_path")
+        snapshot_sha256 = record.get("config_snapshot_sha256")
+        if bool(snapshot_path) != bool(snapshot_sha256):
+            raise RuntimeError(
+                f"Run {record['id']} has incomplete pinned configuration metadata"
+            )
+        if snapshot_path and snapshot_sha256:
+            cfg = load_run_config_snapshot(snapshot_path, str(snapshot_sha256))
+            assert_workspace_affinity(project, cfg.repo_path)
+            assert_state_store_affinity(project, cfg.state_dir)
+            return cfg
+        # Legacy rows created before per-run config pinning retain their historical behavior.
+        return self._config_for_project(project)
+
+    def _config_path_for_run(self, record: dict[str, Any]) -> str:
+        snapshot_path = record.get("config_snapshot_path")
+        snapshot_sha256 = record.get("config_snapshot_sha256")
+        if bool(snapshot_path) != bool(snapshot_sha256):
+            raise RuntimeError(
+                f"Run {record['id']} has incomplete pinned configuration metadata"
+            )
+        if snapshot_path:
+            return str(Path(str(snapshot_path)).expanduser().resolve())
+        project = self.registry.get_project(record["project_id"])
+        return str(project["config_path"])
+
     def _local_project(self, project_id: str) -> tuple[dict[str, Any], Any]:
         project = self.registry.get_project(project_id)
         return project, self._config_for_project(project)
@@ -143,7 +175,8 @@ class RunController:
         *,
         thread_id: str | None = None,
     ) -> dict[str, Any]:
-        project, _ = self._local_project(project_id)
+        project = self.registry.get_project(project_id)
+        self._config_for_project(project)
         for existing in self.registry.runs_for_project(project_id):
             if existing["status"] in _ACTIVE_STATUSES and not existing["finished_at"]:
                 raise RuntimeError(f"Project already has active run {existing['id']}")
@@ -151,10 +184,30 @@ class RunController:
         resolved_thread_id = thread_id or f"run-{run_id}"
         if not resolved_thread_id.strip():
             raise ValueError("thread_id must not be empty")
-        record = self.registry.create_run(run_id, project_id, resolved_thread_id)
+
+        snapshot_path: Path | None = None
+        try:
+            cfg, snapshot_path, snapshot_sha256 = materialize_run_config_snapshot(
+                project["config_path"],
+                run_id,
+            )
+            assert_workspace_affinity(project, cfg.repo_path)
+            assert_state_store_affinity(project, cfg.state_dir)
+            record = self.registry.create_run(
+                run_id,
+                project_id,
+                resolved_thread_id,
+                config_snapshot_path=snapshot_path,
+                config_snapshot_sha256=snapshot_sha256,
+            )
+        except Exception:
+            if snapshot_path is not None:
+                snapshot_path.unlink(missing_ok=True)
+            raise
+
         initial: dict[str, Any] = {
             "project_id": project_id,
-            "config_path": project["config_path"],
+            "config_path": str(snapshot_path),
             "run_id": run_id,
             "thread_id": resolved_thread_id,
         }
@@ -165,20 +218,19 @@ class RunController:
         record = self.registry.get_run(run_id)
         if record["finished_at"]:
             raise RuntimeError("Cannot pause a finished run")
-        _, cfg = self._local_project(record["project_id"])
+        cfg = self._config_for_run(record)
         ControlSignals(cfg.state_dir).request_pause(run_id)
         self.registry.update_run(run_id, status="pause_requested")
         return self.status(run_id)
 
     def resume(self, run_id: str) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
-        self._local_project(record["project_id"])
+        cfg = self._config_for_run(record)
         snapshot = self._snapshot(record)
         interrupt_payload = snapshot.get("interrupt")
         if interrupt_payload and interrupt_payload.get("kind") != "controlled_pause":
             raise RuntimeError("Run requires /decision, not /resume")
         if interrupt_payload:
-            _, cfg = self._local_project(record["project_id"])
             ControlSignals(cfg.state_dir).clear_pause(run_id)
             self._submit(run_id, Command(resume="resume"))
         elif snapshot.get("next"):
@@ -189,7 +241,7 @@ class RunController:
 
     def decide(self, run_id: str, decision: dict[str, Any]) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
-        self._local_project(record["project_id"])
+        self._config_for_run(record)
         snapshot = self._snapshot(record)
         interrupt_payload = snapshot.get("interrupt")
         if not interrupt_payload:
@@ -201,7 +253,7 @@ class RunController:
 
     def status(self, run_id: str) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
-        self._local_project(record["project_id"])
+        self._config_for_run(record)
         snapshot = self._snapshot(record)
         with self._lock:
             worker_alive = bool(
@@ -243,7 +295,7 @@ class RunController:
 
     def interrupt(self, run_id: str) -> dict[str, Any] | None:
         record = self.registry.get_run(run_id)
-        self._local_project(record["project_id"])
+        self._config_for_run(record)
         return self._snapshot(record).get("interrupt")
 
     def compliance(self, project_id: str) -> dict[str, Any]:
@@ -370,7 +422,7 @@ class RunController:
             raise
 
     def _open_graph(self, record: dict[str, Any]):
-        _, cfg = self._local_project(record["project_id"])
+        cfg = self._config_for_run(record)
         checkpointer, db = self.persistence.open_checkpointer(cfg.state_dir)
         graph = build_graph(checkpointer=checkpointer)
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}

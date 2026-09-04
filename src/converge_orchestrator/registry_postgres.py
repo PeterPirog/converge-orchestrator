@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 
@@ -93,6 +94,8 @@ class PostgresControlRegistry:
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES converge_projects(id),
                     thread_id TEXT NOT NULL UNIQUE,
+                    config_snapshot_path TEXT,
+                    config_snapshot_sha256 TEXT,
                     status TEXT NOT NULL,
                     node TEXT,
                     active_task_id TEXT,
@@ -102,6 +105,18 @@ class PostgresControlRegistry:
                     lease_owner TEXT,
                     lease_expires_at TEXT
                 )
+                """
+            )
+            db.execute(
+                """
+                ALTER TABLE converge_runs
+                ADD COLUMN IF NOT EXISTS config_snapshot_path TEXT
+                """
+            )
+            db.execute(
+                """
+                ALTER TABLE converge_runs
+                ADD COLUMN IF NOT EXISTS config_snapshot_sha256 TEXT
                 """
             )
             db.execute(
@@ -226,14 +241,41 @@ class PostgresControlRegistry:
             rows = db.execute("SELECT * FROM converge_projects ORDER BY id").fetchall()
         return [dict(row) for row in rows]
 
-    def create_run(self, run_id: str, project_id: str, thread_id: str) -> dict[str, Any]:
+    def create_run(
+        self,
+        run_id: str,
+        project_id: str,
+        thread_id: str,
+        *,
+        config_snapshot_path: Path | str | None = None,
+        config_snapshot_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        if (config_snapshot_path is None) != (config_snapshot_sha256 is None):
+            raise ValueError(
+                "config_snapshot_path and config_snapshot_sha256 must be provided together"
+            )
+        resolved_snapshot = (
+            str(Path(config_snapshot_path).expanduser().resolve())
+            if config_snapshot_path is not None
+            else None
+        )
         with self._connection() as db:
             db.execute(
                 """
-                INSERT INTO converge_runs(id, project_id, thread_id, status, started_at)
-                VALUES (%s, %s, %s, 'queued', %s)
+                INSERT INTO converge_runs(
+                    id, project_id, thread_id, config_snapshot_path,
+                    config_snapshot_sha256, status, started_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'queued', %s)
                 """,
-                (run_id, project_id, thread_id, _now()),
+                (
+                    run_id,
+                    project_id,
+                    thread_id,
+                    resolved_snapshot,
+                    config_snapshot_sha256,
+                    _now(),
+                ),
             )
         return self.get_run(run_id)
 

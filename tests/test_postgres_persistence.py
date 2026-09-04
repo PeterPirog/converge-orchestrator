@@ -38,14 +38,24 @@ def test_postgres_registry_is_shared_and_lease_is_atomic(tmp_path: Path) -> None
     thread_id = f"thread-{uuid4().hex}"
     config_path = tmp_path / "converge.yaml"
     config_path.write_text("version: 1\n", encoding="utf-8")
+    snapshot_path = tmp_path / ".converge" / "run-configs" / f"{run_id}.yaml"
 
     first = PostgresControlRegistry(DATABASE_URL)
     second = PostgresControlRegistry(DATABASE_URL)
     first.register_project(project_id, config_path)
-    first.create_run(run_id, project_id, thread_id)
+    first.create_run(
+        run_id,
+        project_id,
+        thread_id,
+        config_snapshot_path=snapshot_path,
+        config_snapshot_sha256="config-sha",
+    )
 
     assert second.get_project(project_id)["config_path"] == str(config_path.resolve())
-    assert second.get_run(run_id)["thread_id"] == thread_id
+    restored_run = second.get_run(run_id)
+    assert restored_run["thread_id"] == thread_id
+    assert restored_run["config_snapshot_path"] == str(snapshot_path.resolve())
+    assert restored_run["config_snapshot_sha256"] == "config-sha"
     assert first.claim_run_lease(run_id, "worker-a", 60) is True
     assert second.claim_run_lease(run_id, "worker-b", 60) is False
     assert first.release_run_lease(run_id, "worker-a") is True

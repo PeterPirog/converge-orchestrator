@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,8 @@ _PATH_KEYS = (
     "state_dir",
     "worktree_dir",
 )
+_RUN_CONFIG_DIR = "run-configs"
+_RUN_CONFIG_PATTERN = re.compile(r"^.+-sha256-([0-9a-f]{64})\.yaml$")
 
 
 def _resolve_path_value(value: Any, base_dir: Path) -> Any:
@@ -58,14 +62,80 @@ def _resolve_relative_paths(data: dict[str, Any], base_dir: Path) -> dict[str, A
     return resolved
 
 
-def load_config(path: str | Path) -> ProjectConfig:
-    source = Path(path).expanduser().resolve()
-    data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+def _snapshot_digest_from_path(source: Path) -> str | None:
+    if source.parent.name != _RUN_CONFIG_DIR:
+        return None
+    match = _RUN_CONFIG_PATTERN.fullmatch(source.name)
+    if match is None:
+        raise RuntimeError(f"Malformed pinned run configuration path: {source}")
+    return match.group(1)
+
+
+def _read_source(source: Path) -> str:
+    payload = source.read_bytes()
+    expected = _snapshot_digest_from_path(source)
+    if expected is not None:
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != expected:
+            raise RuntimeError(
+                "Pinned run configuration changed; refusing to continue durable execution "
+                f"(expected {expected}, got {actual})"
+            )
+    return payload.decode("utf-8")
+
+
+def _load_mapping(source: Path) -> dict[str, Any]:
+    data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
         raise ValueError("converge.yaml must contain a YAML mapping at the document root")
     flaky_ci_policy_from_mapping(data)
-    data = _resolve_relative_paths(data, source.parent)
+    return _resolve_relative_paths(data, source.parent)
+
+
+def _validated_config(data: dict[str, Any]) -> ProjectConfig:
     cfg = ProjectConfig.model_validate(data)
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
     cfg.worktree_dir.mkdir(parents=True, exist_ok=True)
     return cfg
+
+
+def load_config(path: str | Path) -> ProjectConfig:
+    source = Path(path).expanduser().resolve()
+    return _validated_config(_load_mapping(source))
+
+
+def materialize_run_config_snapshot(
+    source_path: str | Path,
+    run_id: str,
+) -> tuple[ProjectConfig, Path, str]:
+    """Freeze one validated project configuration for the lifetime of a durable run."""
+    source = Path(source_path).expanduser().resolve()
+    data = _load_mapping(source)
+    cfg = _validated_config(data)
+    content = yaml.safe_dump(
+        data,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    target = cfg.state_dir / _RUN_CONFIG_DIR / f"{run_id}-sha256-{digest}.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        raise RuntimeError(f"Run configuration snapshot already exists: {target}")
+
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_text(content, encoding="utf-8", newline="\n")
+    temporary.replace(target)
+    return cfg, target.resolve(), digest
+
+
+def load_run_config_snapshot(path: str | Path, expected_sha256: str) -> ProjectConfig:
+    """Load a pinned run configuration only when its durable content hash still matches."""
+    source = Path(path).expanduser().resolve()
+    path_digest = _snapshot_digest_from_path(source)
+    if path_digest is None or path_digest != expected_sha256:
+        raise RuntimeError(
+            "Pinned run configuration metadata does not match its immutable snapshot path"
+        )
+    return load_config(source)
