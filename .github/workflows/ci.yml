@@ -56,3 +56,25 @@ jobs:
       - run: pg_dump --version && pg_restore --version && psql --version
       - run: pytest -q tests/test_postgres_persistence.py tests/test_postgres_restore.py
       - run: pip check
+
+  sandbox-container:
+    runs-on: ubuntu-latest
+    env:
+      CONVERGE_TEST_SANDBOX_NETWORK: converge-sandbox-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Prepare immutable local sandbox fixture
+        run: |
+          docker pull alpine:3.20
+          echo "CONVERGE_TEST_SANDBOX_IMAGE=$(docker image inspect alpine:3.20 --format '{{.Id}}')" >> "$GITHUB_ENV"
+          docker network create --internal "$CONVERGE_TEST_SANDBOX_NETWORK"
+      - name: Exercise real hardened container path
+        run: pytest -q tests/test_sandbox_container_integration.py
+      - name: Clean sandbox network
+        if: always()
+        run: docker network rm "$CONVERGE_TEST_SANDBOX_NETWORK" || true
