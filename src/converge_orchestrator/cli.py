@@ -64,13 +64,74 @@ def _require_executable(binary: str, label: str) -> None:
         raise typer.BadParameter(f"{label} executable not found on PATH: {binary}")
 
 
-def _resolve_cli_project_id(config: Path, cfg: Any, explicit: str | None) -> str:
-    project_id = explicit or cfg.project_name or config.stem
+def _validate_cli_project_id(project_id: str) -> str:
     if not project_id or not _PROJECT_ID_PATTERN.fullmatch(project_id):
         raise typer.BadParameter(
             "CLI project ID must match [A-Za-z0-9_.-]+; set project.name or --project-id"
         )
     return project_id
+
+
+def _resolve_cli_project_id(config: Path, cfg: Any, explicit: str | None) -> str:
+    return _validate_cli_project_id(explicit or cfg.project_name or config.stem)
+
+
+def _registered_project_for_config(
+    controller: ScheduledRunController,
+    config: Path,
+    explicit_project_id: str | None,
+) -> dict[str, Any] | None:
+    """Resolve durable project identity without parsing mutable project configuration."""
+    expected_path = config.expanduser().resolve()
+    if explicit_project_id is not None:
+        project_id = _validate_cli_project_id(explicit_project_id)
+        try:
+            project = controller.registry.get_project(project_id)
+        except KeyError:
+            return None
+        registered_path = Path(str(project["config_path"])).expanduser().resolve()
+        if registered_path != expected_path:
+            raise RuntimeError(
+                f"Project {project_id} is registered with config {registered_path}; "
+                f"refusing recovery through {expected_path}"
+            )
+        return project
+
+    matches = []
+    for project in controller.registry.list_projects():
+        raw_path = project.get("config_path")
+        if not raw_path:
+            continue
+        if Path(str(raw_path)).expanduser().resolve() == expected_path:
+            matches.append(project)
+    if len(matches) > 1:
+        ids = sorted(str(project.get("id")) for project in matches)
+        raise RuntimeError(
+            f"Config {expected_path} is registered to multiple projects {ids}; "
+            "use --project-id to choose explicitly"
+        )
+    return matches[0] if matches else None
+
+
+def _unfinished_from_history(
+    history: list[dict[str, Any]],
+    project_id: str,
+    thread_id: str | None,
+) -> dict[str, Any] | None:
+    unfinished = [record for record in history if not record.get("finished_at")]
+    if len(unfinished) > 1:
+        raise RuntimeError(
+            f"Project {project_id} has multiple unfinished runs; refusing ambiguous CLI recovery"
+        )
+    if not unfinished:
+        return None
+    record = unfinished[0]
+    if thread_id is not None and record.get("thread_id") != thread_id:
+        raise RuntimeError(
+            f"Project {project_id} already has active run {record['id']} on thread "
+            f"{record.get('thread_id')}; omit --thread-id or use that active thread"
+        )
+    return record
 
 
 def _select_or_start_run(
@@ -79,19 +140,9 @@ def _select_or_start_run(
     thread_id: str | None,
 ) -> dict[str, Any]:
     history = controller.registry.runs_for_project(project_id)
-    unfinished = [record for record in history if not record.get("finished_at")]
-    if len(unfinished) > 1:
-        raise RuntimeError(
-            f"Project {project_id} has multiple unfinished runs; refusing ambiguous CLI recovery"
-        )
-    if unfinished:
-        record = unfinished[0]
-        if thread_id is not None and record.get("thread_id") != thread_id:
-            raise RuntimeError(
-                f"Project {project_id} already has active run {record['id']} on thread "
-                f"{record.get('thread_id')}; omit --thread-id or use that active thread"
-            )
-        return record
+    existing = _unfinished_from_history(history, project_id, thread_id)
+    if existing is not None:
+        return existing
 
     if thread_id is not None:
         for record in history:
@@ -272,20 +323,49 @@ def run(
 ) -> None:
     """Run or recover one durable project run until terminal state or human interrupt."""
     resolved_config = config.expanduser().resolve()
-    cfg = load_config(resolved_config)
-    resolved_project_id = _resolve_cli_project_id(
-        resolved_config,
-        cfg,
-        project_id,
-    )
     try:
         controller = ScheduledRunController(
             configured_control_db_path(),
             restore_on_start=False,
         )
-        controller.register_project(resolved_project_id, resolved_config)
-        controller.restore_durable_runs(resolved_project_id)
-        record = _select_or_start_run(controller, resolved_project_id, thread_id)
+        registered = _registered_project_for_config(
+            controller,
+            resolved_config,
+            project_id,
+        )
+        if registered is not None:
+            resolved_project_id = str(registered["id"])
+            history = controller.registry.runs_for_project(resolved_project_id)
+            existing = _unfinished_from_history(
+                history,
+                resolved_project_id,
+                thread_id,
+            )
+            if existing is not None:
+                # The active run owns a hash-pinned configuration snapshot. Recover it before
+                # parsing or re-registering the user-maintained YAML, which may have changed.
+                controller.restore_durable_runs(resolved_project_id)
+                record = existing
+            else:
+                load_config(resolved_config)
+                controller.register_project(resolved_project_id, resolved_config)
+                controller.restore_durable_runs(resolved_project_id)
+                record = _select_or_start_run(
+                    controller,
+                    resolved_project_id,
+                    thread_id,
+                )
+        else:
+            cfg = load_config(resolved_config)
+            resolved_project_id = _resolve_cli_project_id(
+                resolved_config,
+                cfg,
+                project_id,
+            )
+            controller.register_project(resolved_project_id, resolved_config)
+            controller.restore_durable_runs(resolved_project_id)
+            record = _select_or_start_run(controller, resolved_project_id, thread_id)
+
         result = _wait_until_terminal_or_human_interrupt(controller, str(record["id"]))
     except (RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
