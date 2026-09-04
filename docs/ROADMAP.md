@@ -83,8 +83,9 @@ Implemented:
 
 Remaining:
 
-- additional high-confidence Node source-signature rules, then Go/Rust public API/dependency adapters
-  and broader safe roll-forward strategies;
+- additional high-confidence Node source-signature rules and Go/Rust public API/dependency adapters are
+  useful portability work, but must not delay the first production-readiness acceptance gate for the
+  explicitly supported Python + conservative Node scope;
 - stale-resource chaos extensions only where a newly discovered failure boundary lacks an equivalent
   deterministic recovery proof.
 
@@ -108,6 +109,10 @@ Implemented:
 - durable run lease, retry-safe side effects and checkpointable long CI waits;
 - bounded per-role provider retries and ordered model-profile fallback with fresh sessions, unchanged
   permissions, profile-specific context budgets and a durable attempt ledger;
+- deterministic per-run resource envelope pinned in the normalized run configuration, with durable
+  crash-safe reservations for model attempts and conservative estimated request/output tokens plus a
+  wall-time deadline; retries/fallbacks consume the same finite envelope and budget exhaustion is a
+  terminal machine decision rather than HITL;
 - process-level kill/restart proof after worktree creation preserving uncheckpointed candidate data
   with no duplicate branch/worktree;
 - process-level commit/push checkpoint-race proof recovering the exact candidate commit and retrying
@@ -143,15 +148,18 @@ Implemented:
 
 Next priorities, in order:
 
-1. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry. The runtime
-   must fail closed before autonomous work can exceed the configured resource envelope; an LLM cannot
-   waive the budget.
-2. **Broader language adapters** — add only high-confidence parser-backed Node source-signature rules
-   that materially reduce ambiguity, then extend public API and dependency-boundary rules to Go/Rust.
-   Do not replace real parsers with regex inference merely to claim coverage.
-3. **Deployment portability hardening** — project-specific pinned sandbox images and deliberately
-   shared/external artifact storage where multi-node deployments require it; do not infer stateless
-   worker safety from PostgreSQL alone.
+1. **Production sandbox reproducibility** — publish/define a project runtime profile whose container
+   image is digest-pinned, verify the digest requirement deterministically and exercise that hardened
+   container path in CI. Do not let a mutable image tag become executable production policy.
+2. **External repository acceptance** — run the complete document-to-convergence path against a
+   representative repository outside Converge itself through multiple autonomous PR/CI cycles,
+   deliberately include one controller restart and one exceptional HITL condition, and require no
+   manual code edits.
+3. **Measured provider economics** — ingest provider-reported token/cost usage where available and
+   aggregate it by durable run/role. This improves forecasting and cost accuracy but must remain
+   secondary to the already enforced conservative fail-closed resource envelope.
+4. **Broader language adapters** — extend only parser-backed, high-confidence compatibility/dependency
+   rules for Node/Go/Rust where the claimed support scope requires them.
 
 ## First real-repository readiness gate
 
@@ -166,8 +174,8 @@ declared ready until all of these executable criteria are met:
 1. the claimed autonomous language compatibility scope is explicitly documented and its mandatory
    deterministic compatibility gates are complete; unsupported semantics must fail conservative or be
    delegated to independent review rather than silently guessed;
-2. run/project wall-time and model-usage budgets fail closed before autonomous work can run without a
-   bounded resource envelope;
+2. run wall-time and model-use budgets are pinned per durable run, reserved before provider execution,
+   survive retries/restarts without counter reset and fail closed with no model/HITL override;
 3. a production sandbox image/deployment profile is digest-pinned and exercised in CI;
 4. at least one representative **external target repository** passes an acceptance run from frozen
    Markdown requirements through multiple autonomous task/PR/CI cycles to convergence, including one
@@ -185,10 +193,12 @@ requirements artifact before orchestration starts, preserving the architecture's
 
 Planned / partially implemented:
 
-- cost/token/time budgets per project and run;
+- fail-closed per-run wall-time/model-attempt/conservative-token budgets are implemented; project-level
+  aggregate spending policy and provider-reported billable usage remain future cost-governance work;
 - provider-reported token/cost telemetry and aggregated per-role health statistics;
-- project-specific pinned sandbox images and deployment profile;
+- project-specific digest-pinned sandbox images and deployment profile;
+- representative external-repository autonomous acceptance suite;
 - durable registry diagnostics and Prometheus metrics are implemented; OpenTelemetry and optional
   LangSmith tracing may be added without making external tracing the source of evidence;
-- multi-project dashboard/operator audit views;
+- multi-project dashboard/operator audit views are optional after the release gate;
 - bounded parallel builders only for scheduler-proven non-overlapping write sets.
