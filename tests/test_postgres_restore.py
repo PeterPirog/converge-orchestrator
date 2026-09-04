@@ -261,7 +261,7 @@ original = restore_postgres._mark_published
 
 def crash_after_commit(key, journal, journal_path):
     if key == "database":
-        raise SystemExit(37)
+        os._exit(37)
     return original(key, journal, journal_path)
 
 with patch.object(restore_postgres, "_mark_published", side_effect=crash_after_commit):
