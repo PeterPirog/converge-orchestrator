@@ -10,6 +10,7 @@ import typer
 from converge_orchestrator import backup_cli
 from converge_orchestrator.backup import BackupError, BackupManifest
 from converge_orchestrator.restore import RestorePlan
+from converge_orchestrator.restore_apply import RestoreApplyError, RestoreApplyResult
 
 
 def _manifest(backend: str = "sqlite") -> BackupManifest:
@@ -169,3 +170,40 @@ def test_blocked_restore_plan_returns_nonzero_after_printing_evidence(tmp_path: 
 
     assert raised.value.exit_code == 2
     print_json.assert_called_once_with(data=plan.model_dump(mode="json"))
+
+
+def test_restore_apply_requires_explicit_token_and_uses_environment_targets(tmp_path: Path) -> None:
+    root = tmp_path / "backup"
+    control_db = tmp_path / "restored-control.sqlite"
+    token = "c" * 64
+    result = RestoreApplyResult(projects=["payments"])
+
+    with (
+        patch.object(backup_cli, "configured_control_db_path", return_value=control_db),
+        patch.object(backup_cli, "configured_database_url", return_value=None),
+        patch.object(backup_cli, "apply_sqlite_restore", return_value=result) as apply,
+        patch.object(backup_cli.console, "print_json") as print_json,
+    ):
+        backup_cli.restore_apply(root, token)
+
+    apply.assert_called_once_with(
+        root,
+        confirmation_token=token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    print_json.assert_called_once_with(data=result.model_dump(mode="json"))
+
+
+def test_restore_apply_converts_fail_closed_error_to_operator_error(tmp_path: Path) -> None:
+    with (
+        patch.object(backup_cli, "configured_control_db_path", return_value=tmp_path / "control"),
+        patch.object(backup_cli, "configured_database_url", return_value=None),
+        patch.object(
+            backup_cli,
+            "apply_sqlite_restore",
+            side_effect=RestoreApplyError("confirmation token mismatch"),
+        ),
+        pytest.raises(typer.BadParameter, match="confirmation token mismatch"),
+    ):
+        backup_cli.restore_apply(tmp_path / "backup", "d" * 64)
