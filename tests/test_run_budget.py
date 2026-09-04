@@ -24,7 +24,7 @@ from converge_orchestrator.models import ProjectConfig
 
 def _raw_config(tmp_path: Path, *, attempts: int = 3, seconds: int = 300) -> dict:
     repo = tmp_path / "repo"
-    repo.mkdir(exist_ok=True)
+    repo.mkdir(parents=True, exist_ok=True)
     requirements = tmp_path / "architecture.md"
     requirements.write_text("System must remain deterministic.\n", encoding="utf-8")
     return {
@@ -44,7 +44,12 @@ def _raw_config(tmp_path: Path, *, attempts: int = 3, seconds: int = 300) -> dic
     }
 
 
-def _runtime_config(tmp_path: Path, *, attempts: int = 3, seconds: int = 300) -> ProjectConfig:
+def _runtime_config(
+    tmp_path: Path,
+    *,
+    attempts: int = 3,
+    seconds: int = 300,
+) -> ProjectConfig:
     source = tmp_path / "converge.yaml"
     source.write_text(
         yaml.safe_dump(_raw_config(tmp_path, attempts=attempts, seconds=seconds)),
