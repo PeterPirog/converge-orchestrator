@@ -37,14 +37,17 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
   execute a filesystem-bound project, using the active run's pinned configuration when one exists;
 - globally quiesced deployment backup plus deterministic restore preflight protect database, repository,
   immutable requirements and filesystem-backed state together;
-- SQLite deployments now have crash-resumable restore apply with database-last publication, exact target
-  validation and a durable completion receipt that closes the final process-response race.
+- SQLite deployments have crash-resumable restore apply with database-last publication, exact target
+  validation and a durable completion receipt that closes the final process-response race;
+- PostgreSQL deployments have crash-safe restore apply with an exact plan-bound server receipt committed
+  atomically with the restored database, allowing deterministic recovery after database commit but
+  before local journal acknowledgement without a second restore.
 
-This does **not** mean production hardening is finished. Local/SQLite deployments now have a complete
-create/verify/plan/apply recovery path for the backed-up artifacts. The largest remaining recovery gap is
-PostgreSQL restore apply, where Converge still needs a deterministic, tested boundary around server-side
-commit versus local journal acknowledgement. Independent multi-node deployments also still require a
-shared/consistent project filesystem or deliberate external artifact storage.
+This does **not** mean production hardening is finished. Both SQLite and PostgreSQL deployments now have
+a complete create/verify/plan/apply recovery path for the backed-up artifacts. Independent multi-node
+deployments still require a shared/consistent project filesystem or deliberate external artifact
+storage, and deterministic source-level compatibility policy remains materially stronger for Python
+than for Node/Go/Rust.
 
 ## Convergence matrix
 
@@ -64,7 +67,7 @@ shared/consistent project filesystem or deliberate external artifact storage.
 | Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically | additional deterministic compatibility policy can further reduce valid escalations |
 | Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits and timeout cleanup | pinned production images and deployment hardening |
 | Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry |
-| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and SQLite restore | PostgreSQL restore apply plus optional shared/external artifact storage |
+| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and crash-safe restore for both persistence backends | optional shared/external artifact storage |
 
 ## Canonical execution path
 
@@ -137,15 +140,19 @@ Converge therefore treats side-effect nodes as retry-safe `ensure` operations ra
 - checkpoint corruption is never interpreted as an empty run;
 - transient checkpoint lock/busy errors schedule bounded automatic inspection retry.
 
-The same rule is now applied to SQLite disaster recovery outside the autonomous graph: every restore
-publication is an exact `ensure`, the control registry is published last, and a mode-0600 completion
-receipt remains after success so a process death between the last integrity check and returning the
-operator response is idempotently recoverable. If every target is later lost, a fresh ready preflight
-with the same token is required before that completed receipt may be reset for a new restore cycle.
+The same rule applies to deployment disaster recovery outside the autonomous graph. SQLite restore uses
+exact staged publications and a durable completion receipt. PostgreSQL restore appends a plan-bound
+receipt to the materialized restore script and commits that receipt in the same server transaction as
+the restored database. If the process dies after the server commit but before the local journal records
+`database`, the next invocation validates the exact receipt and adopts the completed database instead
+of issuing an ambiguous second restore. Both backends keep the control/database publication last and
+require a fresh ready preflight before a completed receipt can be reused after later total loss.
 
 Process-level tests cover the worktree, commit/push, PR and `ci_wait` boundaries. The executor suite also
-proves fresh-process retry after abrupt OpenCode process death. New chaos fixtures should be added only
-when a genuinely uncovered side-effect boundary is discovered.
+proves fresh-process retry after abrupt OpenCode process death. PostgreSQL restore has a real subprocess
+proof using abrupt process termination after the committed server receipt and before local journal
+acknowledgement. New chaos fixtures should be added only when a genuinely uncovered side-effect boundary
+is discovered.
 
 ## GitHub remote policy
 
@@ -192,17 +199,18 @@ does not migrate workspaces, rewrite registry bindings or become a workflow-stat
 
 ## Current next priorities
 
-Repository evidence now moves the priority away from already-completed checkpoint/flake/PostgreSQL
-persistence, metrics, workload-placement, backup/preflight and SQLite restore work. The smallest
-remaining high-value areas are, in order:
+Repository evidence now moves the priority away from completed checkpoint/flake/PostgreSQL persistence,
+metrics, workload-placement and deployment backup/restore recovery work. The smallest remaining
+high-value areas are, in order:
 
-1. **PostgreSQL restore apply** — preserve the same no-force, exact-token operator boundary while using
-   an atomic server-side restore strategy and proving deterministic recovery when the database commit
-   succeeds immediately before the local restore journal can acknowledge it.
-2. **Cross-language deterministic compatibility/architecture adapters** — source-level Node plus Go/Rust
-   public API and dependency-boundary rules, extending the current Python AST and Node manifest policy.
-3. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry only
-   after operational durability is sufficiently hardened.
+1. **Cross-language deterministic compatibility/architecture adapters** — source-level Node first,
+   then Go/Rust public API and dependency-boundary rules, extending the current Python AST and Node
+   manifest policy. These gates should reduce semantic-review ambiguity and therefore avoid otherwise
+   valid HITL escalations without giving models policy authority.
+2. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry after
+   the core operational durability path is hardened.
+3. **Deployment portability hardening** — pinned production sandbox images and deliberately
+   shared/external artifact storage where independent multi-node workers require it.
 
 Optional issue synchronization, richer dashboards and broader UX must not displace these core items.
 Parallel Builders should remain disabled until a deterministic scheduler can prove non-overlapping write
