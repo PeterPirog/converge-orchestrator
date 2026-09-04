@@ -227,7 +227,7 @@ def reserve_model_attempt(
     """Reserve an attempt and its deterministic request envelope before provider execution.
 
     Reservations are deliberately not rolled back after process/provider failure. Retries and crash
-    recovery therefore consume the same finite envelope instead of accidentally granting fresh budget.
+    recovery consume the same finite envelope instead of granting a fresh budget.
     """
 
     if estimated_input_tokens < 0 or output_reserve_tokens < 0:
