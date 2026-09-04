@@ -133,6 +133,16 @@ def test_legacy_unbound_project_can_be_bound_once(tmp_path: Path) -> None:
         )
 
 
+def test_unbound_legacy_project_cannot_execute_before_explicit_binding(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    state = tmp_path / "state"
+
+    with pytest.raises(WorkspaceAffinityError, match="no workspace binding"):
+        assert_workspace_affinity({"id": "payments", "workspace_id": None}, repo)
+    with pytest.raises(WorkspaceAffinityError, match="no state-store binding"):
+        assert_state_store_affinity({"id": "payments", "state_store_id": None}, state)
+
+
 def test_affinity_rejects_same_project_from_another_clone(tmp_path: Path) -> None:
     first = _git_repo(tmp_path / "first")
     second = _git_repo(tmp_path / "second")
