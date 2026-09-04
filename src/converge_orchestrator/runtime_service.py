@@ -8,9 +8,9 @@ from typing import Any
 from langgraph.types import Command
 
 from .config import load_config
-from .graph_service import build_graph
 from .remote import RemoteValidationError, validate_origin_repository
 from .runtime import _TERMINAL_STATUSES, RunController
+from .workspace_identity import WorkspaceAffinityError
 
 _CONTENTION_RETRY_SECONDS = 5
 _AUTO_RECOVERY_DELAY_SECONDS = 0.05
@@ -59,12 +59,16 @@ def _is_initial_input_checkpoint(
     values = snapshot.get("values")
     if not isinstance(values, dict) or set(values) != _INITIAL_INPUT_KEYS:
         return False
+    config_path = values.get("config_path")
+    pinned_path = record.get("config_snapshot_path")
+    if pinned_path and config_path != str(pinned_path):
+        return False
     return (
         values.get("project_id") == record.get("project_id")
         and values.get("run_id") == record.get("id")
         and values.get("thread_id") == record.get("thread_id")
-        and isinstance(values.get("config_path"), str)
-        and bool(values.get("config_path"))
+        and isinstance(config_path, str)
+        and bool(config_path)
     )
 
 
@@ -241,12 +245,8 @@ class ScheduledRunController(RunController):
             self._cancel_timer(run_id)
 
     def _open_graph(self, record: dict[str, Any]):
-        """Open the canonical service graph only for this controller's bound workspace."""
-        _, cfg = self._local_project(record["project_id"])
-        checkpointer, db = self.persistence.open_checkpointer(cfg.state_dir)
-        graph = build_graph(checkpointer=checkpointer)
-        graph_config = {"configurable": {"thread_id": record["thread_id"]}}
-        return graph, db, graph_config
+        """Open the canonical service graph from this run's pinned configuration."""
+        return super()._open_graph(record)
 
     def _recovery_snapshot(self, record: dict[str, Any]) -> dict[str, Any] | None:
         """Read restart state and retry only backend-classified transient failures."""
@@ -272,10 +272,10 @@ class ScheduledRunController(RunController):
             return None
 
     def _initial_recovery_input(self, record: dict[str, Any]) -> dict[str, Any]:
-        project, _ = self._local_project(record["project_id"])
+        self._config_for_run(record)
         return {
             "project_id": record["project_id"],
-            "config_path": project["config_path"],
+            "config_path": self._config_path_for_run(record),
             "run_id": record["id"],
             "thread_id": record["thread_id"],
         }
@@ -289,11 +289,28 @@ class ScheduledRunController(RunController):
             except KeyError:
                 projects = []
         for project in projects:
-            if not self._project_is_local(project):
-                continue
             for record in self.registry.runs_for_project(project["id"]):
-                if not record["finished_at"]:
-                    yield record
+                if record["finished_at"]:
+                    continue
+                try:
+                    self._config_for_run(record)
+                except (
+                    WorkspaceAffinityError,
+                    FileNotFoundError,
+                    OSError,
+                    ValueError,
+                ):
+                    continue
+                except RuntimeError as exc:
+                    self.registry.update_run(
+                        record["id"],
+                        error=(
+                            "automatic run configuration validation failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    )
+                    continue
+                yield record
 
     def _restore_ci_waits(self, project_id: str | None = None) -> None:
         for record in self._unfinished_records(project_id):
