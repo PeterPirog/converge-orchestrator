@@ -450,3 +450,45 @@ def test_resume_rejects_tampered_journal_plan(tmp_path: Path) -> None:
             control_db_path=control_db,
             database_url=None,
         )
+
+
+def test_completed_restore_receipt_is_retry_safe_and_reusable_after_full_loss(tmp_path: Path) -> None:
+    backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    first = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert first.resumed is False
+    journals = list(tmp_path.glob(".backup.converge-restore-*.json"))
+    assert len(journals) == 1
+
+    repeated = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert repeated.resumed is True
+
+    shutil.rmtree(repo)
+    shutil.rmtree(state_dir)
+    config.unlink()
+    requirements.unlink()
+    control_db.unlink()
+
+    restored_again = restore_apply.apply_sqlite_restore(
+        backup,
+        confirmation_token=plan.confirmation_token,
+        control_db_path=control_db,
+        database_url=None,
+    )
+    assert restored_again.resumed is False
+    assert repo.is_dir()
+    assert state_dir.is_dir()
+    assert config.is_file()
+    assert requirements.is_file()
+    assert control_db.is_file()
