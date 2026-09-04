@@ -140,6 +140,11 @@ def test_api_bootstrap_compliance_evidence_and_pause(tmp_path: Path) -> None:
     assert response.json()["matches"][0]["artifacts"]["quality.json"] == {"ok": True}
 
     app.state.controller.registry.create_run("run-control", "payments", "thread-control")
+    response = client.get("/runs/run-control/model-usage")
+    assert response.status_code == 200
+    assert response.json()["attempts"] == 0
+    assert response.json()["coverage_complete"] is False
+
     response = client.post("/runs/run-control/pause")
     assert response.status_code == 202
     assert response.json()["status"] == "pause_requested"
@@ -178,6 +183,7 @@ def test_openapi_exposes_required_mvp_control_routes(tmp_path: Path) -> None:
         "/projects/{project_id}/bootstrap",
         "/projects/{project_id}/run",
         "/runs/{run_id}",
+        "/runs/{run_id}/model-usage",
         "/runs/{run_id}/pause",
         "/runs/{run_id}/resume",
         "/runs/{run_id}/interrupt",

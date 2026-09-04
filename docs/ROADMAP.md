@@ -158,9 +158,10 @@ Next priorities, in order:
    multiple autonomous PR/CI cycles. Deliberately include one controller restart and one exceptional
    HITL condition, require no manual code edits, and require final independent requirements,
    architecture, compatibility, security and evidence checks.
-2. **Measured provider economics** — ingest provider-reported token/cost usage where available and
-   aggregate it by durable run/role. This improves forecasting and cost accuracy but must remain
-   secondary to the already enforced conservative fail-closed resource envelope.
+2. **Cross-run economics and forecasting** — provider-reported token/cache/reasoning usage and cost are
+   now durably bound to each run-budget reservation and aggregated by run/role/model. Add only
+   low-cardinality project/fleet trends or price forecasting that proves operational value; measured
+   telemetry must remain secondary to the fail-closed conservative resource envelope.
 3. **Broader language adapters** — extend only parser-backed, high-confidence compatibility/dependency
    rules for Node/Go/Rust where the claimed support scope requires them.
 4. **Deployment portability follow-up** — deliberately shared/external artifact storage only where
@@ -202,9 +203,10 @@ requirements artifact before orchestration starts, preserving the architecture's
 
 Planned / partially implemented:
 
-- fail-closed per-run wall-time/model-attempt/conservative-token budgets are implemented; project-level
-  aggregate spending policy and provider-reported billable usage remain future cost-governance work;
-- provider-reported token/cost telemetry and aggregated per-role health statistics;
+- fail-closed per-run wall-time/model-attempt/conservative-token budgets are implemented;
+  provider-reported OpenCode usage/cost is persisted per reservation and aggregated by durable
+  run/role/model; project-level aggregate spending policy remains future cost-governance work;
+- cross-run low-cardinality economics, price forecasting and aggregate per-role health statistics;
 - digest-pinned sandbox policy and real container CI proof are implemented; each target project still
   owns the build/publish pipeline for its exact runtime image/toolchain;
 - representative external-repository autonomous acceptance gate is the current release blocker;

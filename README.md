@@ -68,6 +68,8 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 - per-role model profile, step, timeout and provider-specific request configuration;
 - bounded per-role provider retries and ordered model-profile fallback with fresh sessions,
   unchanged permissions and a durable attempt ledger;
+- provider-reported OpenCode token/cache/reasoning usage and cost persisted per reserved model attempt,
+  with durable run/role/model aggregation through the authenticated control plane;
 - OpenCode MCP configuration embedded in the same `converge.yaml`;
 - `converge models` for listing gateway model IDs;
 - `converge doctor` validation of paths, Source of Truth, stacks, gates and live gateway model IDs.
