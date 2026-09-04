@@ -11,6 +11,8 @@ from converge_orchestrator.graph import quality
 from converge_orchestrator.models import GateResult, ProjectConfig
 from converge_orchestrator.sandbox import ExecutionSandbox, SandboxPreflightError
 
+_PINNED_TEST_IMAGE = "converge-runtime@sha256:" + "a" * 64
+
 
 def _container_config(tmp_path: Path) -> ProjectConfig:
     repo = tmp_path / "repo"
@@ -28,7 +30,7 @@ def _container_config(tmp_path: Path) -> ProjectConfig:
         },
         sandbox={
             "mode": "container",
-            "image": "converge-runtime:test",
+            "image": _PINNED_TEST_IMAGE,
             "agent_network": "converge-ai",
             "quality_network": "none",
             "agent_gateway_base_url": "http://open-webui:8080/api",
@@ -48,6 +50,21 @@ def _env_names(argv: list[str]) -> set[str]:
 
 def _internal_network_result():
     return types.SimpleNamespace(returncode=0, stdout="true\n")
+
+
+def test_container_rejects_mutable_image_reference_before_execution(tmp_path: Path) -> None:
+    cfg = _container_config(tmp_path)
+    cfg.sandbox.image = "converge-runtime:latest"
+
+    with patch("converge_orchestrator.sandbox.subprocess.run") as runner:
+        with pytest.raises(SandboxPreflightError, match="digest-pinned"):
+            ExecutionSandbox(cfg).run(
+                ["python", "-m", "pytest"],
+                cwd=cfg.repo_path,
+                scope="quality",
+            )
+
+    runner.assert_not_called()
 
 
 def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
@@ -82,6 +99,7 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     assert "--read-only" in argv
     assert argv[argv.index("--entrypoint") + 1] == ""
     assert argv[argv.index("--network") + 1] == "converge-ai"
+    assert _PINNED_TEST_IMAGE in argv
     mounts = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--mount"]
     assert any(str(cfg.repo_path) in mount and mount.endswith(",readonly") for mount in mounts)
     passed = _env_names(argv)
