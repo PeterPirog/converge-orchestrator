@@ -97,8 +97,8 @@ Implemented:
   permissions, profile-specific context budgets and a durable attempt ledger;
 - process-level kill/restart proof after worktree creation preserving uncheckpointed candidate data
   with no duplicate branch/worktree;
-- process-level commit/push checkpoint-race proof recovering the exact candidate commit and
-  retrying remote push idempotently;
+- process-level commit/push checkpoint-race proof recovering the exact candidate commit and retrying
+  remote push idempotently;
 - process-level PR checkpoint-race proof reusing the exact external PR through ensure semantics;
 - process-level `ci_wait` restart proof restoring the durable wake timer and automatically resuming the
   same LangGraph run/thread without HITL;
