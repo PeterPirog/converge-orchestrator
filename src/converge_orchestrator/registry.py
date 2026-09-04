@@ -81,6 +81,13 @@ class ControlRegistry:
                 db.execute("ALTER TABLE projects ADD COLUMN workspace_id TEXT")
             if "state_store_id" not in project_columns:
                 db.execute("ALTER TABLE projects ADD COLUMN state_store_id TEXT")
+            db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_state_store_unique
+                ON projects(state_store_id)
+                WHERE state_store_id IS NOT NULL
+                """
+            )
 
             run_columns = {
                 str(row["name"])
@@ -91,6 +98,14 @@ class ControlRegistry:
             if "lease_expires_at" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN lease_expires_at TEXT")
 
+    def _state_store_owner(self, state_store_id: str) -> str | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT id FROM projects WHERE state_store_id = ?",
+                (state_store_id,),
+            ).fetchone()
+        return str(row["id"]) if row is not None else None
+
     def register_project(
         self,
         project_id: str,
@@ -100,48 +115,59 @@ class ControlRegistry:
     ) -> dict[str, Any]:
         now = _now()
         resolved = str(config_path.expanduser().resolve())
-        with self._connection() as db:
-            cursor = db.execute(
-                """
-                INSERT INTO projects(
-                    id, config_path, workspace_id, state_store_id, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    config_path = excluded.config_path,
-                    workspace_id = COALESCE(excluded.workspace_id, projects.workspace_id),
-                    state_store_id = COALESCE(excluded.state_store_id, projects.state_store_id),
-                    updated_at = excluded.updated_at
-                WHERE (excluded.workspace_id IS NULL
-                       OR projects.workspace_id IS NULL
-                       OR projects.workspace_id = excluded.workspace_id)
-                  AND (excluded.state_store_id IS NULL
-                       OR projects.state_store_id IS NULL
-                       OR projects.state_store_id = excluded.state_store_id)
-                """,
-                (project_id, resolved, workspace_id, state_store_id, now, now),
-            )
-            if cursor.rowcount != 1:
-                existing = db.execute(
-                    "SELECT workspace_id, state_store_id FROM projects WHERE id = ?",
-                    (project_id,),
-                ).fetchone()
-                if existing is None:
-                    raise KeyError(project_id)
-                if workspace_id is not None and existing["workspace_id"] not in (
-                    None,
-                    workspace_id,
-                ):
-                    raise ValueError(
-                        f"Project {project_id} is already bound to workspace "
-                        f"{existing['workspace_id']}; refusing registration from workspace "
-                        f"{workspace_id}"
+        try:
+            with self._connection() as db:
+                cursor = db.execute(
+                    """
+                    INSERT INTO projects(
+                        id, config_path, workspace_id, state_store_id, created_at, updated_at
                     )
-                raise ValueError(
-                    f"Project {project_id} is already bound to state store "
-                    f"{existing['state_store_id']}; refusing registration from state store "
-                    f"{state_store_id}"
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        config_path = excluded.config_path,
+                        workspace_id = COALESCE(excluded.workspace_id, projects.workspace_id),
+                        state_store_id = COALESCE(excluded.state_store_id, projects.state_store_id),
+                        updated_at = excluded.updated_at
+                    WHERE (excluded.workspace_id IS NULL
+                           OR projects.workspace_id IS NULL
+                           OR projects.workspace_id = excluded.workspace_id)
+                      AND (excluded.state_store_id IS NULL
+                           OR projects.state_store_id IS NULL
+                           OR projects.state_store_id = excluded.state_store_id)
+                    """,
+                    (project_id, resolved, workspace_id, state_store_id, now, now),
                 )
+                if cursor.rowcount != 1:
+                    existing = db.execute(
+                        "SELECT workspace_id, state_store_id FROM projects WHERE id = ?",
+                        (project_id,),
+                    ).fetchone()
+                    if existing is None:
+                        raise KeyError(project_id)
+                    if workspace_id is not None and existing["workspace_id"] not in (
+                        None,
+                        workspace_id,
+                    ):
+                        raise ValueError(
+                            f"Project {project_id} is already bound to workspace "
+                            f"{existing['workspace_id']}; refusing registration from workspace "
+                            f"{workspace_id}"
+                        )
+                    raise ValueError(
+                        f"Project {project_id} is already bound to state store "
+                        f"{existing['state_store_id']}; refusing registration from state store "
+                        f"{state_store_id}"
+                    )
+        except sqlite3.IntegrityError as exc:
+            if state_store_id is None:
+                raise
+            owner = self._state_store_owner(state_store_id)
+            if owner is None or owner == project_id:
+                raise
+            raise ValueError(
+                f"State store {state_store_id} is already assigned to project {owner}; "
+                f"project {project_id} must use its own state_dir"
+            ) from exc
         return self.get_project(project_id)
 
     def set_requirements_hash(self, project_id: str, requirements_hash: str) -> None:
