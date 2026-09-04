@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from .affinity import project_affinity
 from .observability import collect_registry_snapshot, render_prometheus
 from .persistence import configured_control_db_path
 from .runtime_service import ScheduledRunController
@@ -105,6 +106,13 @@ def create_app(
     @app.get("/projects")
     def list_projects() -> list[dict[str, Any]]:
         return controller.registry.list_projects()
+
+    @app.get("/projects/{project_id}/affinity")
+    def project_worker_affinity(project_id: str) -> dict[str, Any]:
+        try:
+            return project_affinity(controller, project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Project not found") from exc
 
     @app.post("/projects/{project_id}/bootstrap")
     def bootstrap_project(project_id: str) -> dict[str, Any]:
