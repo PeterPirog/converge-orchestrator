@@ -7,8 +7,14 @@ import tree_sitter_typescript as ts_typescript
 from tree_sitter import Language, Node, Parser
 
 _SUPPORTED_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
+_TYPESCRIPT_SUFFIXES = (".ts", ".tsx", ".mts", ".cts")
 _VARIABLE_DECLARATIONS = {"lexical_declaration", "variable_declaration", "using_declaration"}
 _SIMPLE_NAME_TYPES = {"identifier", "type_identifier", "property_identifier"}
+_CALLABLE_DECLARATIONS = {
+    "function_declaration",
+    "function_signature",
+    "generator_function_declaration",
+}
 
 
 @dataclass(frozen=True)
@@ -18,14 +24,22 @@ class NodeExportSurface:
     `complete` is false when the parser encounters syntax whose exported names require module
     resolution or cannot be represented conservatively. Callers must not treat an incomplete surface
     as proof that a public name disappeared.
+
+    `minimum_arguments` contains only direct callable declarations whose call shape is structurally
+    provable. Re-exports, aliases and callable-valued variables are intentionally omitted.
     """
 
     symbols: frozenset[str]
     complete: bool
+    minimum_arguments: tuple[tuple[str, int], ...] = ()
 
 
 def is_node_source_path(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in _SUPPORTED_SUFFIXES
+
+
+def is_typescript_source_path(path: str) -> bool:
+    return path.lower().endswith(_TYPESCRIPT_SUFFIXES)
 
 
 def _source_text(source: bytes, node: Node) -> str:
@@ -117,6 +131,65 @@ def _export_statement_names(source: bytes, statement: Node) -> tuple[set[str], b
     return set(), False
 
 
+def _callable_declarations(declaration: Node) -> list[Node]:
+    if declaration.type in _CALLABLE_DECLARATIONS:
+        return [declaration]
+    if declaration.type != "ambient_declaration":
+        return []
+    declarations: list[Node] = []
+    for child in declaration.named_children:
+        declarations.extend(_callable_declarations(child))
+    return declarations
+
+
+def _minimum_argument_count(declaration: Node) -> int | None:
+    parameters = declaration.child_by_field_name("parameters")
+    if parameters is None or parameters.type != "formal_parameters":
+        return None
+
+    positional_index = 0
+    minimum = 0
+    for parameter in parameters.named_children:
+        if parameter.type == "comment":
+            continue
+        if parameter.type not in {"required_parameter", "optional_parameter"}:
+            return None
+
+        pattern = parameter.child_by_field_name("pattern")
+        if pattern is not None and pattern.type == "this":
+            continue
+        if pattern is not None and pattern.type == "rest_pattern":
+            continue
+
+        positional_index += 1
+        has_default = any(child.type == "=" for child in parameter.children)
+        if parameter.type == "required_parameter" and not has_default:
+            minimum = positional_index
+    return minimum
+
+
+def _export_statement_minimum_arguments(source: bytes, statement: Node) -> dict[str, int]:
+    declaration = statement.child_by_field_name("declaration")
+    if declaration is None:
+        return {}
+
+    has_default = any(child.type == "default" for child in statement.children)
+    minimum_arguments: dict[str, int] = {}
+    for callable_declaration in _callable_declarations(declaration):
+        minimum = _minimum_argument_count(callable_declaration)
+        if minimum is None:
+            continue
+        if has_default:
+            name = "default"
+        else:
+            name = _simple_name(source, callable_declaration.child_by_field_name("name"))
+        if name is None:
+            continue
+        previous = minimum_arguments.get(name)
+        minimum_arguments[name] = minimum if previous is None else min(previous, minimum)
+    return minimum_arguments
+
+
 def node_export_surface(path: str, source_text: str | None) -> NodeExportSurface | None:
     """Parse one JS/TS module without executing target repository code.
 
@@ -141,6 +214,7 @@ def node_export_surface(path: str, source_text: str | None) -> NodeExportSurface
         return NodeExportSurface(symbols=frozenset(), complete=False)
 
     symbols: set[str] = set()
+    callable_minimums: dict[str, int] = {}
     complete = True
     for child in root.named_children:
         if child.type != "export_statement":
@@ -148,5 +222,12 @@ def node_export_surface(path: str, source_text: str | None) -> NodeExportSurface
         names, statement_complete = _export_statement_names(source, child)
         symbols.update(names)
         complete = complete and statement_complete
+        for name, minimum in _export_statement_minimum_arguments(source, child).items():
+            previous = callable_minimums.get(name)
+            callable_minimums[name] = minimum if previous is None else min(previous, minimum)
 
-    return NodeExportSurface(symbols=frozenset(symbols), complete=complete)
+    return NodeExportSurface(
+        symbols=frozenset(symbols),
+        complete=complete,
+        minimum_arguments=tuple(sorted(callable_minimums.items())),
+    )

@@ -42,15 +42,19 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
 - PostgreSQL deployments have crash-safe restore apply with an exact plan-bound server receipt committed
   atomically with the restored database, allowing deterministic recovery after database commit but
   before local journal acknowledgement without a second restore;
-- exact published Node source modules now have Tree-sitter-backed direct named-export comparison, so a
+- exact published Node source modules have Tree-sitter-backed direct named-export comparison, so a
   proven exported-name removal is blocked before semantic review while ambiguous or unresolved syntax
-  remains review evidence rather than a guessed failure.
+  remains review evidence rather than a guessed failure;
+- direct TypeScript callables on the same exact published target now expose a parser-derived minimum
+  call-argument contract; a proven increase is blocked while optional/default/rest changes and plain
+  JavaScript parameter growth do not create false HITL.
 
 This does **not** mean production hardening is finished. Both SQLite and PostgreSQL deployments now have
 a complete create/verify/plan/apply recovery path for the backed-up artifacts. Independent multi-node
 deployments still require a shared/consistent project filesystem or deliberate external artifact
-storage. Python compatibility remains broader than Node because Node source signatures and wildcard
-re-export resolution are not yet deterministic; Go/Rust source compatibility also remains future work.
+storage. Python compatibility remains broader than Node because bounded re-export resolution and
+broader TypeScript signature/type compatibility are not yet deterministic; Go/Rust source
+compatibility also remains future work.
 
 ## Convergence matrix
 
@@ -126,7 +130,9 @@ to the current project YAML. Legacy run rows retain their historical behavior on
 
 This distinction is important: freezing execution policy prevents a long-running task from changing
 models, quality gates or merge semantics mid-flight, but it does not elevate configuration into a
-second requirements source.
+second requirements source. PDF, DOCX and other authoring documents can inform requirements preparation,
+but the executable autonomous run begins only after those requirements are normalized and frozen into
+the authoritative Markdown artifact.
 
 ## Crash recovery and at-least-once semantics
 
@@ -206,11 +212,11 @@ Repository evidence now moves the priority away from completed checkpoint/flake/
 metrics, workload-placement and deployment backup/restore recovery work. The smallest remaining
 high-value areas are, in order:
 
-1. **Cross-language deterministic compatibility/architecture adapters** — complete Node
-   source-signature compatibility and bounded re-export resolution on top of the direct named-export
-   parser, then add Go/Rust public API and dependency-boundary rules. These gates should reduce
-   semantic-review ambiguity and therefore avoid otherwise valid HITL escalations without giving
-   models policy authority.
+1. **Cross-language deterministic compatibility/architecture adapters** — complete bounded Node local
+   re-export resolution and additional high-confidence source-signature rules on top of the direct
+   named-export and minimum-call-arity parser, then add Go/Rust public API and dependency-boundary
+   rules. These gates should reduce semantic-review ambiguity and therefore avoid otherwise valid HITL
+   escalations without giving models policy authority.
 2. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry after
    the core operational durability path is hardened.
 3. **Deployment portability hardening** — pinned production sandbox images and deliberately
@@ -219,6 +225,20 @@ high-value areas are, in order:
 Optional issue synchronization, richer dashboards and broader UX must not displace these core items.
 Parallel Builders should remain disabled until a deterministic scheduler can prove non-overlapping write
 sets and revalidate integration against the current main branch.
+
+## Real-repository readiness assessment
+
+The orchestration core is already capable of a controlled Python pilot driven by frozen Markdown
+requirements: it can derive bounded work, execute one-writer changes, prove quality, independently
+review, create PRs, wait for authoritative CI and recover from controller/executor failure. That is a
+meaningful operational milestone, but it is not yet the release criterion for unattended arbitrary
+repository development.
+
+The general-purpose readiness gate is maintained in `ROADMAP.md`. In practical terms, the remaining
+blockers before that declaration are a bounded compatibility scope for the claimed language set,
+fail-closed cost/time budgets, a digest-pinned production sandbox profile, and a representative external
+repository acceptance run that reaches convergence across multiple PR/CI cycles with restart recovery
+and no manual code edits. This keeps the declaration evidence-based instead of tied to a calendar date.
 
 ## Target operational criterion
 

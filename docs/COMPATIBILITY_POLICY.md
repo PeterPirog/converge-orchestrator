@@ -52,6 +52,21 @@ A direct baseline export that disappears from the same still-published module pr
 explicit named re-exports are compared by their consumer-visible exported names, and declaration-file
 exports are covered through the same parser.
 
+For direct callable declarations in TypeScript-family targets (`.ts`, `.tsx`, `.mts`, `.cts`, including
+`.d.ts`), the same parse also records the **minimum number of positional call arguments** accepted by
+each exported callable. `this` pseudo-parameters and rest parameters do not consume a required call
+position; optional/defaulted parameters do not raise the minimum themselves, while a later required
+parameter still makes preceding positions necessary. Multiple direct overload declarations are
+represented by the least minimum they accept. If the same still-published direct callable is provable
+in both revisions and the candidate raises that minimum, the change produces
+`forbidden_public_api_change` before semantic review.
+
+This call-shape rule deliberately does not treat growth of a plain JavaScript parameter list as a
+proven break, because JavaScript permits calls with fewer arguments. It also does not resolve callable
+variables, aliases, explicit re-exports, wildcard re-export graphs or semantic type assignability.
+Those cases remain available to tests and independent semantic review instead of generating guessed
+HITL.
+
 The adapter deliberately fails conservative rather than pretending to understand more than the syntax
 proves:
 
@@ -60,12 +75,12 @@ proves:
   errors produces `observe` evidence for independent review instead of a deterministic break/HITL;
 - manifest retargeting is not compared as if the old and new modules were the same public source;
 - `bin` and `browser` targets are not treated as named-module export surfaces;
-- CommonJS assignment semantics, wildcard re-export graphs, module resolution and source-level
-  function/type signature compatibility are not inferred by this slice.
+- CommonJS assignment semantics, wildcard re-export graphs, module resolution and broader source-level
+  type/signature equivalence are not inferred by this policy.
 
 This boundary is intentional: the deterministic gate blocks only a compatibility break it can prove.
-The next Node compatibility work is source-signature comparison and bounded re-export resolution, not
-regex-based approximation.
+The next Node compatibility work is bounded local re-export resolution and additional conservative
+source-signature rules, not regex-based approximation.
 
 ## Policy boundary
 

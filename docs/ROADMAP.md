@@ -72,13 +72,16 @@ Implemented:
 - Tree-sitter-backed Node direct named-export comparison for exact source modules that remain published
   through an existing package contract; definite removals are blocked while unresolved/ambiguous
   source surfaces remain review evidence instead of guessed failures;
+- Tree-sitter-backed TypeScript direct-callable call-shape comparison for the same exact published
+  target; a proven increase in the minimum accepted positional arguments is blocked while optional,
+  defaulted, rest and plain-JavaScript parameter-list changes do not create guessed HITL;
 - hard-block secret policy before semantic review and risk approval bound to the exact candidate diff;
 - monotonic Python AST/import boundary enforcement independent from project-provided scripts.
 
 Remaining:
 
-- Node source-signature compatibility and bounded re-export resolution, then Go/Rust API/dependency
-  adapters and broader safe roll-forward strategies;
+- bounded Node re-export resolution and additional conservative source-signature rules, then Go/Rust
+  API/dependency adapters and broader safe roll-forward strategies;
 - stale-resource chaos extensions only where a newly discovered failure boundary lacks an equivalent
   deterministic recovery proof.
 
@@ -137,15 +140,42 @@ Implemented:
 
 Next priorities, in order:
 
-1. **Broader language adapters** — add deterministic Node source-signature compatibility and bounded
-   re-export resolution on top of the implemented Tree-sitter named-export slice, then extend public
-   API and dependency-boundary rules to Go/Rust. Do not replace real parsers with regex inference merely
-   to claim coverage.
+1. **Broader language adapters** — complete bounded Node local re-export resolution and additional
+   high-confidence source-signature rules on top of the implemented named-export and minimum-call-arity
+   gates, then extend public API and dependency-boundary rules to Go/Rust. Do not replace real parsers
+   with regex inference merely to claim coverage.
 2. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
    core autonomous path is operationally hardened.
 3. **Deployment portability hardening** — project-specific pinned sandbox images and deliberately
    shared/external artifact storage where multi-node deployments require it; do not infer stateless
    worker safety from PostgreSQL alone.
+
+## First real-repository readiness gate
+
+Converge is already suitable for a **controlled Python repository pilot** when the requirements have
+first been normalized and frozen as the authoritative Markdown Source of Truth and the target repository
+has meaningful deterministic tests/quality gates. This is a pilot classification, not a claim that an
+arbitrary repository can be left unattended indefinitely.
+
+The first general-purpose release for document-driven autonomous repository development should not be
+declared ready until all of these executable criteria are met:
+
+1. the remaining bounded Node compatibility work above is complete, or the release explicitly limits
+   its supported autonomous compatibility guarantee to Python;
+2. run/project wall-time and model-usage budgets fail closed before autonomous work can run without a
+   bounded resource envelope;
+3. a production sandbox image/deployment profile is digest-pinned and exercised in CI;
+4. at least one representative **external target repository** passes an acceptance run from frozen
+   Markdown requirements through multiple autonomous task/PR/CI cycles to convergence, including one
+   controller/process restart, with no manual code edits and HITL only for a deliberately injected
+   exceptional condition;
+5. the resulting repository is independently checked for requirements compliance, architecture drift,
+   compatibility and security, and the evidence bundle can reconstruct why every integrated change was
+   accepted.
+
+PDF, DOCX and other authoring formats may be used to prepare requirements, but they must not silently
+become parallel workflow authorities. They should be normalized into the reviewed immutable Markdown
+requirements artifact before orchestration starts, preserving the architecture's single Source of Truth.
 
 ## v0.5 — production autonomous operation
 

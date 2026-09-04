@@ -20,6 +20,7 @@ export default class Client {}
     assert surface.symbols == frozenset(
         {"charge", "Receipt", "Currency", "version", "stable", "default"}
     )
+    assert dict(surface.minimum_arguments) == {"charge": 1}
 
 
 def test_node_export_surface_uses_public_alias_from_named_export() -> None:
@@ -31,6 +32,7 @@ def test_node_export_surface_uses_public_alias_from_named_export() -> None:
     assert surface is not None
     assert surface.complete is True
     assert surface.symbols == frozenset({"publicName"})
+    assert surface.minimum_arguments == ()
 
 
 def test_node_export_surface_parses_explicit_reexport_names() -> None:
@@ -42,6 +44,61 @@ def test_node_export_surface_parses_explicit_reexport_names() -> None:
     assert surface is not None
     assert surface.complete is True
     assert surface.symbols == frozenset({"charge", "PublicReceipt"})
+    assert surface.minimum_arguments == ()
+
+
+def test_node_export_surface_extracts_minimum_call_arguments() -> None:
+    surface = node_export_surface(
+        "src/index.ts",
+        """
+export function charge(
+    this: Gateway,
+    amount: number,
+    currency = "USD",
+    note?: string,
+    ...tags: string[]
+): void {}
+""",
+    )
+
+    assert surface is not None
+    assert surface.complete is True
+    assert dict(surface.minimum_arguments) == {"charge": 1}
+
+
+def test_node_export_surface_counts_position_before_later_required_argument() -> None:
+    surface = node_export_surface(
+        "src/index.ts",
+        'export function load(cache = true, path: string): void {}\n',
+    )
+
+    assert surface is not None
+    assert dict(surface.minimum_arguments) == {"load": 2}
+
+
+def test_node_export_surface_uses_least_required_arity_across_overloads() -> None:
+    surface = node_export_surface(
+        "dist/index.d.ts",
+        """
+export declare function charge(amount: number): void;
+export declare function charge(amount: number, currency: string): void;
+""",
+    )
+
+    assert surface is not None
+    assert surface.complete is True
+    assert dict(surface.minimum_arguments) == {"charge": 1}
+
+
+def test_node_export_surface_maps_default_function_to_default_export() -> None:
+    surface = node_export_surface(
+        "src/index.ts",
+        'export default function charge(amount: number, currency: string): void {}\n',
+    )
+
+    assert surface is not None
+    assert surface.complete is True
+    assert dict(surface.minimum_arguments) == {"default": 2}
 
 
 def test_node_export_surface_marks_wildcard_reexport_incomplete() -> None:
@@ -71,6 +128,7 @@ def test_node_export_surface_uses_tsx_grammar() -> None:
     assert surface is not None
     assert surface.complete is True
     assert surface.symbols == frozenset({"View"})
+    assert dict(surface.minimum_arguments) == {"View": 0}
 
 
 def test_node_export_surface_returns_incomplete_on_parse_error() -> None:
