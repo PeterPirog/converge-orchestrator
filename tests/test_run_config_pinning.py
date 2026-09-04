@@ -18,7 +18,10 @@ def _write_config(tmp_path: Path, *, max_repairs: int) -> Path:
     repo = tmp_path / "repository"
     repo.mkdir(exist_ok=True)
     requirements = tmp_path / "architecture.md"
-    requirements.write_text("# Architecture\n\n- ARCH-001 Keep behavior stable.\n", encoding="utf-8")
+    requirements.write_text(
+        "# Architecture\n\n- ARCH-001 Keep behavior stable.\n",
+        encoding="utf-8",
+    )
     state_dir = tmp_path / ".converge"
     config = tmp_path / "converge.yaml"
     config.write_text(
@@ -87,7 +90,10 @@ def test_runtime_reloads_active_run_from_pinned_snapshot(tmp_path: Path) -> None
 def test_tampered_run_config_snapshot_fails_closed(tmp_path: Path) -> None:
     source = _write_config(tmp_path, max_repairs=1)
     _, snapshot, digest = materialize_run_config_snapshot(source, "run-1")
-    snapshot.write_text(snapshot.read_text(encoding="utf-8") + "# tampered\n", encoding="utf-8")
+    snapshot.write_text(
+        snapshot.read_text(encoding="utf-8") + "# tampered\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(RuntimeError, match="Pinned run configuration changed"):
         load_run_config_snapshot(snapshot, digest)
