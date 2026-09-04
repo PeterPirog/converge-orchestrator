@@ -26,6 +26,7 @@ def _controller() -> ScheduledRunController:
     controller._timers = {}
     controller._timer_generations = {}
     controller._project_is_local = Mock(return_value=True)  # type: ignore[method-assign]
+    controller._config_for_run = Mock(return_value=Mock())  # type: ignore[method-assign]
     return controller
 
 
@@ -52,6 +53,42 @@ def _unfinished_record() -> dict:
 def _one_unfinished_run(controller: ScheduledRunController) -> None:
     controller.registry.list_projects.return_value = [{"id": "project"}]
     controller.registry.runs_for_project.return_value = [_unfinished_record()]
+
+
+def test_unfinished_run_discovery_validates_run_config_not_mutable_project_config() -> None:
+    controller = _controller()
+    record = _unfinished_record()
+    controller.registry.list_projects.return_value = [
+        {"id": "project", "config_path": "/broken/project.yaml"}
+    ]
+    controller.registry.runs_for_project.return_value = [record]
+    controller._project_is_local.side_effect = AssertionError(  # type: ignore[attr-defined]
+        "mutable project config must not gate pinned-run recovery"
+    )
+
+    assert list(controller._unfinished_records()) == [record]
+    controller._config_for_run.assert_called_once_with(record)  # type: ignore[attr-defined]
+
+
+def test_invalid_pinned_run_config_is_recorded_and_not_recovered() -> None:
+    controller = _controller()
+    record = {
+        **_unfinished_record(),
+        "config_snapshot_path": "/tmp/run.yaml",
+        "config_snapshot_sha256": "expected",
+    }
+    controller.registry.list_projects.return_value = [{"id": "project"}]
+    controller.registry.runs_for_project.return_value = [record]
+    controller._config_for_run.side_effect = RuntimeError(  # type: ignore[attr-defined]
+        "Pinned run configuration changed"
+    )
+
+    assert list(controller._unfinished_records()) == []
+    controller.registry.update_run.assert_called_once()
+    update = controller.registry.update_run.call_args
+    assert update.args[0] == "run-1"
+    assert "configuration validation failed" in update.kwargs["error"]
+    assert "Pinned run configuration changed" in update.kwargs["error"]
 
 
 def test_restore_ci_waits_rehydrates_timer_from_checkpoint() -> None:
@@ -161,9 +198,6 @@ def test_automatic_precheckpoint_recovery_replays_original_initial_input() -> No
     controller.registry.get_run.return_value = record
     project = {"config_path": "/tmp/project.yaml"}
     controller.registry.get_project.return_value = project
-    controller._local_project = Mock(  # type: ignore[method-assign]
-        return_value=(project, Mock())
-    )
     controller._timer_generations["run-1"] = 5
     controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
         return_value={"values": {}, "interrupt": None, "next": []}
@@ -177,6 +211,34 @@ def test_automatic_precheckpoint_recovery_replays_original_initial_input() -> No
         {
             "project_id": "project",
             "config_path": "/tmp/project.yaml",
+            "run_id": "run-1",
+            "thread_id": "thread-1",
+        },
+    )
+
+
+def test_automatic_precheckpoint_recovery_replays_pinned_config_path() -> None:
+    controller = _controller()
+    record = {
+        **_unfinished_record(),
+        "status": "recoverable",
+        "config_snapshot_path": "/tmp/state/run-configs/run-1.yaml",
+        "config_snapshot_sha256": "config-sha",
+    }
+    controller.registry.get_run.return_value = record
+    controller._timer_generations["run-1"] = 8
+    controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
+        return_value={"values": {}, "interrupt": None, "next": []}
+    )
+    controller._submit = Mock()  # type: ignore[method-assign]
+
+    controller._resume_recoverable("run-1", 8)
+
+    controller._submit.assert_called_once_with(
+        "run-1",
+        {
+            "project_id": "project",
+            "config_path": "/tmp/state/run-configs/run-1.yaml",
             "run_id": "run-1",
             "thread_id": "thread-1",
         },
