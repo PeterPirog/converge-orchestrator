@@ -12,7 +12,11 @@ from pydantic import BaseModel, Field
 
 from .git import changed_files
 from .models import ProjectConfig, TaskEnvelope
-from .node_compat import is_typescript_source_path, node_export_surface
+from .node_compat import (
+    is_typescript_source_path,
+    node_export_surface,
+    resolve_node_export_surface,
+)
 from .shell import run
 
 RiskKind = Literal[
@@ -684,12 +688,16 @@ def _node_source_entry(entry: str) -> bool:
     return entry in _NODE_SOURCE_ENTRY_NAMES or entry.startswith("exports:")
 
 
+def _node_package_root(manifest_path: str) -> str:
+    return PurePosixPath(manifest_path).parent.as_posix()
+
+
 def _node_published_source_export_findings(
     paths: list[str],
     base_source: Callable[[str], str | None],
     candidate_source: Callable[[str], str | None],
 ) -> list[RiskFinding]:
-    """Compare definite named exports and direct TypeScript call shapes on public targets."""
+    """Compare proven exports and TypeScript call shapes through bounded local barrels."""
     changed = set(paths)
     findings: list[RiskFinding] = []
     for manifest_path in _node_manifest_candidates(paths):
@@ -704,10 +712,53 @@ def _node_published_source_export_findings(
             current_targets = _node_local_targets(entry, current[entry])
             for target in sorted(baseline_targets.intersection(current_targets)):
                 target_path = _node_target_path(manifest_path, target)
-                if target_path is None or target_path not in changed:
+                if target_path is None:
                     continue
-                baseline_surface = node_export_surface(target_path, base_source(target_path))
-                candidate_surface = node_export_surface(target_path, candidate_source(target_path))
+
+                baseline_root = node_export_surface(target_path, base_source(target_path))
+                candidate_root = node_export_surface(target_path, candidate_source(target_path))
+                if target_path not in changed:
+                    if baseline_root is None or candidate_root is None:
+                        continue
+                    if not (
+                        baseline_root.wildcard_reexports
+                        or candidate_root.wildcard_reexports
+                    ):
+                        continue
+
+                base_probes: set[str] = set()
+                candidate_probes: set[str] = set()
+
+                def traced_base(path: str) -> str | None:
+                    base_probes.add(path)
+                    return base_source(path)
+
+                def traced_candidate(path: str) -> str | None:
+                    candidate_probes.add(path)
+                    return candidate_source(path)
+
+                package_root = _node_package_root(manifest_path)
+                baseline_surface = resolve_node_export_surface(
+                    target_path,
+                    traced_base,
+                    package_root=package_root,
+                )
+                candidate_surface = resolve_node_export_surface(
+                    target_path,
+                    traced_candidate,
+                    package_root=package_root,
+                )
+
+                surface_paths = base_probes | candidate_probes | {target_path}
+                if baseline_surface is not None:
+                    surface_paths.update(baseline_surface.source_paths)
+                if candidate_surface is not None:
+                    surface_paths.update(candidate_surface.source_paths)
+                affected_paths = sorted(changed.intersection(surface_paths))
+                if not affected_paths:
+                    continue
+                finding_path = target_path if target_path in changed else affected_paths[0]
+
                 if baseline_surface is None or not baseline_surface.complete:
                     continue
                 if candidate_surface is None:
@@ -718,7 +769,7 @@ def _node_published_source_export_findings(
                         RiskFinding(
                             kind="public_api_break",
                             disposition="observe",
-                            path=target_path,
+                            path=finding_path,
                             evidence=(
                                 "public Node source export surface could not be proven "
                                 "after change: "
@@ -733,7 +784,7 @@ def _node_published_source_export_findings(
                             kind="public_api_break",
                             disposition="interrupt",
                             flag="forbidden_public_api_change",
-                            path=target_path,
+                            path=finding_path,
                             evidence=(
                                 "public Node source export removed: "
                                 f"{manifest_path}:{entry} -> {target}:{symbol}"
@@ -757,7 +808,7 @@ def _node_published_source_export_findings(
                             kind="public_api_break",
                             disposition="interrupt",
                             flag="forbidden_public_api_change",
-                            path=target_path,
+                            path=finding_path,
                             evidence=(
                                 "public TypeScript callable minimum argument count increased: "
                                 f"{manifest_path}:{entry} -> {target}:{symbol} "
