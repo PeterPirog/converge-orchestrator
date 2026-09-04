@@ -99,6 +99,13 @@ def _lost_sqlite_deployment(tmp_path: Path):
     return backup, control_db, repo, state_dir, config, requirements
 
 
+def _declare_postgres_backup(backup: Path) -> None:
+    manifest_path = backup / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["persistence_backend"] = "postgres"
+    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def test_sqlite_restore_preflight_is_ready_only_after_targets_are_absent(tmp_path: Path) -> None:
     backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
 
@@ -162,15 +169,16 @@ def test_restore_preflight_validates_manifest_head_against_git_bundle(tmp_path: 
 
 def test_postgres_restore_plan_never_exposes_database_url(tmp_path: Path) -> None:
     backup, control_db, _, _, _, _ = _lost_sqlite_deployment(tmp_path)
-    manifest_path = backup / "manifest.json"
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload["persistence_backend"] = "postgres"
-    manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _declare_postgres_backup(backup)
     database_url = "postgresql://user:super-secret@db/converge"
 
     with (
         patch("converge_orchestrator.restore.shutil.which", return_value="/usr/bin/tool"),
         patch("converge_orchestrator.restore._postgres_target_empty", return_value=True),
+        patch(
+            "converge_orchestrator.restore._postgres_target_binding",
+            return_value="1" * 64,
+        ),
     ):
         plan = plan_deployment_restore(
             backup,
@@ -184,3 +192,31 @@ def test_postgres_restore_plan_never_exposes_database_url(tmp_path: Path) -> Non
     assert plan.database_target == "postgres:configured"
     assert plan.ready is False
     assert any("database artifact" in item for item in plan.blockers)
+
+
+def test_postgres_confirmation_token_changes_when_database_target_changes(tmp_path: Path) -> None:
+    backup, control_db, _, _, _, _ = _lost_sqlite_deployment(tmp_path)
+    _declare_postgres_backup(backup)
+    database_url = "postgresql://user:secret@db/converge"
+
+    with (
+        patch("converge_orchestrator.restore.shutil.which", return_value="/usr/bin/tool"),
+        patch("converge_orchestrator.restore._postgres_target_empty", return_value=True),
+        patch(
+            "converge_orchestrator.restore._postgres_target_binding",
+            side_effect=["1" * 64, "2" * 64],
+        ),
+    ):
+        first = plan_deployment_restore(
+            backup,
+            control_db_path=control_db,
+            database_url=database_url,
+        )
+        second = plan_deployment_restore(
+            backup,
+            control_db_path=control_db,
+            database_url=database_url,
+        )
+
+    assert first.database_target == second.database_target == "postgres:configured"
+    assert first.confirmation_token != second.confirmation_token
