@@ -7,7 +7,12 @@ import typer
 from rich.console import Console
 
 from .backup import BackupError, create_deployment_backup, verify_deployment_backup
-from .persistence import PersistenceBackend, configured_control_db_path
+from .persistence import (
+    PersistenceBackend,
+    configured_control_db_path,
+    configured_database_url,
+)
+from .restore import RestoreError, plan_deployment_restore
 
 app = typer.Typer(no_args_is_help=True)
 console = Console()
@@ -51,6 +56,22 @@ def verify_backup(root: BackupPath) -> None:
     except (BackupError, RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     console.print_json(data=_summary("verified", root, manifest))
+
+
+@app.command("restore-plan")
+def restore_plan(root: BackupPath) -> None:
+    """Verify restore targets and print a confirmation-bound plan without writing deployment state."""
+    try:
+        plan = plan_deployment_restore(
+            root,
+            control_db_path=configured_control_db_path(),
+            database_url=configured_database_url(),
+        )
+    except (RestoreError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(data=plan.model_dump(mode="json"))
+    if not plan.ready:
+        raise typer.Exit(code=2)
 
 
 if __name__ == "__main__":
