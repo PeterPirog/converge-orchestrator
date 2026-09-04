@@ -134,6 +134,7 @@ def test_cli_run_registers_and_starts_through_scheduled_controller(tmp_path) -> 
     config = tmp_path / "converge.yaml"
     cfg = SimpleNamespace(project_name="payments")
     controller = Mock()
+    controller.registry.list_projects.return_value = []
     controller.registry.runs_for_project.return_value = []
     controller.start_run.return_value = {"id": "run-1", "thread_id": "thread-1"}
     terminal = {
@@ -168,6 +169,73 @@ def test_cli_run_registers_and_starts_through_scheduled_controller(tmp_path) -> 
     controller.start_run.assert_called_once_with("payments", thread_id=None)
     wait.assert_called_once_with(controller, "run-1")
     print_json.assert_called_once_with(data=terminal)
+
+
+def test_cli_recovery_does_not_load_or_reregister_changed_source_config(tmp_path) -> None:
+    config = tmp_path / "converge.yaml"
+    config.write_text("this: is: no longer valid yaml\n", encoding="utf-8")
+    controller = Mock()
+    controller.registry.list_projects.return_value = [
+        {
+            "id": "payments",
+            "config_path": str(config.resolve()),
+        }
+    ]
+    existing = {
+        "id": "run-1",
+        "project_id": "payments",
+        "thread_id": "thread-1",
+        "finished_at": None,
+    }
+    controller.registry.runs_for_project.return_value = [existing]
+    terminal = {
+        **existing,
+        "status": "converged",
+        "finished_at": "2026-09-04T03:00:00+00:00",
+    }
+
+    with (
+        patch.object(
+            cli,
+            "configured_control_db_path",
+            return_value=tmp_path / "control.sqlite",
+        ),
+        patch.object(cli, "ScheduledRunController", return_value=controller),
+        patch.object(cli, "load_config") as load_config,
+        patch.object(
+            cli,
+            "_wait_until_terminal_or_human_interrupt",
+            return_value=terminal,
+        ) as wait,
+        patch.object(cli.console, "print_json"),
+    ):
+        cli.run(config, thread_id=None, project_id=None)
+
+    load_config.assert_not_called()
+    controller.register_project.assert_not_called()
+    controller.restore_durable_runs.assert_called_once_with("payments")
+    controller.start_run.assert_not_called()
+    wait.assert_called_once_with(controller, "run-1")
+
+
+def test_cli_recovery_rejects_explicit_project_config_path_mismatch(tmp_path) -> None:
+    config = tmp_path / "other.yaml"
+    controller = Mock()
+    controller.registry.get_project.return_value = {
+        "id": "payments",
+        "config_path": str((tmp_path / "payments.yaml").resolve()),
+    }
+
+    with pytest.raises(typer.BadParameter, match="registered with config"):
+        with (
+            patch.object(
+                cli,
+                "configured_control_db_path",
+                return_value=tmp_path / "control.sqlite",
+            ),
+            patch.object(cli, "ScheduledRunController", return_value=controller),
+        ):
+            cli.run(config, thread_id=None, project_id="payments")
 
 
 def test_cli_project_id_must_be_api_compatible(tmp_path) -> None:
