@@ -159,7 +159,11 @@ def test_automatic_precheckpoint_recovery_replays_original_initial_input() -> No
     controller = _controller()
     record = {**_unfinished_record(), "status": "recoverable"}
     controller.registry.get_run.return_value = record
-    controller.registry.get_project.return_value = {"config_path": "/tmp/project.yaml"}
+    project = {"config_path": "/tmp/project.yaml"}
+    controller.registry.get_project.return_value = project
+    controller._local_project = Mock(  # type: ignore[method-assign]
+        return_value=(project, Mock())
+    )
     controller._timer_generations["run-1"] = 5
     controller._recovery_snapshot = Mock(  # type: ignore[method-assign]
         return_value={"values": {}, "interrupt": None, "next": []}
