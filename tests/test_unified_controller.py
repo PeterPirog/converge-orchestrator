@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from converge_orchestrator.persistence import configured_control_db_path
 from converge_orchestrator.runtime import RunController
@@ -42,6 +42,21 @@ def test_run_controller_start_run_uses_explicit_thread_id() -> None:
             "thread_id": "cli-thread",
         },
     )
+
+
+def test_scheduled_controller_can_defer_broad_restore_for_cli_scope(tmp_path: Path) -> None:
+    with (
+        patch.object(RunController, "__init__", return_value=None),
+        patch.object(ScheduledRunController, "restore_durable_runs") as restore,
+    ):
+        controller = ScheduledRunController(
+            tmp_path / "control.sqlite",
+            restore_on_start=False,
+        )
+
+    assert controller._timers == {}
+    assert controller._timer_generations == {}
+    restore.assert_not_called()
 
 
 def test_malformed_foreign_lease_fails_closed() -> None:
