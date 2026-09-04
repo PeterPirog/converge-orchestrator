@@ -60,10 +60,17 @@ class PostgresControlRegistry:
                 CREATE TABLE IF NOT EXISTS converge_projects (
                     id TEXT PRIMARY KEY,
                     config_path TEXT NOT NULL,
+                    workspace_id TEXT,
                     requirements_hash TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
+                """
+            )
+            db.execute(
+                """
+                ALTER TABLE converge_projects
+                ADD COLUMN IF NOT EXISTS workspace_id TEXT
                 """
             )
             db.execute(
@@ -96,20 +103,52 @@ class PostgresControlRegistry:
                 """
             )
 
-    def register_project(self, project_id: str, config_path: Any) -> dict[str, Any]:
+    def register_project(
+        self,
+        project_id: str,
+        config_path: Any,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
         now = _now()
         resolved = str(config_path.expanduser().resolve())
         with self._connection() as db:
-            db.execute(
-                """
-                INSERT INTO converge_projects(id, config_path, created_at, updated_at)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT(id) DO UPDATE SET
-                    config_path = EXCLUDED.config_path,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                (project_id, resolved, now, now),
-            )
+            if workspace_id is None:
+                db.execute(
+                    """
+                    INSERT INTO converge_projects(id, config_path, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(id) DO UPDATE SET
+                        config_path = EXCLUDED.config_path,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (project_id, resolved, now, now),
+                )
+            else:
+                cursor = db.execute(
+                    """
+                    INSERT INTO converge_projects(
+                        id, config_path, workspace_id, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT(id) DO UPDATE SET
+                        config_path = EXCLUDED.config_path,
+                        workspace_id = EXCLUDED.workspace_id,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE converge_projects.workspace_id IS NULL
+                       OR converge_projects.workspace_id = EXCLUDED.workspace_id
+                    """,
+                    (project_id, resolved, workspace_id, now, now),
+                )
+                if cursor.rowcount != 1:
+                    existing = db.execute(
+                        "SELECT workspace_id FROM converge_projects WHERE id = %s",
+                        (project_id,),
+                    ).fetchone()
+                    expected = existing["workspace_id"] if existing else "<missing>"
+                    raise ValueError(
+                        f"Project {project_id} is already bound to workspace {expected}; "
+                        f"refusing registration from workspace {workspace_id}"
+                    )
         return self.get_project(project_id)
 
     def set_requirements_hash(self, project_id: str, requirements_hash: str) -> None:

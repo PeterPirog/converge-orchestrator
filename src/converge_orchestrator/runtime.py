@@ -14,6 +14,11 @@ from .evidence import EvidenceStore
 from .graph import build_graph
 from .persistence import PersistenceBackend
 from .workflow import bootstrap
+from .workspace_identity import (
+    WorkspaceAffinityError,
+    assert_workspace_affinity,
+    workspace_id,
+)
 
 _TERMINAL_STATUSES = {
     "completed",
@@ -68,10 +73,31 @@ class RunController:
             raise ValueError(f"Not a git repository: {cfg.repo_path}")
         if not cfg.requirements_path.is_file():
             raise ValueError(f"Requirements file not found: {cfg.requirements_path}")
-        return self.registry.register_project(project_id, config_path)
+        local_workspace_id = workspace_id(cfg.repo_path)
+        return self.registry.register_project(
+            project_id,
+            config_path,
+            workspace_id=local_workspace_id,
+        )
+
+    def _config_for_project(self, project: dict[str, Any]):
+        cfg = load_config(project["config_path"])
+        assert_workspace_affinity(project, cfg.repo_path)
+        return cfg
+
+    def _local_project(self, project_id: str) -> tuple[dict[str, Any], Any]:
+        project = self.registry.get_project(project_id)
+        return project, self._config_for_project(project)
+
+    def _project_is_local(self, project: dict[str, Any]) -> bool:
+        try:
+            self._config_for_project(project)
+        except (WorkspaceAffinityError, FileNotFoundError, OSError, ValueError):
+            return False
+        return True
 
     def bootstrap_project(self, project_id: str) -> dict[str, Any]:
-        project = self.registry.get_project(project_id)
+        project, _ = self._local_project(project_id)
         run_id = f"bootstrap-{uuid4().hex}"
         state = bootstrap(
             {
@@ -85,7 +111,7 @@ class RunController:
         return state
 
     def start_run(self, project_id: str) -> dict[str, Any]:
-        project = self.registry.get_project(project_id)
+        project, _ = self._local_project(project_id)
         for existing in self.registry.runs_for_project(project_id):
             if existing["status"] in _ACTIVE_STATUSES and not existing["finished_at"]:
                 raise RuntimeError(f"Project already has active run {existing['id']}")
@@ -105,21 +131,20 @@ class RunController:
         record = self.registry.get_run(run_id)
         if record["finished_at"]:
             raise RuntimeError("Cannot pause a finished run")
-        project = self.registry.get_project(record["project_id"])
-        cfg = load_config(project["config_path"])
+        _, cfg = self._local_project(record["project_id"])
         ControlSignals(cfg.state_dir).request_pause(run_id)
         self.registry.update_run(run_id, status="pause_requested")
         return self.status(run_id)
 
     def resume(self, run_id: str) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
+        self._local_project(record["project_id"])
         snapshot = self._snapshot(record)
         interrupt_payload = snapshot.get("interrupt")
         if interrupt_payload and interrupt_payload.get("kind") != "controlled_pause":
             raise RuntimeError("Run requires /decision, not /resume")
         if interrupt_payload:
-            project = self.registry.get_project(record["project_id"])
-            cfg = load_config(project["config_path"])
+            _, cfg = self._local_project(record["project_id"])
             ControlSignals(cfg.state_dir).clear_pause(run_id)
             self._submit(run_id, Command(resume="resume"))
         elif snapshot.get("next"):
@@ -130,6 +155,7 @@ class RunController:
 
     def decide(self, run_id: str, decision: dict[str, Any]) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
+        self._local_project(record["project_id"])
         snapshot = self._snapshot(record)
         interrupt_payload = snapshot.get("interrupt")
         if not interrupt_payload:
@@ -141,6 +167,7 @@ class RunController:
 
     def status(self, run_id: str) -> dict[str, Any]:
         record = self.registry.get_run(run_id)
+        self._local_project(record["project_id"])
         snapshot = self._snapshot(record)
         with self._lock:
             worker_alive = bool(
@@ -170,11 +197,11 @@ class RunController:
 
     def interrupt(self, run_id: str) -> dict[str, Any] | None:
         record = self.registry.get_run(run_id)
+        self._local_project(record["project_id"])
         return self._snapshot(record).get("interrupt")
 
     def compliance(self, project_id: str) -> dict[str, Any]:
-        project = self.registry.get_project(project_id)
-        cfg = load_config(project["config_path"])
+        _, cfg = self._local_project(project_id)
         path = cfg.state_dir / "compliance.json"
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -183,6 +210,8 @@ class RunController:
     def evidence(self, task_id: str) -> list[dict[str, Any]]:
         matches: list[dict[str, Any]] = []
         for project in self.registry.list_projects():
+            if not self._project_is_local(project):
+                continue
             cfg = load_config(project["config_path"])
             store = EvidenceStore(cfg.state_dir / "evidence")
             for bundle in store.find_task_bundles(task_id):
@@ -295,8 +324,7 @@ class RunController:
             raise
 
     def _open_graph(self, record: dict[str, Any]):
-        project = self.registry.get_project(record["project_id"])
-        cfg = load_config(project["config_path"])
+        _, cfg = self._local_project(record["project_id"])
         checkpointer, db = self.persistence.open_checkpointer(cfg.state_dir)
         graph = build_graph(checkpointer=checkpointer)
         graph_config = {"configurable": {"thread_id": record["thread_id"]}}
