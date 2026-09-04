@@ -9,9 +9,18 @@ from converge_orchestrator.runtime import RunController
 from converge_orchestrator.runtime_service import ScheduledRunController
 
 
-def test_run_controller_start_run_uses_explicit_thread_id() -> None:
+def test_run_controller_start_run_pins_config_and_uses_explicit_thread_id(
+    tmp_path: Path,
+) -> None:
     controller = object.__new__(RunController)
     controller.registry = Mock()
+    project = {
+        "id": "project",
+        "config_path": str(tmp_path / "project.yaml"),
+        "workspace_id": "workspace",
+        "state_store_id": "state-store",
+    }
+    controller.registry.get_project.return_value = project
     controller.registry.runs_for_project.return_value = []
     controller.registry.create_run.return_value = {
         "id": "run-1",
@@ -19,25 +28,38 @@ def test_run_controller_start_run_uses_explicit_thread_id() -> None:
         "thread_id": "cli-thread",
         "status": "queued",
     }
-    controller._local_project = Mock(  # type: ignore[method-assign]
-        return_value=({"config_path": "/tmp/project.yaml"}, Mock())
-    )
+    controller._config_for_project = Mock(return_value=Mock())  # type: ignore[method-assign]
     controller._submit = Mock()  # type: ignore[method-assign]
+    snapshot_path = tmp_path / "state" / "run-configs" / "run.yaml"
+    snapshot_cfg = Mock(repo_path=tmp_path / "repo", state_dir=tmp_path / "state")
 
-    result = controller.start_run("project", thread_id="cli-thread")
+    with (
+        patch(
+            "converge_orchestrator.runtime.materialize_run_config_snapshot",
+            return_value=(snapshot_cfg, snapshot_path, "config-sha"),
+        ) as materialize,
+        patch("converge_orchestrator.runtime.assert_workspace_affinity") as workspace_check,
+        patch("converge_orchestrator.runtime.assert_state_store_affinity") as state_check,
+    ):
+        result = controller.start_run("project", thread_id="cli-thread")
 
     assert result["thread_id"] == "cli-thread"
     created_run_id = controller.registry.create_run.call_args.args[0]
+    materialize.assert_called_once_with(project["config_path"], created_run_id)
+    workspace_check.assert_called_once_with(project, snapshot_cfg.repo_path)
+    state_check.assert_called_once_with(project, snapshot_cfg.state_dir)
     controller.registry.create_run.assert_called_once_with(
         created_run_id,
         "project",
         "cli-thread",
+        config_snapshot_path=snapshot_path,
+        config_snapshot_sha256="config-sha",
     )
     controller._submit.assert_called_once_with(
         created_run_id,
         {
             "project_id": "project",
-            "config_path": "/tmp/project.yaml",
+            "config_path": str(snapshot_path),
             "run_id": created_run_id,
             "thread_id": "cli-thread",
         },
@@ -136,7 +158,7 @@ def test_restart_recovery_never_inspects_run_with_live_foreign_lease() -> None:
         }
     ]
     controller._lease_owner = "controller-local"
-    controller._project_is_local = Mock(return_value=True)  # type: ignore[method-assign]
+    controller._config_for_run = Mock(return_value=Mock())  # type: ignore[method-assign]
     controller._recovery_snapshot = Mock()  # type: ignore[method-assign]
     controller._schedule_recoverable = Mock()  # type: ignore[method-assign]
 
