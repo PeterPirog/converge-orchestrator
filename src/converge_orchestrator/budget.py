@@ -200,7 +200,7 @@ def assert_run_wall_time(
     *,
     now: datetime | None = None,
 ) -> RunBudgetStatus:
-    """Gate a durable controller resume without blocking deterministic completion at token limits."""
+    """Gate controller resume while allowing deterministic completion at model limits."""
 
     with _BUDGET_LOCK:
         status = _status(
@@ -226,8 +226,8 @@ def reserve_model_attempt(
 ) -> dict[str, Any]:
     """Reserve an attempt and its deterministic request envelope before provider execution.
 
-    Reservations are deliberately not rolled back after process/provider failure. This makes retries
-    and crash recovery consume the same finite envelope instead of accidentally granting fresh budget.
+    Reservations are deliberately not rolled back after process/provider failure. Retries and crash
+    recovery therefore consume the same finite envelope instead of accidentally granting fresh budget.
     """
 
     if estimated_input_tokens < 0 or output_reserve_tokens < 0:
