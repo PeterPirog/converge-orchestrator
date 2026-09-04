@@ -126,7 +126,7 @@ different execution states.
 
 ### Integrity verification
 
-Verify a backup before copying it off-host and again before any future restore operation:
+Verify a backup before copying it off-host and again before restore preflight:
 
 ```bash
 converge-backup verify /srv/backups/converge-2026-09-04
@@ -138,6 +138,8 @@ hashes and rejects symlinks, unexpected files, missing files or modified content
 
 The command prints only a bounded operational summary: backup path, creation timestamp, persistence
 backend, project count and file count. It does not print database credentials or backup file contents.
+The manifest/hash mechanism provides deterministic corruption and consistency detection; it is not a
+cryptographic signature against an attacker who can rewrite both payload and manifest.
 
 ### PostgreSQL prerequisite
 
@@ -145,13 +147,49 @@ backend, project count and file count. It does not print database credentials or
 major PostgreSQL server version according to normal PostgreSQL operational practice. A missing or
 failing `pg_dump` aborts the backup.
 
+## Restore preflight
+
+Restore is deliberately split into a read-only planning phase and a later explicit apply phase. Run:
+
+```bash
+converge-backup restore-plan /srv/backups/converge-2026-09-04
+```
+
+`restore-plan` first repeats backup integrity verification and then validates the current restore host
+without writing deployment state. It checks, among other invariants:
+
+- the declared SQLite/PostgreSQL backend matches the actual database artifact in the backup;
+- the current runtime backend selection matches the backup;
+- the SQLite control database target is absent, or for PostgreSQL the configured target contains no
+  user relations and `pg_restore` is available;
+- each manifest project ID and workspace/state-store identity is valid;
+- configuration and immutable-requirements hashes still match project metadata in the manifest;
+- the Git bundle contains the exact repository HEAD recorded by the manifest;
+- the backed-up state-store identity marker matches the manifest;
+- configuration, requirements, repository, state and worktree destination paths are absolute and do
+  not already exist, including broken symlinks;
+- repository/state directory targets from different projects do not overlap.
+
+A blocked plan is printed as structured evidence and exits non-zero. A ready plan contains a
+`confirmation_token`, which is a SHA-256 binding of the backup manifest digest and the exact sanitized
+restore plan. It is intended for the later apply command to require an explicit operator decision tied
+to that exact preflight result. Changing the backup or target state must require a new plan/token.
+
+The plan never prints `CONVERGE_DATABASE_URL`. For PostgreSQL it reports only a sanitized configured or
+unconfigured target classification.
+
 ### Current restore status
 
-Automated restore is **not implemented yet**. Do not overwrite a live deployment manually based only on
-the backup manifest. Restore is destructive and will be implemented separately with a verify/preflight
-phase, explicit destination checks, quiescence requirements and operator confirmation before apply.
-Until then, treat `converge-backup create` plus `verify` as data-protection primitives, not a complete
-disaster-recovery workflow.
+`restore-plan` is implemented; destructive restore **apply is not implemented yet**. There is no
+`--force` path and the preflight itself does not create repositories, state directories or databases.
+Do not overwrite a live deployment manually based only on a ready plan.
+
+The apply phase is intentionally separate because restoration changes durable control/checkpoint state
+and filesystem identity. It must recompute preflight immediately before writing, require the exact
+operator-provided confirmation token, refuse existing targets, and use transactional/staged publication
+where the backend allows it. Until that phase is implemented and tested, `create`, `verify` and
+`restore-plan` are data-protection and recovery-planning primitives rather than a complete disaster
+recovery workflow.
 
 ## Verification
 
@@ -162,6 +200,7 @@ opening another.
 
 Backup tests use real Git and SQLite and cover successful capture, Git bundle validity, checkpoint
 integrity, tamper detection, unfinished-run blocking, worktree ownership blocking, dirty-repository
-blocking, symlink rejection and secret-free PostgreSQL command arguments. The operator CLI is tested
-separately to ensure creation uses the selected durable persistence backend while verification remains
-offline.
+blocking, symlink rejection and secret-free PostgreSQL command arguments. Restore-preflight tests build
+a real backup, simulate loss of the original deployment, validate exact empty restore targets, reject
+broken symlinks and mismatched Git HEAD/backend artifacts, and prove that PostgreSQL credentials are not
+included in the serialized plan.
