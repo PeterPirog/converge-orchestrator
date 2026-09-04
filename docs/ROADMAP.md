@@ -121,18 +121,23 @@ Implemented:
 - crash-resumable SQLite `restore-apply` with exact confirmation-token enforcement, staged filesystem
   publication, database-last visibility, deterministic target validation and a durable completion
   receipt for final-response recovery and later full-loss reuse;
+- crash-safe PostgreSQL `restore-apply` using an atomic server transaction with a plan-bound server-side
+  receipt, database-last publication, exact target binding and real process-death recovery after the
+  database commit but before local journal acknowledgement;
+- isolated libpq CLI connection environments for PostgreSQL backup/restore so inherited `PG*` target
+  settings cannot redirect `pg_dump` or `psql` away from the configured deployment target;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding, persistence, sandbox and model-routing documentation.
 
 Next priorities, in order:
 
-1. **PostgreSQL restore apply** — extend the already-proven preflight/apply contract to PostgreSQL. It
-   must keep the no-force operator boundary, use `pg_restore --single-transaction --exit-on-error` (or
-   an equivalently atomic server-side strategy), and prove the crash boundary after database commit but
-   before local journal acknowledgement without requiring ambiguous manual reconstruction.
-2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
-   implemented Python AST and Node package-manifest policies.
-3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
+1. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
+   implemented Python AST and Node package-manifest policies. Start with the smallest deterministic
+   Node source-level compatibility slice before expanding to Go/Rust.
+2. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
    core autonomous path is operationally hardened.
+3. **Deployment portability hardening** — project-specific pinned sandbox images and deliberately
+   shared/external artifact storage where multi-node deployments require it; do not infer stateless
+   worker safety from PostgreSQL alone.
 
 ## v0.5 — production autonomous operation
 
