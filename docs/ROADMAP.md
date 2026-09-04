@@ -111,14 +111,17 @@ Implemented:
 - authenticated per-project workload-affinity probe that validates active runs from their pinned
   configuration, allowing an external scheduler to route filesystem-bound work without inspecting or
   mutating LangGraph state;
-- detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
+- fail-closed globally quiesced deployment backup creation/verification covering durable database
+  state, Git repositories, immutable requirements and filesystem-backed state/evidence;
+- operator `converge-backup create|verify` commands with backend selection inherited from the runtime
+  environment and offline integrity verification;
+- detailed PyCharm/OpenWebUI/OpenCode onboarding, persistence, sandbox and model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production storage backup/restore** — add a fail-closed backup/restore workflow covering PostgreSQL
-   control/checkpoint state and filesystem-backed evidence/workspaces, or move those artifacts to
-   explicitly shared/external storage. The workload-affinity contract now makes local-filesystem
-   deployments schedulable, but it does not protect data from loss.
+1. **Production restore** — add a separately verified, fail-closed restore workflow for the backup
+   format. Restore must separate integrity/preflight from destructive apply, require explicit operator
+   approval and never overwrite an active deployment.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
