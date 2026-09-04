@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .budget import RunBudgetExceeded, reserve_model_attempt
 from .context import (
     ContextBudgetExceeded,
     PromptEnvelope,
@@ -170,6 +171,10 @@ class OpenCodeAdapter:
                         if result.returncode == 78
                         else "process_failure"
                     )
+                except RunBudgetExceeded:
+                    # Resource governance is deterministic terminal policy. It must not be converted
+                    # into a provider retry, semantic reject, or operator-approvable HITL path.
+                    raise
                 except Exception as exc:
                     result = AgentResult(
                         role=role,
@@ -265,6 +270,17 @@ class OpenCodeAdapter:
         )
         managed_config_dir = materialize_managed_skills(self.config, role)
         try:
+            reservation = reserve_model_attempt(
+                self.config,
+                role=role,
+                model=model,
+                model_profile=model_profile,
+            )
+        except RunBudgetExceeded:
+            append_context_ledger(self.config, context_report, cwd)
+            raise
+
+        try:
             result = ExecutionSandbox(self.config).run(
                 cmd,
                 cwd=cwd,
@@ -288,12 +304,15 @@ class OpenCodeAdapter:
             raise
         context_report = finalize_report(context_report, result.stdout)
         append_context_ledger(self.config, context_report, cwd)
+        context_payload = context_report.model_dump(mode="json")
+        if reservation is not None:
+            context_payload["run_budget_reservation"] = reservation
         return AgentResult(
             role=role,
             ok=result.returncode == 0,
             output=result.stdout,
             returncode=result.returncode,
-            context=context_report.model_dump(mode="json"),
+            context=context_payload,
         )
 
     def _invoke_review_fanout(
@@ -325,8 +344,18 @@ class OpenCodeAdapter:
                 try:
                     raw_results[role] = futures[role].result()
                 except Exception as exc:
-                    # Timeout/runtime faults are evidence of a failed review, not a silent skip.
                     failures[role] = exc
+
+        budget_failure = next(
+            (
+                failure
+                for role in roles
+                if isinstance((failure := failures.get(role)), RunBudgetExceeded)
+            ),
+            None,
+        )
+        if budget_failure is not None:
+            raise budget_failure
 
         reviews: dict[str, ReviewResult] = {}
         for role in roles:
