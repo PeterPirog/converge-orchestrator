@@ -164,8 +164,9 @@ class ScheduledRunController(RunController):
             and not remote_worker_active
             and not result.get("finished_at")
         ):
-            # The graph may have durably completed immediately before the process lost the registry
-            # update. Any later status reconciliation must close that crash window without rerunning.
+            # The graph may have durably completed immediately before the process lost
+            # the registry update. Later status reconciliation closes that crash window
+            # without rerunning.
             self.registry.update_run(
                 run_id,
                 status=terminal_status,
