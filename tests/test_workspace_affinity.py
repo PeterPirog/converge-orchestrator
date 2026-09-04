@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from converge_orchestrator.registry import ControlRegistry
+from converge_orchestrator.runtime_service import ScheduledRunController
 from converge_orchestrator.workspace_identity import (
     WorkspaceAffinityError,
     assert_workspace_affinity,
@@ -84,3 +86,23 @@ def test_affinity_rejects_same_project_from_another_clone(tmp_path: Path) -> Non
     assert assert_workspace_affinity(project, first) == project["workspace_id"]
     with pytest.raises(WorkspaceAffinityError, match="bound to workspace"):
         assert_workspace_affinity(project, second)
+
+
+def test_recovery_scanner_never_reads_runs_for_foreign_workspace() -> None:
+    controller = object.__new__(ScheduledRunController)
+    controller.registry = Mock()
+    controller.registry.list_projects.return_value = [
+        {"id": "local", "workspace_id": "workspace-a"},
+        {"id": "foreign", "workspace_id": "workspace-b"},
+    ]
+    controller.registry.runs_for_project.return_value = [
+        {"id": "run-local", "finished_at": None}
+    ]
+    controller._project_is_local = Mock(  # type: ignore[method-assign]
+        side_effect=lambda project: project["id"] == "local"
+    )
+
+    assert list(controller._unfinished_records()) == [
+        {"id": "run-local", "finished_at": None}
+    ]
+    controller.registry.runs_for_project.assert_called_once_with("local")
