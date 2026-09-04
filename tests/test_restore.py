@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,14 @@ from converge_orchestrator.backup import create_deployment_backup
 from converge_orchestrator.registry import ControlRegistry
 from converge_orchestrator.restore import plan_deployment_restore
 from converge_orchestrator.workspace_identity import state_store_id, workspace_id
+
+
+def _remove_tree(path: Path) -> None:
+    # Git writes loose object files read-only on Windows, so deletion must clear the bit.
+    for root, _dirs, filenames in os.walk(path):
+        for name in filenames:
+            os.chmod(os.path.join(root, name), stat.S_IWRITE)
+    shutil.rmtree(path)
 
 
 def _lost_sqlite_deployment(tmp_path: Path):
@@ -56,10 +66,10 @@ def _lost_sqlite_deployment(tmp_path: Path):
     config.write_text(
         "\n".join(
             [
-                f'repo_path: "{repo}"',
-                f'requirements_path: "{requirements}"',
-                f'state_dir: "{state_dir}"',
-                f'worktree_dir: "{worktree_dir}"',
+                f"repo_path: {json.dumps(str(repo))}",
+                f"requirements_path: {json.dumps(str(requirements))}",
+                f"state_dir: {json.dumps(str(state_dir))}",
+                f"worktree_dir: {json.dumps(str(worktree_dir))}",
                 'github_repo: "example/repo"',
                 "require_spec_read_only: false",
                 "agents:",
@@ -93,8 +103,8 @@ def _lost_sqlite_deployment(tmp_path: Path):
         destination=backup,
     )
 
-    shutil.rmtree(repo)
-    shutil.rmtree(state_dir)
+    _remove_tree(repo)
+    _remove_tree(state_dir)
     config.unlink()
     requirements.unlink()
     control_db.unlink()
@@ -476,8 +486,8 @@ def test_completed_restore_receipt_is_retry_safe_and_reusable_after_full_loss(
     )
     assert repeated.resumed is True
 
-    shutil.rmtree(repo)
-    shutil.rmtree(state_dir)
+    _remove_tree(repo)
+    _remove_tree(state_dir)
     config.unlink()
     requirements.unlink()
     control_db.unlink()

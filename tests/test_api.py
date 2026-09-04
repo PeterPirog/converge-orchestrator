@@ -63,10 +63,10 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     config.write_text(
         "\n".join(
             [
-                f'repo_path: "{repo}"',
-                f'requirements_path: "{requirements}"',
-                f'state_dir: "{state_dir}"',
-                f'worktree_dir: "{state_dir / "worktrees"}"',
+                f"repo_path: {json.dumps(str(repo))}",
+                f"requirements_path: {json.dumps(str(requirements))}",
+                f"state_dir: {json.dumps(str(state_dir))}",
+                f'worktree_dir: {json.dumps(str(state_dir / "worktrees"))}',
                 "agents:",
                 "  planner:",
                 "    agent: converge-planner",

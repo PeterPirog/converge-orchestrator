@@ -219,10 +219,11 @@ def test_automatic_precheckpoint_recovery_replays_original_initial_input() -> No
 
 def test_automatic_precheckpoint_recovery_replays_pinned_config_path() -> None:
     controller = _controller()
+    snapshot_path = "/tmp/state/run-configs/run-1.yaml"
     record = {
         **_unfinished_record(),
         "status": "recoverable",
-        "config_snapshot_path": "/tmp/state/run-configs/run-1.yaml",
+        "config_snapshot_path": snapshot_path,
         "config_snapshot_sha256": "config-sha",
     }
     controller.registry.get_run.return_value = record
@@ -238,7 +239,7 @@ def test_automatic_precheckpoint_recovery_replays_pinned_config_path() -> None:
         "run-1",
         {
             "project_id": "project",
-            "config_path": "/tmp/state/run-configs/run-1.yaml",
+            "config_path": str(Path(snapshot_path).expanduser().resolve()),
             "run_id": "run-1",
             "thread_id": "thread-1",
         },
