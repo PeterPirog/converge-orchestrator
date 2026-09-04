@@ -8,8 +8,13 @@ from rich.console import Console
 
 from .acceptance import load_supervisor_evidence
 from .acceptance_provenance import evaluate_external_acceptance_with_provenance
-from .acceptance_supervisor import AcceptanceSupervisorError, supervise_external_acceptance
-from .config import load_run_config_snapshot
+from .acceptance_supervisor import (
+    AcceptanceSupervisorError,
+    _validate_acceptance_preconditions,
+    supervise_external_acceptance,
+)
+from .config import load_config, load_run_config_snapshot
+from .github import GitHubAdapter, GitHubError
 from .persistence import configured_control_db_path
 from .runtime_service import ScheduledRunController
 
@@ -31,12 +36,60 @@ SupervisorOption = Annotated[
 ]
 
 
+def _acceptance_preflight(config_path: Path) -> dict[str, Any]:
+    """Fail before model work unless the external release target has authoritative required CI."""
+
+    cfg = load_config(config_path)
+    _validate_acceptance_preconditions(cfg)
+    try:
+        policy = GitHubAdapter(cfg).remote_policy(cfg.base_branch)
+    except GitHubError as exc:
+        raise AcceptanceSupervisorError(
+            f"acceptance remote CI preflight failed: {exc}"
+        ) from exc
+
+    if not policy.authoritative:
+        raise AcceptanceSupervisorError(
+            "acceptance remote CI policy is not authoritative: "
+            f"source={policy.source}"
+        )
+    if not policy.required_checks:
+        raise AcceptanceSupervisorError(
+            "acceptance base branch must require at least one authoritative GitHub status check; "
+            f"source={policy.source}"
+        )
+
+    return {
+        "target_repository": cfg.github_repo,
+        "base_branch": cfg.base_branch,
+        "policy_source": policy.source,
+        "strict": policy.strict,
+        "required_checks": [item.as_dict() for item in policy.required_checks],
+    }
+
+
 def _risk_approval(interrupt: dict[str, Any]) -> str:
     console.print_json(data=interrupt)
     approved = typer.confirm(
         "Approve this deliberately injected acceptance risk and continue without manual code edits?"
     )
     return "approve" if approved else "reject"
+
+
+@app.command("preflight")
+def preflight(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, readable=True, help="Acceptance project config."),
+    ],
+) -> None:
+    """Verify acceptance constraints and required GitHub CI before model work."""
+
+    try:
+        result = _acceptance_preflight(config.expanduser().resolve())
+    except (AcceptanceSupervisorError, OSError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(data=result)
 
 
 @app.command("supervise")
@@ -79,9 +132,11 @@ def supervise(
 ) -> None:
     """Run the live external-repository release scenario through the normal API controller."""
 
+    resolved_config = config.expanduser().resolve()
     try:
+        _acceptance_preflight(resolved_config)
         result = supervise_external_acceptance(
-            config,
+            resolved_config,
             project_id=project_id,
             expected_risk_flag=expected_risk_flag,
             output_path=output.expanduser().resolve(),
