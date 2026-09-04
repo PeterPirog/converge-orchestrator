@@ -96,6 +96,32 @@ def test_postgres_project_runtime_binding_is_shared_and_fail_closed(tmp_path: Pa
         )
 
 
+def test_postgres_rejects_state_store_reuse_by_another_project(tmp_path: Path) -> None:
+    assert DATABASE_URL is not None
+    setup_postgres(DATABASE_URL)
+    suffix = uuid4().hex
+    state_id = f"state-shared-{suffix}"
+    first_project = f"first-{suffix}"
+    second_project = f"second-{suffix}"
+    first = PostgresControlRegistry(DATABASE_URL)
+    second = PostgresControlRegistry(DATABASE_URL)
+
+    first.register_project(
+        first_project,
+        tmp_path / "first.yaml",
+        workspace_id=f"workspace-first-{suffix}",
+        state_store_id=state_id,
+    )
+
+    with pytest.raises(ValueError, match=f"already assigned to project {first_project}"):
+        second.register_project(
+            second_project,
+            tmp_path / "second.yaml",
+            workspace_id=f"workspace-second-{suffix}",
+            state_store_id=state_id,
+        )
+
+
 def test_postgres_langgraph_checkpoint_survives_connection_rotation(tmp_path: Path) -> None:
     assert DATABASE_URL is not None
     setup_postgres(DATABASE_URL)
