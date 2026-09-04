@@ -126,7 +126,11 @@ def _authoritative_ci_policy(ci: Any) -> tuple[bool, int, str]:
         for item in required
         if isinstance(item, dict) and bool(str(item.get("context") or "").strip())
     ]
-    ok = policy.get("authoritative") is True and len(valid_required) == len(required) and bool(required)
+    ok = (
+        policy.get("authoritative") is True
+        and len(valid_required) == len(required)
+        and bool(required)
+    )
     return ok, len(valid_required), str(policy.get("source") or "unknown")
 
 
