@@ -44,8 +44,12 @@ def _parse_timestamp(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _budget_path_from_state(state_dir: Path, run_id: str) -> Path:
+    return state_dir / "run-budgets" / f"{run_id}.json"
+
+
 def _budget_path(config: ProjectConfig, run_id: str) -> Path:
-    return config.state_dir / "run-budgets" / f"{run_id}.json"
+    return _budget_path_from_state(config.state_dir, run_id)
 
 
 def _write_ledger(path: Path, ledger: RunBudgetLedger) -> None:
@@ -147,6 +151,35 @@ def check_run_wall_time(
     with _BUDGET_LOCK:
         ledger = ensure_run_budget(config, now=timestamp)
         assert ledger is not None
+        _check_elapsed(path, ledger, timestamp)
+        elapsed = max(
+            0.0,
+            (timestamp - _parse_timestamp(ledger.started_at)).total_seconds(),
+        )
+        return {
+            "run_id": run_id,
+            "elapsed_seconds": int(elapsed),
+            "max_run_seconds": ledger.max_run_seconds,
+            "model_attempts_reserved": ledger.model_attempts_reserved,
+            "max_model_attempts": ledger.max_model_attempts,
+        }
+
+
+def check_run_wall_time_for_state_dir(
+    state_dir: Path,
+    run_id: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Enforce an existing ledger at LangGraph safe points without reloading mutable config."""
+    path = _budget_path_from_state(state_dir, run_id)
+    if not path.exists():
+        return None
+    timestamp = (now or _utcnow()).astimezone(UTC)
+    with _BUDGET_LOCK:
+        ledger = _load_ledger(path)
+        if ledger.version != _BUDGET_VERSION or ledger.run_id != run_id:
+            raise RuntimeError("Run budget ledger identity does not match the safe-point run")
         _check_elapsed(path, ledger, timestamp)
         elapsed = max(
             0.0,
