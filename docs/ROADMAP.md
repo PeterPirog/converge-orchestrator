@@ -115,13 +115,16 @@ Implemented:
   state, Git repositories, immutable requirements and filesystem-backed state/evidence;
 - operator `converge-backup create|verify` commands with backend selection inherited from the runtime
   environment and offline integrity verification;
+- read-only `converge-backup restore-plan` preflight that re-verifies backup semantics, destination
+  emptiness, Git bundle HEAD, storage identities and backend compatibility and emits a plan-bound
+  confirmation token without writing deployment state;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding, persistence, sandbox and model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production restore** — add a separately verified, fail-closed restore workflow for the backup
-   format. Restore must separate integrity/preflight from destructive apply, require explicit operator
-   approval and never overwrite an active deployment.
+1. **Production restore apply** — implement the destructive half of restore as an explicit operator
+   action. It must recompute preflight immediately before writing, require the exact confirmation token,
+   refuse existing targets and use transactional/staged publication rather than a force-overwrite path.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
