@@ -11,10 +11,11 @@ The FastAPI control plane exposes:
 - `GET /health` — liveness only. This remains public when API Bearer authentication is enabled.
 - `GET /diagnostics` — JSON operational snapshot.
 - `GET /metrics` — Prometheus text exposition (`text/plain; version=0.0.4`).
+- `GET /projects/{project_id}/affinity` — authenticated worker-placement probe for multi-node routing.
 
-`/diagnostics` and `/metrics` use the same Bearer authentication as the rest of the control plane. Do
-not expose them publicly without the same network and authentication controls used for the operator
-API.
+`/diagnostics`, `/metrics` and the affinity probe use the same Bearer authentication as the rest of the
+control plane. Do not expose them publicly without the same network and authentication controls used
+for the operator API.
 
 Example:
 
@@ -81,22 +82,52 @@ Alert thresholds are deployment-specific, but useful conditions include:
 These are diagnostic signals, not automatic permission to mutate or terminate a run. Recovery and
 routing remain controlled by the durable LangGraph/controller policy.
 
-## Multi-node boundary
+## Multi-node workload-affinity contract
 
 PostgreSQL plus durable metrics does not make the whole executor stateless. Candidate repositories,
 worktrees, evidence and generated role runtime artifacts remain filesystem-backed. Independent nodes
 therefore still require either:
 
 1. a deliberately shared/consistent workspace and state filesystem, or
-2. workload affinity that routes a registered project to the worker that owns its bound workspace and
+2. workload affinity that routes a registered project to a worker that owns its bound workspace and
    state store.
 
-The existing workspace/state-store affinity checks fail closed when a controller sees the wrong local
-resources. External/shared evidence/workspace storage and backup/restore automation remain separate
-production-hardening work.
+The authenticated `GET /projects/{project_id}/affinity` endpoint is the deployable contract for option
+2. A scheduler or gateway can query candidate workers before sending project/run operations and choose
+an eligible worker. The response contains only bounded placement metadata:
+
+```json
+{
+  "project_id": "payments",
+  "eligible": true,
+  "basis": "pinned_run",
+  "reason": "local",
+  "unfinished_runs": 1
+}
+```
+
+The probe follows durable ownership rules rather than mutable convenience:
+
+- if exactly one unfinished run exists, placement is validated from that run's hash-pinned
+  configuration snapshot (`basis=pinned_run`); current `converge.yaml` is not consulted;
+- if no unfinished run exists, placement is validated from current project configuration because that
+  is what a future run would use (`basis=project_config`);
+- multiple unfinished runs are treated as ambiguous and return `eligible=false` rather than guessing;
+- missing local storage, invalid configuration and workspace/state-store mismatch return stable,
+  sanitized reason codes without filesystem paths or raw exception text.
+
+A scheduler must fail closed when no worker reports `eligible=true`. More than one eligible worker is
+valid only when those workers deliberately see the same bound workspace/state filesystem; the durable
+run lease still prevents concurrent execution of one LangGraph thread. `/health` is only liveness and
+must never be used as a substitute for project affinity.
+
+The affinity probe does not migrate data, rewrite bindings or acquire execution authority. Existing
+workspace/state-store checks remain the final deterministic guard inside the controller. External/shared
+artifact storage and backup/restore automation remain separate production-hardening work.
 
 ## Privacy and retention
 
 Prometheus output is aggregate metadata only. `/diagnostics` likewise omits raw error text, paths and
-individual run identifiers. Detailed evidence remains in the normal authenticated evidence API and
+individual run identifiers. The project affinity endpoint is authenticated and returns only bounded
+placement classifications. Detailed evidence remains in the normal authenticated evidence API and
 filesystem store, where its project-specific retention policy can be managed separately.

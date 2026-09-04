@@ -72,6 +72,16 @@ def test_api_bootstrap_compliance_evidence_and_pause(tmp_path: Path) -> None:
     )
     assert response.status_code == 201
 
+    response = client.get("/projects/payments/affinity")
+    assert response.status_code == 200
+    assert response.json() == {
+        "project_id": "payments",
+        "eligible": True,
+        "basis": "project_config",
+        "reason": "local",
+        "unfinished_runs": 0,
+    }
+
     response = client.post("/projects/payments/bootstrap")
     assert response.status_code == 200
     payload = response.json()
@@ -142,6 +152,7 @@ def test_openapi_exposes_required_mvp_control_routes(tmp_path: Path) -> None:
     routes = set(app.openapi()["paths"])
     expected = {
         "/projects",
+        "/projects/{project_id}/affinity",
         "/projects/{project_id}/bootstrap",
         "/projects/{project_id}/run",
         "/runs/{run_id}",

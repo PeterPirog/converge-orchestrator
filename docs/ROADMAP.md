@@ -108,14 +108,17 @@ Implemented:
   registry, with cross-worker atomic leases, strict checkpoint deserialization and focused real-DB CI;
 - durable low-cardinality `/diagnostics` and Prometheus `/metrics` reconstructed from the shared control
   registry without process-local counters, model calls or LangGraph routing authority;
+- authenticated per-project workload-affinity probe that validates active runs from their pinned
+  configuration, allowing an external scheduler to route filesystem-bound work without inspecting or
+  mutating LangGraph state;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production storage boundary and backup/restore** — external/shared evidence/workspace storage or a
-   deployable workload-affinity contract, plus backup/restore automation covering both PostgreSQL and
-   filesystem state. Shared PostgreSQL control/checkpoint state and durable registry metrics are now
-   implemented; filesystem artifacts remain the main distribution boundary.
+1. **Production storage backup/restore** — add a fail-closed backup/restore workflow covering PostgreSQL
+   control/checkpoint state and filesystem-backed evidence/workspaces, or move those artifacts to
+   explicitly shared/external storage. The workload-affinity contract now makes local-filesystem
+   deployments schedulable, but it does not protect data from loss.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
