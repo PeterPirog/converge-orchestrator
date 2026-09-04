@@ -75,12 +75,19 @@ class ScheduledRunController(RunController):
         self,
         registry_path: Path,
         database_url: str | None = None,
+        *,
+        restore_on_start: bool = True,
     ):
         super().__init__(registry_path, database_url=database_url)
         self._timers: dict[str, threading.Timer] = {}
         self._timer_generations: dict[str, int] = {}
-        self._restore_ci_waits()
-        self._restore_recoverable_runs()
+        if restore_on_start:
+            self.restore_durable_runs()
+
+    def restore_durable_runs(self, project_id: str | None = None) -> None:
+        """Restore all local durable work or only one explicitly selected project."""
+        self._restore_ci_waits(project_id)
+        self._restore_recoverable_runs(project_id)
 
     def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
         cfg = load_config(config_path)
@@ -104,8 +111,7 @@ class ScheduledRunController(RunController):
         if needs_rebind_recovery:
             # Legacy rows were deliberately not auto-recovered before their physical bindings were
             # known. Explicit re-registration is the one safe point to retry their durable work.
-            self._restore_ci_waits(project_id)
-            self._restore_recoverable_runs(project_id)
+            self.restore_durable_runs(project_id)
         return result
 
     def start_run(
