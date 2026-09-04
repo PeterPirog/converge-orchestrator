@@ -102,6 +102,34 @@ def _merged_task_ids(events: list[dict[str, Any]]) -> list[str]:
     return output
 
 
+def _authoritative_ci_policy(ci: Any) -> tuple[bool, int, str]:
+    """Require recorded authoritative remote policy with at least one required check."""
+
+    if not isinstance(ci, dict):
+        return False, 0, "invalid"
+    raw_checks = ci.get("checks")
+    if not isinstance(raw_checks, list):
+        return False, 0, "missing"
+    policies = [
+        item
+        for item in raw_checks
+        if isinstance(item, dict) and item.get("kind") == "remote_policy"
+    ]
+    if len(policies) != 1:
+        return False, 0, "ambiguous"
+    policy = policies[0]
+    required = policy.get("required_checks")
+    if not isinstance(required, list):
+        return False, 0, str(policy.get("source") or "invalid")
+    valid_required = [
+        item
+        for item in required
+        if isinstance(item, dict) and bool(str(item.get("context") or "").strip())
+    ]
+    ok = policy.get("authoritative") is True and len(valid_required) == len(required) and bool(required)
+    return ok, len(valid_required), str(policy.get("source") or "unknown")
+
+
 def _task_bundle_checks(
     config: ProjectConfig,
     run_id: str,
@@ -169,12 +197,17 @@ def _task_bundle_checks(
         )
     )
 
-    ci_ok = isinstance(ci, dict) and ci.get("status") == "pass"
+    policy_ok, required_check_count, policy_source = _authoritative_ci_policy(ci)
+    ci_status = ci.get("status") if isinstance(ci, dict) else "invalid"
+    ci_ok = ci_status == "pass" and policy_ok
     checks.append(
         _check(
             f"task:{task_id}:ci",
             ci_ok,
-            f"authoritative CI status={ci.get('status') if isinstance(ci, dict) else 'invalid'}",
+            (
+                f"authoritative CI status={ci_status}; policy={policy_source}; "
+                f"required_checks={required_check_count}"
+            ),
         )
     )
 
