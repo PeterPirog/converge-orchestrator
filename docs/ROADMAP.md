@@ -66,12 +66,16 @@ Implemented:
   behavior-changing tasks;
 - deterministic final-diff risk classification for secrets, destructive migrations, public Python
   API changes, Node package entry-point compatibility and auth/authz weakening;
+- deterministic Node published-target existence checks: deleting an exact local file that a
+  pre-existing package entry still publishes is a compatibility break even when `package.json` is
+  unchanged, while compatible retargeting remains review evidence rather than forced HITL;
 - hard-block secret policy before semantic review and risk approval bound to the exact candidate diff;
 - monotonic Python AST/import boundary enforcement independent from project-provided scripts.
 
 Remaining:
 
-- source-level Node plus Go/Rust compatibility adapters and broader safe roll-forward strategies;
+- stack-native Node named-export/source-signature analysis, then Go/Rust API/dependency adapters and
+  broader safe roll-forward strategies;
 - stale-resource chaos extensions only where a newly discovered failure boundary lacks an equivalent
   deterministic recovery proof.
 
@@ -130,9 +134,9 @@ Implemented:
 
 Next priorities, in order:
 
-1. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
-   implemented Python AST and Node package-manifest policies. Start with the smallest deterministic
-   Node source-level compatibility slice before expanding to Go/Rust.
+1. **Broader language adapters** — add a stack-native deterministic analyzer for Node named
+   exports/source signatures, then extend public API and dependency-boundary rules to Go/Rust. Do not
+   replace a real parser with regex inference merely to claim coverage.
 2. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
    core autonomous path is operationally hardened.
 3. **Deployment portability hardening** — project-specific pinned sandbox images and deliberately
