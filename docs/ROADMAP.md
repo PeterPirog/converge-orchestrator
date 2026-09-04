@@ -83,6 +83,8 @@ Implemented:
 - optional Bearer authentication for control-plane requests;
 - stable per-run LangGraph `thread_id`, checkpoint-aware resume and autonomous post-merge loop;
 - one user-maintained `converge.yaml`, with paths relative to the YAML file;
+- per-run normalized configuration snapshots with SHA-256 stored in the control registry, so active
+  and recovered runs cannot silently change model, gate, retry or merge policy when source YAML changes;
 - reusable model profiles, per-agent properties, OpenWebUI/OpenAI-compatible gateway configuration,
   MCP configuration, quality/sandbox/workflow settings and documented defaults;
 - generated OpenCode configuration outside the target repository;
