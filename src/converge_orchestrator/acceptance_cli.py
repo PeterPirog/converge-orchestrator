@@ -6,7 +6,8 @@ from typing import Annotated, Any
 import typer
 from rich.console import Console
 
-from .acceptance import evaluate_external_acceptance, load_supervisor_evidence
+from .acceptance import load_supervisor_evidence
+from .acceptance_provenance import evaluate_external_acceptance_with_provenance
 from .acceptance_supervisor import AcceptanceSupervisorError, supervise_external_acceptance
 from .config import load_run_config_snapshot
 from .persistence import configured_control_db_path
@@ -100,7 +101,7 @@ def report(
     run_id: RunIdOption,
     supervisor_evidence: SupervisorOption = None,
 ) -> None:
-    """Fail closed unless one external acceptance run satisfies every release-gate check."""
+    """Fail closed unless live supervisor artifacts satisfy every release-gate check."""
 
     controller = ScheduledRunController(
         configured_control_db_path(),
@@ -117,7 +118,7 @@ def report(
         cfg = load_run_config_snapshot(str(snapshot_path), str(snapshot_sha256))
         status = controller.status(run_id)
         supervisor = load_supervisor_evidence(supervisor_evidence)
-        result = evaluate_external_acceptance(
+        result = evaluate_external_acceptance_with_provenance(
             cfg,
             status,
             supervisor_evidence=supervisor,
