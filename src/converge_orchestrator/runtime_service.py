@@ -156,15 +156,42 @@ class ScheduledRunController(RunController):
         result = super().status(run_id)
         interrupt_payload = result.get("interrupt")
         remote_worker_active = bool(result.get("remote_worker_active"))
+        worker_alive = bool(result.get("worker_alive"))
+        terminal_status = _terminal_checkpoint_status(result)
+        if (
+            terminal_status is not None
+            and not worker_alive
+            and not remote_worker_active
+            and not result.get("finished_at")
+        ):
+            # The graph may have durably completed immediately before the process lost the registry
+            # update. Any later status reconciliation must close that crash window without rerunning.
+            self.registry.update_run(
+                run_id,
+                status=terminal_status,
+                node="done",
+                finished=True,
+            )
+            self._cancel_timer(run_id)
+            persisted = self.registry.get_run(run_id)
+            for key in (
+                "values",
+                "next",
+                "interrupt",
+                "worker_alive",
+                "remote_worker_active",
+            ):
+                persisted[key] = result.get(key)
+            return persisted
         if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
             self.registry.update_run(run_id, status="waiting_ci", node="ci_wait")
             result["status"] = "waiting_ci"
-            if not result.get("worker_alive") and not remote_worker_active:
+            if not worker_alive and not remote_worker_active:
                 self._schedule_ci_wait(run_id, str(interrupt_payload["wake_at"]))
         elif (
             not interrupt_payload
             and result.get("next")
-            and not result.get("worker_alive")
+            and not worker_alive
             and not remote_worker_active
             and not result.get("finished_at")
         ):
@@ -176,7 +203,7 @@ class ScheduledRunController(RunController):
             result["status"] = "recoverable"
             self._schedule_recoverable(run_id)
         elif (
-            not result.get("worker_alive")
+            not worker_alive
             and not remote_worker_active
             and not result.get("finished_at")
             and result.get("status") in _PRECHECKPOINT_RECOVERY_STATUSES
