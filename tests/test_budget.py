@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import types
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -131,6 +132,35 @@ def test_next_provider_attempt_is_blocked_before_counter_overrun(tmp_path: Path)
     status = run_budget_status(cfg, "run-1")
     assert status.model_attempts_reserved == 1
     assert status.estimated_tokens_reserved == 356
+
+
+def test_parallel_model_reservations_never_exceed_cap(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, attempts=4, tokens=100_000)
+    run_id = "run-parallel-budget"
+    initialize_run_budget(cfg, run_id, started_at=datetime.now(UTC))
+
+    def reserve(index: int) -> str:
+        try:
+            reserve_model_attempt(
+                cfg,
+                run_id,
+                role=f"reviewer-{index}",
+                model="review-model",
+                estimated_input_tokens=100,
+                output_reserve_tokens=256,
+            )
+        except RunBudgetExceeded:
+            return "exhausted"
+        return "reserved"
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        outcomes = list(executor.map(reserve, range(8)))
+
+    assert outcomes.count("reserved") == 4
+    assert outcomes.count("exhausted") == 4
+    status = run_budget_status(cfg, run_id)
+    assert status.model_attempts_reserved == 4
+    assert status.estimated_tokens_reserved == 4 * 356
 
 
 def test_next_request_is_blocked_before_estimated_token_overrun(tmp_path: Path) -> None:
