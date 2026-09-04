@@ -17,6 +17,9 @@ from .shell import run_configured
 
 SandboxScope = Literal["agent", "quality"]
 _ENV_REFERENCE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+_IMAGE_DIGEST_REFERENCE = re.compile(
+    r"^(?:sha256:[0-9a-f]{64}|[^@\s]+@sha256:[0-9a-f]{64})$"
+)
 _HOST_AGENT_BASE_ENV = {
     "APPDATA",
     "COMSPEC",
@@ -118,6 +121,11 @@ def _is_loopback_url(url: str | None) -> bool:
         return False
 
 
+def _is_digest_pinned_image(image: str) -> bool:
+    """Return whether Docker/OCI execution is bound to immutable sha256 content."""
+    return _IMAGE_DIGEST_REFERENCE.fullmatch(image.strip()) is not None
+
+
 class SandboxPreflightError(RuntimeError):
     pass
 
@@ -139,6 +147,18 @@ class ExecutionSandbox:
                 "sandbox requires a named internal agent network when "
                 "require_internal_agent_network=true"
             )
+
+    def _validate_image_policy(self) -> str:
+        image = self.config.sandbox.image
+        if not image:
+            raise SandboxPreflightError("sandbox image is not configured")
+        if not _is_digest_pinned_image(image):
+            raise SandboxPreflightError(
+                "container sandbox image must be immutable and digest-pinned as "
+                "repository@sha256:<64-hex> (or local sha256:<64-hex> image ID); "
+                f"mutable image references are forbidden: {image}"
+            )
+        return image
 
     def _validate_agent_runtime(self) -> None:
         if self.config.opencode_attach_url:
@@ -191,13 +211,11 @@ class ExecutionSandbox:
             return
         self._validate_network_policy()
         self._validate_agent_runtime()
+        image = self._validate_image_policy()
         if shutil.which(policy.engine) is None:
             raise SandboxPreflightError(
                 f"sandbox engine executable not found on PATH: {policy.engine}"
             )
-        image = policy.image
-        if not image:
-            raise SandboxPreflightError("sandbox image is not configured")
         image_result = run_configured(
             [policy.engine, "image", "inspect", image],
             cwd=self.config.repo_path,
@@ -252,6 +270,7 @@ class ExecutionSandbox:
                 env=env,
             )
         self._validate_network_policy()
+        self._validate_image_policy()
         if scope == "agent":
             self._validate_agent_runtime()
             self._validate_internal_agent_network()
