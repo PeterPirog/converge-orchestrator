@@ -8,9 +8,10 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -209,10 +210,18 @@ def _validate_acceptance_preconditions(config: ProjectConfig) -> None:
     contract = compile_contract(config.requirements_path)
     mandatory = [item for item in contract.requirements if item.severity == "mandatory"]
     if len(mandatory) < 2:
-        problems.append("acceptance requires at least two independently useful mandatory requirements")
-    required_gates = [gate for gate in effective_quality_gates(config, config.repo_path) if gate.required]
+        problems.append(
+            "acceptance requires at least two independently useful mandatory requirements"
+        )
+    required_gates = [
+        gate
+        for gate in effective_quality_gates(config, config.repo_path)
+        if gate.required
+    ]
     if not required_gates:
-        problems.append("acceptance target must expose at least one required deterministic quality gate")
+        problems.append(
+            "acceptance target must expose at least one required deterministic quality gate"
+        )
     if problems:
         raise AcceptanceSupervisorError("acceptance preflight failed: " + "; ".join(problems))
 
@@ -228,7 +237,9 @@ def _events(config: ProjectConfig, run_id: str) -> list[dict[str, Any]]:
                 continue
             item = json.loads(raw)
             if not isinstance(item, dict) or not isinstance(item.get("event"), str):
-                raise AcceptanceSupervisorError(f"invalid event stream record at line {line_number}")
+                raise AcceptanceSupervisorError(
+                    f"invalid event stream record at line {line_number}"
+                )
             records.append(item)
     except (OSError, json.JSONDecodeError) as exc:
         raise AcceptanceSupervisorError(f"cannot read acceptance event stream: {exc}") from exc
@@ -285,7 +296,9 @@ def _pinned_config_for_run(
     snapshot_path = record.get("config_snapshot_path")
     snapshot_hash = record.get("config_snapshot_sha256")
     if not snapshot_path or not snapshot_hash:
-        raise AcceptanceSupervisorError("acceptance run is missing hash-pinned configuration metadata")
+        raise AcceptanceSupervisorError(
+            "acceptance run is missing hash-pinned configuration metadata"
+        )
     return load_run_config_snapshot(str(snapshot_path), str(snapshot_hash))
 
 
@@ -324,7 +337,9 @@ def _parse_review(role: str, output: str) -> ReviewResult:
     try:
         return ReviewResult.model_validate(payload)
     except ValidationError as exc:
-        raise AcceptanceSupervisorError(f"{role} final audit returned invalid review JSON: {exc}") from exc
+        raise AcceptanceSupervisorError(
+            f"{role} final audit returned invalid review JSON: {exc}"
+        ) from exc
 
 
 def _final_audit_prompt(area: str, requirements: str) -> str:
@@ -339,10 +354,11 @@ def _final_audit_prompt(area: str, requirements: str) -> str:
         ],
     }
     return f"""Perform a FINAL read-only external acceptance audit of the repository.
-The Builder is finished. Do not edit files. Re-read the repository and immutable requirements from the
-provided authoritative excerpt. Audit only the area: {area}. Do not assume earlier reviewers were
-correct. A material uncertainty, unverified mandatory requirement, architecture drift, compatibility
-break or security defect relevant to this area is REJECT. Return ONLY JSON matching: {json.dumps(schema)}
+The Builder is finished. Do not edit files. Re-read the repository and immutable requirements
+from the provided authoritative excerpt. Audit only the area: {area}. Do not assume earlier
+reviewers were correct. A material uncertainty, unverified mandatory requirement, architecture
+drift, compatibility break or security defect relevant to this area is REJECT.
+Return ONLY JSON matching: {json.dumps(schema)}
 
 IMMUTABLE REQUIREMENTS:
 {requirements}
@@ -456,9 +472,13 @@ def _wait_for_automatic_recovery(
         if status.get("worker_alive") is True or len(_events(config, run_id)) > event_count_before:
             return
         if status.get("finished_at"):
-            raise AcceptanceSupervisorError("run finished before restart recovery could be observed")
+            raise AcceptanceSupervisorError(
+                "run finished before restart recovery could be observed"
+            )
         time.sleep(poll_seconds)
-    raise AcceptanceSupervisorError("automatic same-run recovery was not observed after restart")
+    raise AcceptanceSupervisorError(
+        "automatic same-run recovery was not observed after restart"
+    )
 
 
 def _wait_for_risk_interrupt(
@@ -529,10 +549,10 @@ def supervise_external_acceptance(
 ) -> ExternalAcceptanceReport:
     """Execute and prove the live external-repository release scenario.
 
-    The supervisor is outside LangGraph. It starts the normal API controller, observes durable evidence,
-    kills/restarts that controller once, routes exactly one predeclared exceptional risk decision through
-    the public API, verifies the candidate did not change while awaiting the operator, and finally runs
-    fresh read-only independent audits. It never writes target-repository code itself.
+    The supervisor is outside LangGraph. It starts the normal API controller and observes durable
+    evidence. It kills/restarts that controller once, routes exactly one predeclared exceptional
+    risk decision through the public API, verifies the candidate stayed unchanged while awaiting
+    the operator, and finally runs fresh read-only independent audits. It never writes target code.
     """
 
     if poll_seconds <= 0:
@@ -578,7 +598,9 @@ def supervise_external_acceptance(
                     progress_path.read_text(encoding="utf-8")
                 )
             except (OSError, ValidationError) as exc:
-                raise AcceptanceSupervisorError(f"invalid supervisor progress journal: {exc}") from exc
+                raise AcceptanceSupervisorError(
+                    f"invalid supervisor progress journal: {exc}"
+                ) from exc
             if progress.run_id != run_id:
                 raise AcceptanceSupervisorError("supervisor progress journal run identity mismatch")
         else:
@@ -598,7 +620,9 @@ def supervise_external_acceptance(
             api = _start_api(pinned, run_id)
             after_pid = api.process.pid
             if before_pid == after_pid:
-                raise AcceptanceSupervisorError("controller restart did not change process identity")
+                raise AcceptanceSupervisorError(
+                    "controller restart did not change process identity"
+                )
             progress = progress.model_copy(
                 update={
                     "restart_done": True,
