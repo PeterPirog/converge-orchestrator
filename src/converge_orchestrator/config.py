@@ -17,7 +17,9 @@ _PATH_KEYS = (
     "worktree_dir",
 )
 _RUN_CONFIG_DIR = "run-configs"
-_RUN_CONFIG_PATTERN = re.compile(r"^.+-sha256-([0-9a-f]{64})\.yaml$")
+_RUN_CONFIG_PATTERN = re.compile(
+    r"^(?P<run_id>.+)-sha256-(?P<digest>[0-9a-f]{64})\.yaml$"
+)
 
 
 def _resolve_path_value(value: Any, base_dir: Path) -> Any:
@@ -62,13 +64,23 @@ def _resolve_relative_paths(data: dict[str, Any], base_dir: Path) -> dict[str, A
     return resolved
 
 
-def _snapshot_digest_from_path(source: Path) -> str | None:
+def _snapshot_match(source: Path) -> re.Match[str] | None:
     if source.parent.name != _RUN_CONFIG_DIR:
         return None
     match = _RUN_CONFIG_PATTERN.fullmatch(source.name)
     if match is None:
         raise RuntimeError(f"Malformed pinned run configuration path: {source}")
-    return match.group(1)
+    return match
+
+
+def _snapshot_digest_from_path(source: Path) -> str | None:
+    match = _snapshot_match(source)
+    return match.group("digest") if match is not None else None
+
+
+def _snapshot_run_id_from_path(source: Path) -> str | None:
+    match = _snapshot_match(source)
+    return match.group("run_id") if match is not None else None
 
 
 def _read_source(source: Path) -> str:
@@ -92,8 +104,9 @@ def _load_mapping(source: Path) -> dict[str, Any]:
     return _resolve_relative_paths(data, source.parent)
 
 
-def _validated_config(data: dict[str, Any]) -> ProjectConfig:
+def _validated_config(data: dict[str, Any], *, source: Path | None = None) -> ProjectConfig:
     cfg = ProjectConfig.model_validate(data)
+    cfg._runtime_run_id = _snapshot_run_id_from_path(source) if source is not None else None
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
     cfg.worktree_dir.mkdir(parents=True, exist_ok=True)
     return cfg
@@ -101,7 +114,7 @@ def _validated_config(data: dict[str, Any]) -> ProjectConfig:
 
 def load_config(path: str | Path) -> ProjectConfig:
     source = Path(path).expanduser().resolve()
-    return _validated_config(_load_mapping(source))
+    return _validated_config(_load_mapping(source), source=source)
 
 
 def materialize_run_config_snapshot(
@@ -111,7 +124,7 @@ def materialize_run_config_snapshot(
     """Freeze one validated project configuration for the lifetime of a durable run."""
     source = Path(source_path).expanduser().resolve()
     data = _load_mapping(source)
-    cfg = _validated_config(data)
+    cfg = _validated_config(data, source=source)
     content = yaml.safe_dump(
         data,
         allow_unicode=True,
