@@ -242,6 +242,19 @@ def reserve_model_attempt(
             raise RunBudgetExceeded(status)
 
         budget = config.run_budget
+        provider_timeout_seconds = int(
+            max(0.0, budget.max_wall_time_seconds - status.elapsed_seconds)
+        )
+        if provider_timeout_seconds < 1:
+            raise RunBudgetExceeded(
+                _status(
+                    config,
+                    ledger,
+                    now=current,
+                    reason="less than one full second remains in the run wall-time budget",
+                )
+            )
+
         next_attempts = ledger.model_attempts_reserved + 1
         if next_attempts > budget.max_model_attempts:
             raise RunBudgetExceeded(
@@ -289,4 +302,5 @@ def reserve_model_attempt(
             "estimated_tokens_reserved_total": next_tokens,
             "max_model_attempts": budget.max_model_attempts,
             "max_estimated_tokens": budget.max_estimated_tokens,
+            "provider_timeout_seconds": provider_timeout_seconds,
         }
