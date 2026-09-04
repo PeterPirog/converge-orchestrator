@@ -56,6 +56,7 @@ OfflineOption = Annotated[
 
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _CLI_STATUS_POLL_SECONDS = 1.0
+_CLI_RECONCILE_SECONDS = 5.0
 
 
 def _require_executable(binary: str, label: str) -> None:
@@ -106,9 +107,14 @@ def _wait_until_terminal_or_human_interrupt(
     controller: ScheduledRunController,
     run_id: str,
     poll_seconds: float = _CLI_STATUS_POLL_SECONDS,
+    reconcile_seconds: float = _CLI_RECONCILE_SECONDS,
 ) -> dict[str, Any]:
     if poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive")
+    if reconcile_seconds <= 0:
+        raise ValueError("reconcile_seconds must be positive")
+
+    next_reconcile = time.monotonic() + reconcile_seconds
     while True:
         record = controller.registry.get_run(run_id)
         if record.get("finished_at"):
@@ -117,10 +123,19 @@ def _wait_until_terminal_or_human_interrupt(
         if record.get("status") in {"paused", "interrupted"}:
             result = controller.status(run_id)
             interrupt_payload = result.get("interrupt")
-            if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
-                time.sleep(poll_seconds)
-                continue
-            return result
+            if interrupt_payload and interrupt_payload.get("kind") != "ci_wait":
+                return result
+            next_reconcile = time.monotonic() + reconcile_seconds
+        elif time.monotonic() >= next_reconcile:
+            # A synchronous CLI process can outlive an in-memory recovery timer. Reconcile the
+            # durable checkpoint periodically so recoverable/CI states self-heal without HITL.
+            result = controller.status(run_id)
+            if result.get("finished_at"):
+                return result
+            interrupt_payload = result.get("interrupt")
+            if interrupt_payload and interrupt_payload.get("kind") != "ci_wait":
+                return result
+            next_reconcile = time.monotonic() + reconcile_seconds
 
         time.sleep(poll_seconds)
 
