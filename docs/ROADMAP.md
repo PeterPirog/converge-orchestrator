@@ -106,14 +106,16 @@ Implemented:
   with identical role/prompt/model and no hidden session continuation or HITL;
 - optional shared PostgreSQL production persistence for both LangGraph checkpoints and the control/run
   registry, with cross-worker atomic leases, strict checkpoint deserialization and focused real-DB CI;
+- durable low-cardinality `/diagnostics` and Prometheus `/metrics` reconstructed from the shared control
+  registry without process-local counters, model calls or LangGraph routing authority;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding and sandbox/model-routing documentation.
 
 Next priorities, in order:
 
-1. **Production observability and multi-node hardening** — metrics/tracing, backup/restore automation,
-   and external/shared evidence/workspace storage or explicit workload affinity. Shared PostgreSQL
-   control/checkpoint state is implemented; filesystem artifacts are the remaining distribution
-   boundary.
+1. **Production storage boundary and backup/restore** — external/shared evidence/workspace storage or a
+   deployable workload-affinity contract, plus backup/restore automation covering both PostgreSQL and
+   filesystem state. Shared PostgreSQL control/checkpoint state and durable registry metrics are now
+   implemented; filesystem artifacts remain the main distribution boundary.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
@@ -121,12 +123,12 @@ Next priorities, in order:
 
 ## v0.5 — production autonomous operation
 
-Planned:
+Planned / partially implemented:
 
 - cost/token/time budgets per project and run;
 - provider-reported token/cost telemetry and aggregated per-role health statistics;
 - project-specific pinned sandbox images and deployment profile;
-- structured metrics/OpenTelemetry and optional LangSmith tracing without making external tracing the
-  source of evidence;
+- durable registry diagnostics and Prometheus metrics are implemented; OpenTelemetry and optional
+  LangSmith tracing may be added without making external tracing the source of evidence;
 - multi-project dashboard/operator audit views;
 - bounded parallel builders only for scheduler-proven non-overlapping write sets.
