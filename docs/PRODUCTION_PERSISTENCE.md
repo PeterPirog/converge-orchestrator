@@ -90,11 +90,68 @@ Therefore:
 Do not run workers on independent local clones and assume PostgreSQL alone makes their worktrees
 interchangeable.
 
-## Backup
+## Deployment backup
 
-A production backup must cover **both** the PostgreSQL database and the project/state filesystem. A
-PostgreSQL-only backup restores durable graph/control metadata but not candidate worktrees or evidence.
-Backup/restore automation and externalized evidence storage remain production-hardening work.
+A production backup must cover **both** durable database state and filesystem-backed project state.
+Converge provides a deployment-wide, fail-closed backup command:
+
+```bash
+converge-backup create /srv/backups/converge-2026-09-04
+```
+
+The command uses the same persistence selection as the runtime:
+
+- without `CONVERGE_DATABASE_URL`, the SQLite control registry and each project's LangGraph SQLite
+  checkpoint database are copied using SQLite's online backup API;
+- with `CONVERGE_DATABASE_URL`, PostgreSQL is captured with `pg_dump --format=custom`; the database URL
+  is passed through `PGDATABASE`, not command-line arguments;
+- every registered repository is captured as a Git bundle;
+- project configuration, immutable requirements and non-transient state/evidence files are copied;
+- raw worktree directories and raw SQLite WAL/SHM files are not copied.
+
+### Quiescence requirement
+
+Backup creation is intentionally stricter than normal read-only diagnostics. It is rejected if any
+registered project has:
+
+- an unfinished durable run;
+- an active or pending-cleanup Converge worktree ownership record;
+- uncommitted changes in the canonical repository;
+- invalid project configuration or workspace/state-store affinity.
+
+The registry and project fingerprints are checked before and after capture. If configuration,
+requirements, repository HEAD or durable registry state changes during the backup, the staging tree is
+deleted and no backup is published. This avoids creating a snapshot that looks valid but combines two
+different execution states.
+
+### Integrity verification
+
+Verify a backup before copying it off-host and again before any future restore operation:
+
+```bash
+converge-backup verify /srv/backups/converge-2026-09-04
+```
+
+Verification is offline: it does not open the active control database or contact models, GitHub,
+OpenWebUI or OpenCode. It validates the versioned manifest, exact file set, file sizes and SHA-256
+hashes and rejects symlinks, unexpected files, missing files or modified content.
+
+The command prints only a bounded operational summary: backup path, creation timestamp, persistence
+backend, project count and file count. It does not print database credentials or backup file contents.
+
+### PostgreSQL prerequisite
+
+`pg_dump` must be installed on the worker that creates a PostgreSQL-backed backup and should match the
+major PostgreSQL server version according to normal PostgreSQL operational practice. A missing or
+failing `pg_dump` aborts the backup.
+
+### Current restore status
+
+Automated restore is **not implemented yet**. Do not overwrite a live deployment manually based only on
+the backup manifest. Restore is destructive and will be implemented separately with a verify/preflight
+phase, explicit destination checks, quiescence requirements and operator confirmation before apply.
+Until then, treat `converge-backup create` plus `verify` as data-protection primitives, not a complete
+disaster-recovery workflow.
 
 ## Verification
 
@@ -102,3 +159,9 @@ CI contains a focused PostgreSQL integration job, separate from the Python 3.11-
 proves that two registry instances observe the same project/run data, lease acquisition is mutually
 exclusive across instances, and a LangGraph checkpoint survives closing one database connection and
 opening another.
+
+Backup tests use real Git and SQLite and cover successful capture, Git bundle validity, checkpoint
+integrity, tamper detection, unfinished-run blocking, worktree ownership blocking, dirty-repository
+blocking, symlink rejection and secret-free PostgreSQL command arguments. The operator CLI is tested
+separately to ensure creation uses the selected durable persistence backend while verification remains
+offline.

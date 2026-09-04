@@ -36,6 +36,7 @@ dev = [
 [project.scripts]
 converge = "converge_orchestrator.cli:app"
 converge-api = "converge_orchestrator.api:main"
+converge-backup = "converge_orchestrator.backup_cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/converge_orchestrator"]
