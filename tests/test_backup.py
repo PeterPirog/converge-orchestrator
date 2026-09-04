@@ -218,8 +218,15 @@ def test_state_symlink_blocks_backup(tmp_path: Path) -> None:
 
 def test_postgres_dump_keeps_database_url_out_of_argv(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+    client_env = {
+        "PGHOST": "database",
+        "PGDATABASE": "converge",
+        "PGUSER": "user",
+        "PGPASSWORD": "super-secret",
+    }
     with (
         patch("converge_orchestrator.backup.shutil.which", return_value="/usr/bin/pg_dump"),
+        patch("converge_orchestrator.backup.libpq_env", return_value=client_env) as env_builder,
         patch("converge_orchestrator.backup.subprocess.run", return_value=completed) as runner,
     ):
         _postgres_backup(
@@ -227,7 +234,8 @@ def test_postgres_dump_keeps_database_url_out_of_argv(tmp_path: Path) -> None:
             tmp_path / "postgres.dump",
         )
 
+    env_builder.assert_called_once()
     command = runner.call_args.args[0]
     assert all("super-secret" not in str(part) for part in command)
-    assert runner.call_args.kwargs["env"]["PGDATABASE"].endswith("/converge")
-    assert "super-secret" in runner.call_args.kwargs["env"]["PGDATABASE"]
+    assert runner.call_args.kwargs["env"]["PGDATABASE"] == "converge"
+    assert runner.call_args.kwargs["env"]["PGPASSWORD"] == "super-secret"
