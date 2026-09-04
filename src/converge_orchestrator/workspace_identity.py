@@ -80,10 +80,15 @@ def state_store_id(state_dir: Path) -> str:
 
 
 def assert_workspace_affinity(project: dict, repo: Path) -> str:
-    """Reject execution when a shared registry project belongs to another Git workspace."""
+    """Reject execution unless the project is explicitly bound to this Git workspace."""
     actual = workspace_id(repo)
     expected = project.get("workspace_id")
-    if expected and expected != actual:
+    if not expected:
+        raise WorkspaceAffinityError(
+            f"Project {project.get('id', '<unknown>')} has no workspace binding. "
+            "Re-register the project once before execution or automatic recovery."
+        )
+    if expected != actual:
         raise WorkspaceAffinityError(
             f"Project {project.get('id', '<unknown>')} is bound to workspace {expected}, "
             f"but this controller sees workspace {actual}. Use a shared Git workspace or route "
@@ -93,10 +98,15 @@ def assert_workspace_affinity(project: dict, repo: Path) -> str:
 
 
 def assert_state_store_affinity(project: dict, state_dir: Path) -> str:
-    """Reject execution when filesystem evidence/state is not the project's bound state store."""
+    """Reject execution unless evidence/state is explicitly bound to this durable state store."""
     actual = state_store_id(state_dir)
     expected = project.get("state_store_id")
-    if expected and expected != actual:
+    if not expected:
+        raise WorkspaceAffinityError(
+            f"Project {project.get('id', '<unknown>')} has no state-store binding. "
+            "Re-register the project once before execution or automatic recovery."
+        )
+    if expected != actual:
         raise WorkspaceAffinityError(
             f"Project {project.get('id', '<unknown>')} is bound to state store {expected}, "
             f"but this controller sees state store {actual}. Route the project to the worker "
