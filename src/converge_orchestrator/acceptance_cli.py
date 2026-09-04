@@ -46,20 +46,29 @@ def supervise(
     ],
     project_id: Annotated[
         str,
-        typer.Option("--project-id", help="Dedicated control-plane project ID for the acceptance run."),
+        typer.Option(
+            "--project-id",
+            help="Dedicated control-plane project ID for the acceptance run.",
+        ),
     ],
     expected_risk_flag: Annotated[
         str,
         typer.Option(
             "--expected-risk-flag",
-            help="Predeclared deterministic risk flag intentionally exercised by the acceptance target.",
+            help=(
+                "Predeclared deterministic risk flag intentionally exercised by the "
+                "acceptance target."
+            ),
         ),
     ],
     output: Annotated[
         Path,
         typer.Option(
             "--output",
-            help="Supervisor evidence JSON written by the command, not hand-authored after the run.",
+            help=(
+                "Supervisor evidence JSON written by the command, not hand-authored "
+                "after the run."
+            ),
         ),
     ] = Path("acceptance-supervisor.json"),
     poll_seconds: Annotated[
