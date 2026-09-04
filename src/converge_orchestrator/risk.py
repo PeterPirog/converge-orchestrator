@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .git import changed_files
 from .models import ProjectConfig, TaskEnvelope
-from .node_compat import node_export_surface
+from .node_compat import is_typescript_source_path, node_export_surface
 from .shell import run
 
 RiskKind = Literal[
@@ -689,7 +689,7 @@ def _node_published_source_export_findings(
     base_source: Callable[[str], str | None],
     candidate_source: Callable[[str], str | None],
 ) -> list[RiskFinding]:
-    """Compare definite named exports on unchanged exact public Node source targets."""
+    """Compare definite named exports and direct TypeScript call shapes on public targets."""
     changed = set(paths)
     findings: list[RiskFinding] = []
     for manifest_path in _node_manifest_candidates(paths):
@@ -737,6 +737,31 @@ def _node_published_source_export_findings(
                             evidence=(
                                 "public Node source export removed: "
                                 f"{manifest_path}:{entry} -> {target}:{symbol}"
+                            ),
+                        )
+                    )
+                    if len(findings) >= 20:
+                        return findings
+
+                if not is_typescript_source_path(target_path):
+                    continue
+                baseline_minimum = dict(baseline_surface.minimum_arguments)
+                candidate_minimum = dict(candidate_surface.minimum_arguments)
+                for symbol in sorted(set(baseline_minimum).intersection(candidate_minimum)):
+                    before = baseline_minimum[symbol]
+                    after = candidate_minimum[symbol]
+                    if after <= before:
+                        continue
+                    findings.append(
+                        RiskFinding(
+                            kind="public_api_break",
+                            disposition="interrupt",
+                            flag="forbidden_public_api_change",
+                            path=target_path,
+                            evidence=(
+                                "public TypeScript callable minimum argument count increased: "
+                                f"{manifest_path}:{entry} -> {target}:{symbol} "
+                                f"({before} -> {after})"
                             ),
                         )
                     )
