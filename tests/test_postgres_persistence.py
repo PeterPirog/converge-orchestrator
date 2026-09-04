@@ -52,26 +52,48 @@ def test_postgres_registry_is_shared_and_lease_is_atomic(tmp_path: Path) -> None
     assert second.claim_run_lease(run_id, "worker-b", 60) is True
 
 
-def test_postgres_project_workspace_binding_is_shared_and_fail_closed(tmp_path: Path) -> None:
+def test_postgres_project_runtime_binding_is_shared_and_fail_closed(tmp_path: Path) -> None:
     assert DATABASE_URL is not None
     setup_postgres(DATABASE_URL)
-    project_id = f"workspace-project-{uuid4().hex}"
+    project_id = f"affinity-project-{uuid4().hex}"
     config_path = tmp_path / "converge.yaml"
     config_path.write_text("version: 1\n", encoding="utf-8")
 
     first = PostgresControlRegistry(DATABASE_URL)
     second = PostgresControlRegistry(DATABASE_URL)
-    bound = first.register_project(project_id, config_path, workspace_id="workspace-a")
+    bound = first.register_project(
+        project_id,
+        config_path,
+        workspace_id="workspace-a",
+        state_store_id="state-a",
+    )
 
     assert bound["workspace_id"] == "workspace-a"
-    assert second.get_project(project_id)["workspace_id"] == "workspace-a"
+    assert bound["state_store_id"] == "state-a"
+    restored = second.get_project(project_id)
+    assert restored["workspace_id"] == "workspace-a"
+    assert restored["state_store_id"] == "state-a"
     assert second.register_project(
         project_id,
         config_path,
         workspace_id="workspace-a",
-    )["workspace_id"] == "workspace-a"
+        state_store_id="state-a",
+    )["state_store_id"] == "state-a"
+
     with pytest.raises(ValueError, match="already bound to workspace workspace-a"):
-        second.register_project(project_id, config_path, workspace_id="workspace-b")
+        second.register_project(
+            project_id,
+            config_path,
+            workspace_id="workspace-b",
+            state_store_id="state-a",
+        )
+    with pytest.raises(ValueError, match="already bound to state store state-a"):
+        second.register_project(
+            project_id,
+            config_path,
+            workspace_id="workspace-a",
+            state_store_id="state-b",
+        )
 
 
 def test_postgres_langgraph_checkpoint_survives_connection_rotation(tmp_path: Path) -> None:
