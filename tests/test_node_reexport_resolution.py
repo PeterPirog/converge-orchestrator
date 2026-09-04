@@ -69,6 +69,42 @@ def test_reexport_resolution_stops_at_depth_budget() -> None:
     assert surface.complete is False
 
 
+def test_reexport_resolution_stops_at_module_budget() -> None:
+    sources = {
+        "src/index.ts": 'export * from "./a";\n',
+        "src/a.ts": 'export * from "./b";\n',
+        "src/b.ts": "export const value = 1;\n",
+    }
+
+    surface = resolve_node_export_surface(
+        "src/index.ts",
+        _reader(sources),
+        package_root="src",
+        max_modules=2,
+    )
+
+    assert surface is not None
+    assert surface.complete is False
+
+
+def test_reexport_resolution_stops_at_edge_budget() -> None:
+    sources = {
+        "src/index.ts": 'export * from "./a";\nexport * from "./b";\n',
+        "src/a.ts": "export const first = 1;\n",
+        "src/b.ts": "export const second = 2;\n",
+    }
+
+    surface = resolve_node_export_surface(
+        "src/index.ts",
+        _reader(sources),
+        package_root="src",
+        max_edges=1,
+    )
+
+    assert surface is not None
+    assert surface.complete is False
+
+
 def test_reexport_resolution_marks_cycle_incomplete() -> None:
     sources = {
         "src/index.ts": 'export * from "./a";\n',
@@ -83,6 +119,24 @@ def test_reexport_resolution_marks_cycle_incomplete() -> None:
 
     assert surface is not None
     assert surface.complete is False
+
+
+def test_colliding_wildcard_exports_remain_incomplete() -> None:
+    sources = {
+        "src/index.ts": 'export * from "./a";\nexport * from "./b";\n',
+        "src/a.ts": "export const shared = 1;\n",
+        "src/b.ts": "export const shared = 2;\n",
+    }
+
+    surface = resolve_node_export_surface(
+        "src/index.ts",
+        _reader(sources),
+        package_root="src",
+    )
+
+    assert surface is not None
+    assert surface.complete is False
+    assert "shared" not in surface.symbols
 
 
 def test_extensionless_reexport_with_multiple_supported_targets_is_ambiguous() -> None:
