@@ -162,10 +162,10 @@ def evaluate_external_acceptance_with_provenance(
 ) -> ExternalAcceptanceReport:
     """Evaluate the release gate and require live-supervisor provenance artifacts.
 
-    A structurally valid operator-authored supervisor JSON is insufficient. The report must match the
-    fixed progress journal and final-audit artifact emitted by the live acceptance supervisor for the
-    same durable run. This is a procedural provenance boundary, not a replacement for filesystem
-    integrity controls or a cryptographic signing system.
+    A structurally valid operator-authored supervisor JSON is insufficient. The report must match
+    the fixed progress journal and final-audit artifact emitted by the live acceptance supervisor
+    for the same durable run. This is a procedural provenance boundary, not a replacement for
+    filesystem integrity controls or a cryptographic signing system.
     """
 
     report = evaluate_external_acceptance(
