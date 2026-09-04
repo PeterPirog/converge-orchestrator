@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -214,6 +214,6 @@ def test_recovery_scanner_validates_run_affinity_before_yielding() -> None:
 
     assert list(controller._unfinished_records()) == [local_record]
     assert controller.registry.runs_for_project.call_args_list == [
-        (("local",),),
-        (("foreign",),),
+        call("local"),
+        call("foreign"),
     ]
