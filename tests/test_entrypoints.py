@@ -89,6 +89,47 @@ def test_cli_wait_does_not_surface_machine_ci_wait_as_hitl() -> None:
     sleep.assert_called_once_with(0.01)
 
 
+def test_cli_wait_periodically_reconciles_recoverable_state() -> None:
+    controller = Mock()
+    controller.registry.get_run.side_effect = [
+        {"id": "run-1", "status": "recoverable", "finished_at": None},
+        {
+            "id": "run-1",
+            "status": "converged",
+            "finished_at": "2026-09-04T02:00:00+00:00",
+        },
+    ]
+    controller.status.side_effect = [
+        {
+            "id": "run-1",
+            "status": "recoverable",
+            "finished_at": None,
+            "interrupt": None,
+        },
+        {
+            "id": "run-1",
+            "status": "converged",
+            "finished_at": "2026-09-04T02:00:00+00:00",
+            "values": {"status": "converged"},
+        },
+    ]
+
+    with (
+        patch.object(cli.time, "monotonic", side_effect=[0.0, 6.0, 6.0]),
+        patch.object(cli.time, "sleep") as sleep,
+    ):
+        result = cli._wait_until_terminal_or_human_interrupt(
+            controller,
+            "run-1",
+            poll_seconds=0.01,
+            reconcile_seconds=5.0,
+        )
+
+    assert result["values"]["status"] == "converged"
+    assert controller.status.call_count == 2
+    sleep.assert_called_once_with(0.01)
+
+
 def test_cli_run_registers_and_starts_through_scheduled_controller(tmp_path) -> None:
     config = tmp_path / "converge.yaml"
     cfg = SimpleNamespace(project_name="payments")
