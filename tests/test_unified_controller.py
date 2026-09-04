@@ -59,6 +59,41 @@ def test_scheduled_controller_can_defer_broad_restore_for_cli_scope(tmp_path: Pa
     restore.assert_not_called()
 
 
+def test_status_reconciles_terminal_checkpoint_without_reexecution() -> None:
+    controller = object.__new__(ScheduledRunController)
+    controller.registry = Mock()
+    controller.registry.get_run.return_value = {
+        "id": "run-1",
+        "status": "converged",
+        "node": "done",
+        "finished_at": "2026-09-04T03:00:00+00:00",
+    }
+    controller._cancel_timer = Mock()  # type: ignore[method-assign]
+    snapshot = {
+        "id": "run-1",
+        "status": "converged",
+        "finished_at": None,
+        "values": {"status": "converged"},
+        "next": [],
+        "interrupt": None,
+        "worker_alive": False,
+        "remote_worker_active": False,
+    }
+
+    with patch.object(RunController, "status", return_value=snapshot):
+        result = controller.status("run-1")
+
+    controller.registry.update_run.assert_called_once_with(
+        "run-1",
+        status="converged",
+        node="done",
+        finished=True,
+    )
+    controller._cancel_timer.assert_called_once_with("run-1")
+    assert result["finished_at"] == "2026-09-04T03:00:00+00:00"
+    assert result["values"]["status"] == "converged"
+
+
 def test_malformed_foreign_lease_fails_closed() -> None:
     controller = object.__new__(RunController)
     controller._lease_owner = "controller-local"
