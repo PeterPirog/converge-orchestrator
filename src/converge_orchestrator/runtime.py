@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -55,6 +56,19 @@ def _interrupt_payload(snapshot: Any) -> dict[str, Any] | None:
     return None
 
 
+def _lease_expiry_is_future(raw: Any) -> bool:
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        expiry = datetime.fromisoformat(raw)
+    except ValueError:
+        # A malformed durable lease must never be interpreted as permission to run concurrently.
+        return True
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return expiry.astimezone(UTC) > datetime.now(UTC)
+
+
 class RunController:
     """Coordinates API requests with durable LangGraph checkpoints and run metadata."""
 
@@ -101,6 +115,14 @@ class RunController:
             return False
         return True
 
+    def _foreign_lease_active(self, record: dict[str, Any]) -> bool:
+        owner = record.get("lease_owner")
+        return bool(
+            owner
+            and owner != self._lease_owner
+            and _lease_expiry_is_future(record.get("lease_expires_at"))
+        )
+
     def bootstrap_project(self, project_id: str) -> dict[str, Any]:
         project, _ = self._local_project(project_id)
         run_id = f"bootstrap-{uuid4().hex}"
@@ -115,19 +137,26 @@ class RunController:
         self.registry.set_requirements_hash(project_id, state["requirements_hash"])
         return state
 
-    def start_run(self, project_id: str) -> dict[str, Any]:
+    def start_run(
+        self,
+        project_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
         project, _ = self._local_project(project_id)
         for existing in self.registry.runs_for_project(project_id):
             if existing["status"] in _ACTIVE_STATUSES and not existing["finished_at"]:
                 raise RuntimeError(f"Project already has active run {existing['id']}")
         run_id = uuid4().hex
-        thread_id = f"run-{run_id}"
-        record = self.registry.create_run(run_id, project_id, thread_id)
+        resolved_thread_id = thread_id or f"run-{run_id}"
+        if not resolved_thread_id.strip():
+            raise ValueError("thread_id must not be empty")
+        record = self.registry.create_run(run_id, project_id, resolved_thread_id)
         initial: dict[str, Any] = {
             "project_id": project_id,
             "config_path": project["config_path"],
             "run_id": run_id,
-            "thread_id": thread_id,
+            "thread_id": resolved_thread_id,
         }
         self._submit(run_id, initial)
         return record
@@ -178,13 +207,24 @@ class RunController:
             worker_alive = bool(
                 self._workers.get(run_id) and self._workers[run_id].is_alive()
             )
+        remote_worker_active = self._foreign_lease_active(record)
         status = record["status"]
         if snapshot.get("interrupt"):
             kind = snapshot["interrupt"].get("kind")
             status = "paused" if kind == "controlled_pause" else "interrupted"
-        elif snapshot.get("next") and not worker_alive and status in {"queued", "running"}:
+        elif (
+            snapshot.get("next")
+            and not worker_alive
+            and not remote_worker_active
+            and status in {"queued", "running"}
+        ):
             status = "recoverable"
-        elif snapshot.get("values") and not snapshot.get("next") and not worker_alive:
+        elif (
+            snapshot.get("values")
+            and not snapshot.get("next")
+            and not worker_alive
+            and not remote_worker_active
+        ):
             status = snapshot["values"].get("status", status)
         task = snapshot.get("values", {}).get("task")
         active_task_id = task.get("id") if isinstance(task, dict) else None
@@ -192,12 +232,13 @@ class RunController:
         self.registry.update_run(
             run_id,
             status=status,
-            node=node or "done",
+            node=node or record.get("node") or "done",
             active_task_id=active_task_id,
         )
         result = self.registry.get_run(run_id)
         result.update(snapshot)
         result["worker_alive"] = worker_alive
+        result["remote_worker_active"] = remote_worker_active
         return result
 
     def interrupt(self, run_id: str) -> dict[str, Any] | None:
