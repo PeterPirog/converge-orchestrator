@@ -442,10 +442,7 @@ def _resume_plan(journal: _ApplyJournal, root: Path) -> RestorePlan:
     return plan
 
 
-def _validate_journal_keys(
-    journal: _ApplyJournal,
-    plan: RestorePlan,
-) -> None:
+def _expected_journal_keys(plan: RestorePlan) -> set[str]:
     expected = {"database"}
     for project in plan.projects:
         expected.update(
@@ -458,9 +455,29 @@ def _validate_journal_keys(
         )
         if not _inside(Path(project.worktree_target), Path(project.state_target)):
             expected.add(f"{project.project_id}:worktree")
-    unknown = sorted(set(journal.published) - expected)
+    return expected
+
+
+def _validate_journal_keys(
+    journal: _ApplyJournal,
+    plan: RestorePlan,
+) -> None:
+    unknown = sorted(set(journal.published) - _expected_journal_keys(plan))
     if unknown:
         raise RestoreApplyError(f"restore journal contains unknown publication records: {unknown}")
+
+
+def _new_journal(
+    *,
+    confirmation_token: str,
+    manifest_hash: str,
+    plan: RestorePlan,
+) -> _ApplyJournal:
+    return _ApplyJournal(
+        confirmation_token=confirmation_token,
+        manifest_sha256=manifest_hash,
+        plan=plan.model_dump(mode="json"),
+    )
 
 
 def apply_sqlite_restore(
@@ -502,6 +519,26 @@ def apply_sqlite_restore(
         if plan.database_target != str(control_db_path.expanduser().resolve()):
             raise RestoreApplyError("SQLite restore target changed after restore apply started")
         _validate_journal_keys(journal, plan)
+
+        # A fully published receipt remains durable after a successful return so a process death at
+        # the final response boundary can be retried idempotently. If a later disaster removes every
+        # target, the same explicit operator token may start a fresh cycle only when the ordinary
+        # read-only preflight is ready again and reproduces that exact token.
+        if set(journal.published) == _expected_journal_keys(plan):
+            fresh_plan = plan_deployment_restore(
+                root,
+                control_db_path=control_db_path,
+                database_url=database_url,
+            )
+            if fresh_plan.ready and fresh_plan.confirmation_token == confirmation_token:
+                plan = fresh_plan
+                journal = _new_journal(
+                    confirmation_token=confirmation_token,
+                    manifest_hash=manifest_hash,
+                    plan=plan,
+                )
+                _write_journal(journal_path, journal)
+                resumed = False
     else:
         plan = plan_deployment_restore(
             root,
@@ -514,10 +551,10 @@ def apply_sqlite_restore(
             raise RestoreApplyError(
                 "confirmation token does not match the current restore preflight"
             )
-        journal = _ApplyJournal(
+        journal = _new_journal(
             confirmation_token=confirmation_token,
-            manifest_sha256=manifest_hash,
-            plan=plan.model_dump(mode="json"),
+            manifest_hash=manifest_hash,
+            plan=plan,
         )
         _create_journal(journal_path, journal)
 
@@ -578,7 +615,9 @@ def apply_sqlite_restore(
     )
     _sqlite_quick_check(database_target)
 
-    journal_path.unlink(missing_ok=True)
+    # Keep the fully published journal as a completion receipt. It makes the final
+    # publication/response boundary retry-safe and is deterministically reset only after a later,
+    # fully absent-target preflight proves that a new restore cycle is safe.
     return RestoreApplyResult(
         projects=[project.project_id for project in manifest.projects],
         resumed=resumed,
