@@ -60,7 +60,7 @@ def verify_backup(root: BackupPath) -> None:
 
 @app.command("restore-plan")
 def restore_plan(root: BackupPath) -> None:
-    """Verify restore targets and print a confirmation-bound plan without writing deployment state."""
+    """Verify restore targets and emit a confirmation-bound, read-only plan."""
     try:
         plan = plan_deployment_restore(
             root,
