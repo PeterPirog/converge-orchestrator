@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from .models import ProjectConfig
 
-_BUDGET_LOCK = threading.Lock()
+_BUDGET_LOCK = threading.RLock()
 _BUDGET_VERSION = 1
 
 
