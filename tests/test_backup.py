@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -59,10 +60,10 @@ def _deployment(tmp_path: Path):
     config.write_text(
         "\n".join(
             [
-                f'repo_path: "{repo}"',
-                f'requirements_path: "{requirements}"',
-                f'state_dir: "{state_dir}"',
-                f'worktree_dir: "{worktree_dir}"',
+                f"repo_path: {json.dumps(str(repo))}",
+                f"requirements_path: {json.dumps(str(requirements))}",
+                f"state_dir: {json.dumps(str(state_dir))}",
+                f"worktree_dir: {json.dumps(str(worktree_dir))}",
                 "require_spec_read_only: false",
                 "agents:",
                 "  planner:",
