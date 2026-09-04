@@ -1,191 +1,195 @@
-# Audyt zbieżności z referencyjną architekturą autonomicznych agentów
+# Convergence audit against the autonomous-agent reference architecture
 
-Ten dokument śledzi zgodność Converge z referencyjnymi założeniami autonomicznego workflow
-software-engineering: niezmienny plik architektury, wyspecjalizowane role, małe iteracje, TDD,
-niezależny review, Git/GitHub, MCP, minimalny HITL, trwały LangGraph oraz prostą rekonfigurację
-między projektami.
+This document is the living gap analysis for Converge. It compares the repository implementation with
+the reference requirements for a reusable autonomous software-engineering orchestrator: immutable
+intent, specialized roles, bounded tasks, TDD where appropriate, independent review, Git/GitHub gates,
+minimal HITL, durable LangGraph execution and simple project reconfiguration.
 
-Audyt rozróżnia **cel architektoniczny** od konkretnej technologii opisanej w materiale referencyjnym.
-Stan trwały i przejścia procesu należą do LangGraph/control plane; OpenCode jest repo-centric executor,
-OpenWebUI jest punktem operatorskim, a GitHub jest zewnętrzną barierą PR/CI/merge.
+The audit tracks architectural intent rather than copying every technology choice from the reference
+document. LangGraph owns durable workflow state and routing; OpenCode is the repository-aware coding
+runtime; OpenWebUI is an operator/model control plane; deterministic Python policy and GitHub CI remain
+authoritative for integration.
 
-## Stan ogólny
+## Current status
 
-Aktualnie **14 z 15 obszarów** jest zgodnych albo zaimplementowanych mocniej niż w referencji, a jeden
-obszar (`MCP jako szyna narzędziowa`) pozostaje częściowy z wyboru architektonicznego. Nie oznacza to,
-że projekt jest już production-complete: pozostały hardening crash/chaos, szersze cross-language
-compatibility/architecture adapters i produkcyjny multi-worker storage.
+The core autonomous path is substantially converged with the reference design. Fourteen of the fifteen
+tracked areas are aligned or stronger than the reference. `MCP as the universal tool bus` remains
+partial deliberately: agent-facing context/tools can use MCP, while Git, GitHub, test and integration
+decisions that affect safety remain deterministic code where that provides a smaller and more
+verifiable trust boundary.
 
-Najważniejsze wcześniejsze luki operacyjne zostały istotnie zmniejszone. LangGraph ma trwałe run leases,
-retry-safe side effects i checkpointowane oczekiwanie na GitHub CI. Worktree utworzony przed crashem
-jest adoptowany zamiast kasowany; commit/push/PR/merge są odporne na ponowne wykonanie węzła. Długie CI
-nie trzyma workera: graf przechodzi przez `ci_poll -> ci_wait(interrupt) -> ci_poll`, a serwis odtwarza
-timer po restarcie z checkpointu.
+The earlier high-priority recovery gaps are now closed with executable evidence:
 
-Warstwa GitHub weryfikuje także lokalny `origin`, klasyczne branch protection oraz efektywne
-`required_status_checks` z GitHub Rulesets. Gdy polityki chronionej gałęzi nie można odczytać lub jest
-malformed, CI pozostaje `pending` — nigdy false-PASS. Ownership-aware cleanup jest już wdrożony;
-największą pozostałą luką recovery jest pełny E2E chaos suite, a nie sam checkpointing.
+- durable run leases prevent two controllers from executing one LangGraph thread concurrently;
+- worktree creation, commit/push, PR creation and machine-managed CI wait have process-level
+  kill/restart coverage;
+- OpenCode/executor process death is covered by a real subprocess test and bounded provider retry;
+- CI retry is allowed only for explicitly configured exact flaky GitHub Actions jobs and is protected
+  by a durable per-head retry ledger;
+- SQLite is retained for local use, while PostgreSQL provides shared control-registry and LangGraph
+  checkpoint persistence with real-database CI coverage;
+- each new run owns a hash-pinned normalized configuration snapshot, so changing `converge.yaml`
+  cannot silently change model, gate, retry/replan, CI or merge policy in a run already in progress;
+- CLI recovery resolves an existing durable run from control-registry identity before reading or
+  re-registering mutable source YAML, preserving the same pinned execution policy after restart.
 
-## Macierz zbieżności
+This does **not** mean production hardening is finished. The largest remaining production boundary is
+shared filesystem state: evidence, target workspaces/worktrees and some generated runtime artifacts are
+still filesystem-backed. A multi-node deployment therefore needs shared storage or explicit workload
+affinity plus backup/restore and observability.
 
-| Obszar | Status | Implementacja Converge | Pozostała luka |
+## Convergence matrix
+
+| Area | Status | Current Converge implementation | Remaining gap |
 | --- | --- | --- | --- |
-| Niezmienny Markdown jako Source of Truth | **STRONGER** | plik poza target repo, OS read-only, SHA-256 pin, sprawdzanie przed krytycznymi przejściami, traceable `contract.json` | brak krytycznej luki |
-| Przeciwdziałanie architectural drift | **STRONGER** | stable requirement IDs, source anchors, exact requirement injection, compliance, deterministic verifiers i monotonic regression policy | semantic-only requirements nadal wymagają niezależnego review |
-| Deterministyczny kontroler nad LLM | **STRONGER** | LangGraph + Pydantic state + policy code; LLM nie może ominąć gate, sterować merge ani sam wytworzyć hard-block evidence | brak krytycznej luki |
-| Planner / Worker / Reviewer | **STRONGER** | Scout RO, Planner RO, Builder jako jedyny writer, niezależne correctness/architecture/security review lanes RO | specialty analyzers mogą być rozszerzane |
-| Autonomiczny TDD / repair loop | **ALIGNED** | behavior task wymaga baseline, test-only RED, novel literal marker, deterministic test-artifact check, SHA freeze i GREEN; bounded repair/replan; brak human bypass | `change_kind` może być dalej wzmacniany regułami językowymi |
-| Izolacja Git | **STRONGER** | osobny deterministic worktree per task, safe adoption po crashu, RO shared Git metadata w sandboxie, ownership-aware terminal-resource GC | pełne E2E chaos tests |
-| Code review jako bariera przed dryfem | **STRONGER** | deterministic risk scan przed semantic review; trzy niezależne lanes; reject albo reviewer failure blokuje integration; secret material nie trafia do reviewerów | dalsze specialty lanes opcjonalne |
-| GitHub PR + CI | **STRONGER** | retry-safe push/PR/merge, checkpointable CI machine wait, origin validation, classic branch protection + effective Rulesets required checks, App-ID-aware matching, fail-closed protected policy | jawna flaky-job retry policy i dodatkowe E2E failure tests |
-| MCP jako szyna narzędziowa | **PARTIAL** | neutralna konfiguracja MCP w `converge.yaml`, generowana do OpenCode; MCP dostępne dla agentów zgodnie z rolą | część krytycznych operacji Git/GitHub/test policy celowo pozostaje deterministycznym kodem zamiast delegacji do MCP |
-| OpenWebUI jako punkt wejścia operatora | **ALIGNED** | Workspace Tool nad Bearer-authenticated FastAPI; confirmation-gated mutations; status/compliance/evidence/interrupts; durable state poza chatem | dashboard pozostaje ergonomicznym rozszerzeniem |
-| Łatwa rekonfiguracja projektu | **ALIGNED** | jeden `converge.yaml`, ścieżki względne, model profiles, agents, MCP, sandbox, quality, verifiers i workflow | GUI editor opcjonalny |
-| Minimalny HITL | **STRONGER** | HITL tylko dla risk policy/ambiguity lub wyczerpania bounded recovery; failing deterministic gates, hard secret BLOCK i brak RED nie są approvable | compatibility adapters mogą dalej zmniejszać eskalacje |
-| Least privilege / sandbox | **STRONGER** | role permissions + container boundary: RO Scout/Planner/Reviewers, RW tylko Builder worktree, RO Git metadata, read-only root, cap-drop, no-new-privileges, resource limits, ENV/network policy i timeout cleanup | pinned production images i deployment-specific hardening |
-| Dual-memory / context rotation | **ALIGNED** | świeża sesja OpenCode per agent attempt; continuity w LangGraph/evidence; authoritative core bez silent truncation; advisory-only compaction; bounded jawny model fallback z profile-specific budgets | provider-reported token/cost telemetry |
-| Evidence + compliance | **STRONGER** | LangGraph/SQLite checkpoints, event/evidence bundles, persistent compliance, verifier evidence, TDD RED/GREEN, risk fingerprint, CI policy evidence i context ledger | produkcyjny shared storage, backup i metrics/tracing |
+| Immutable Markdown Source of Truth | **STRONGER** | architecture file outside target repo, OS read-only policy, SHA-256 pin, repeated hash guards, traceable `contract.json` | no critical gap |
+| Architectural-drift prevention | **STRONGER** | stable requirement IDs/source anchors, exact requirement injection, compliance, deterministic verifiers, monotonic mandatory-regression policy, per-run execution-policy pinning | semantic-only requirements still require independent review |
+| Deterministic controller above LLMs | **STRONGER** | LangGraph + Pydantic state + deterministic policy; model output cannot waive gates or authorize merge | no critical gap |
+| Planner / Worker / Reviewer separation | **STRONGER** | Scout RO, Planner RO, Builder sole worktree writer, independent correctness/architecture/security reviewers RO, deterministic Integrator | specialty analyzers remain optional extensions |
+| Autonomous TDD / repair loop | **ALIGNED** | behavior tasks use baseline, test-only RED, frozen test hashes and GREEN; bounded repair and replan; no human bypass of deterministic failures | language-specific `change_kind` inference can be stronger |
+| Git isolation | **STRONGER** | one deterministic worktree per task, crash-safe adoption, ownership-aware cleanup, active/recoverable/CI-wait resource protection | distributed workspace placement remains deployment-specific |
+| Independent review barrier | **STRONGER** | deterministic risk scan before semantic review, three independent lanes, one reject/execution failure blocks integration, secret material blocked before reviewer exposure | additional specialty lanes are optional |
+| GitHub PR + CI | **STRONGER** | retry-safe push/PR/merge, origin validation, classic protection + effective Rulesets checks, App-ID-aware matching, checkpointable CI wait, explicit bounded flaky-job retry | GitHub remains final enforcement point for policies Converge intentionally does not duplicate |
+| MCP as universal tool bus | **PARTIAL BY DESIGN** | role-scoped MCP configuration generated for OpenCode | critical Git/GitHub/test/integration authority intentionally stays deterministic rather than MCP-only |
+| OpenWebUI operator entry point | **ALIGNED** | confirmed Workspace Tool over Bearer-authenticated FastAPI; status/compliance/evidence/interrupt operations; durable state outside chat | richer dashboard is optional UX |
+| Reusable project configuration | **STRONGER** | one `converge.yaml`, relative paths, model profiles, MCP, sandbox, quality/workflow policy, per-run normalized immutable execution snapshot | GUI editor is optional |
+| Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically | additional deterministic compatibility policy can further reduce valid escalations |
+| Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits and timeout cleanup | pinned production images and deployment hardening |
+| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry |
+| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state | shared artifact/object storage, backup and structured production telemetry |
 
-## LangGraph pozostaje źródłem prawdy o przebiegu
+## Canonical execution path
 
-Aktywny przepływ jest jawnie grafowy. Modele wykonują ograniczone role, ale nie posiadają kontroli nad
-przejściami procesu. Uproszczony przebieg wygląda następująco:
+The service and CLI use the same `ScheduledRunController`; there is no separate weaker CLI graph path.
+The durable service graph remains:
 
 ```text
-bootstrap -> spec guard -> scout -> planner -> worktree
-                                    |
-                                    v
-                         TDD baseline / RED / build
-                                    |
-                                    v
-                       quality + scope + risk scan
-                                    |
-                                    v
-                   parallel independent read-only review
-                                    |
-                                    v
-                      integrate -> PR -> ci_poll
-                                        |
-                               pending  v
-                                  ci_wait interrupt
-                                        |
-                                  auto resume
-                                        v
-                                     ci_poll
-                                        |
-                              PASS -> merge -> refresh
-                                        |
-                              next requirement / end
+bootstrap -> spec guard -> scout -> targeted planner -> worktree
+                                      |
+                                      v
+                           TDD baseline / RED / build
+                                      |
+                                      v
+                       scope + quality + risk policy
+                                      |
+                                      v
+                    parallel independent RO reviews
+                                      |
+                                      v
+                         bounded repair / replan
+                                      |
+                                      v
+                         integrate -> PR -> ci_poll
+                                           |
+                                     pending v
+                                      ci_wait interrupt
+                                           |
+                                     machine resume
+                                           v
+                                        ci_poll
+                                           |
+                                 PASS -> merge -> refresh
+                                           |
+                                  next target / converged
 ```
 
-`ci_wait` jest machine interruptem, nie HITL. `wake_at` jest częścią checkpointu LangGraph. Worker i run
-lease są zwalniane na czas oczekiwania, a `ScheduledRunController` odtwarza timer z checkpointu po
-restarcie usługi. Dzięki temu wielogodzinne CI nie wymaga żywego procesu ani historii czatu.
+`ci_wait` is a machine interrupt, not HITL. Its wake time is checkpointed, the worker and lease are
+released while idle, and a new controller reconstructs the timer after restart.
 
-## Crash recovery i semantyka at-least-once
+## Immutable intent versus pinned execution policy
 
-LangGraph może po awarii powtórzyć węzeł z side effectem, dlatego krytyczne operacje są projektowane
-jako `ensure`, a nie `create blindly`:
+Converge now protects two distinct classes of drift and does not conflate them:
 
-- `create_worktree()` adoptuje wyłącznie worktree o oczekiwanej deterministic path/branch i nie robi
-  automatycznego force-cleanup niejasnego stanu;
-- `integrate` rozpoznaje candidate commit utworzony przed utratą checkpointu i może ponowić push;
-- `ensure_pull_request()` wykorzystuje istniejący otwarty PR zamiast tworzyć duplikat;
-- `merge()` rozpoznaje already-merged PR;
-- SQLite run lease ma owner/TTL/heartbeat i blokuje równoległe wykonanie tego samego `thread_id`, ale po
-  śmierci procesu może zostać przejęty po expiry;
-- checkpointowane CI wait nie utrzymuje lease przez okres bezczynności.
+1. `architecture.md` is the immutable **Source of Truth**. Its SHA-256 and source anchors protect what
+   the repository is required to become. `contract.json` remains an index, never a replacement.
+2. `converge.yaml` is the user-maintained **Source of Configuration for future runs**. At run creation,
+   Converge normalizes it into `state_dir/run-configs/`, embeds the SHA-256 in the snapshot identity and
+   stores path + digest in the durable run record.
 
-Pozostały hardening nie polega już na „dodaniu checkpointów”. Automatyczny GC ma trwałe rekordy
-własności i chroni worktree wskazywane przez active/recoverable/waiting run; główną luką jest pełny
-E2E chaos suite potwierdzający te własności przy kill/restart w rzeczywistym procesie.
+Every graph open, status/resume path and automatic recovery of a new run verifies and reloads that exact
+snapshot. A missing, incomplete or tampered snapshot fails closed. Recovery never silently falls back
+to the current project YAML. Legacy run rows retain their historical behavior only for compatibility.
+
+This distinction is important: freezing execution policy prevents a long-running task from changing
+models, quality gates or merge semantics mid-flight, but it does not elevate configuration into a
+second requirements source.
+
+## Crash recovery and at-least-once semantics
+
+LangGraph may re-enter a node whose external side effect completed immediately before a lost checkpoint.
+Converge therefore treats side-effect nodes as retry-safe `ensure` operations rather than blind creates:
+
+- task worktree creation adopts only the expected owned path/branch;
+- integration recovers an already-created candidate commit and can retry push idempotently;
+- PR creation reuses an existing matching PR;
+- merge recognizes an already-merged PR;
+- terminal LangGraph checkpoints reconcile stale control-registry rows without re-execution;
+- pre-first-node recovery reconstructs only the exact minimal initial envelope and, for pinned runs,
+  replays the same snapshot path;
+- checkpoint corruption is never interpreted as an empty run;
+- transient checkpoint lock/busy errors schedule bounded automatic inspection retry.
+
+Process-level tests cover the worktree, commit/push, PR and `ci_wait` boundaries. The executor suite also
+proves fresh-process retry after abrupt OpenCode process death. New chaos fixtures should be added only
+when a genuinely uncovered side-effect boundary is discovered.
 
 ## GitHub remote policy
 
-Converge nie ufa samemu `github.repo` z konfiguracji. Przed rejestracją projektu GitHub-backed i przed
-rzeczywistym transportem `gh` lokalny `origin` musi wskazywać ten sam kanoniczny `github.com/owner/repo`.
-Mismatched albo non-GitHub remote failuje przed PR/CI/merge side effects.
+Before a GitHub-backed project performs remote side effects, local `origin` must match the configured
+canonical `owner/repo`. Required-check policy is constructed from classic branch protection plus active
+GitHub Rulesets for the actual base branch. Where a Ruleset binds a check to an integration, matching
+uses the GitHub App ID as well as the context name.
 
-Dla chronionej gałęzi CI gate buduje efektywną politykę z dwóch źródeł:
+Unknown, malformed or unreadable protected-branch policy fails closed. Explicit flaky retry is narrower:
+only exact configured GitHub Actions checks may be rerun, only within their retry budget, and the budget
+reservation is durable before the remote rerun request. Mixed or unclassified failures remain failures.
 
-```text
-classic branch protection required checks
-                 +
-active GitHub Rulesets required_status_checks
-                 |
-                 v
-        effective required-check set
-                 |
-           candidate SHA checks
-```
+## Context, review and sandbox boundaries
 
-Rulesets są pobierane dla konkretnej base branch i obejmują aktywne reguły repo/organization zwrócone
-przez GitHub. `integration_id` rulesetu jest mapowany na GitHub App ID check-runu. Check o tej samej
-nazwie z innej aplikacji nie spełnia wymagania. Klasyczna i rulesetowa lista są sumowane, nie
-nadpisywane. Unrelated checki pozostają evidence, ale nie mogą ani spełnić, ani oblać autorytatywnego
-required-check gate.
+Each OpenCode agent attempt starts with a fresh session. Continuity lives in LangGraph state, bounded
+repo/task context and evidence rather than accumulated chat history. Requirement statements, Task
+Envelope and review diff are authoritative context and cannot be silently truncated to fit a model.
 
-Jeśli chroniona polityka nie jest autorytatywna, malformed albo niedostępna, wynik pozostaje `pending`.
-Converge nie próbuje kopiować całej logiki GitHub reviews/merge queue/signatures — GitHub pozostaje
-ostatecznym enforcement point przy merge.
+Semantic review is parallel only for read-only lanes. Builder remains the sole code writer in its
+worktree. Model/provider failure can trigger only configured bounded retries/fallbacks with unchanged
+permissions and a durable attempt ledger. Malformed semantic output is not converted into a provider
+success.
 
-## Context, review i sandbox
+`ExecutionSandbox` covers OpenCode, quality gates and requirement verifiers. Deterministic integration
+stays outside the Builder authority. Container mode enforces read-only root, dropped capabilities,
+no-new-privileges, resource limits, tmpfs, controlled environment forwarding, network policy and
+cleanup on timeout.
 
-Każde wywołanie OpenCode jest świeżą sesją. Continuity pochodzi wyłącznie z checkpointowanego LangGraph
-state, Repo Scout snapshotu i jawnego working-memory/evidence. Immutable requirement statements, Task
-Envelope i pełny review diff należą do authoritative core i nie są cicho skracane. Przekroczenie
-budżetu core failuje przed model call; kompaktowane mogą być jedynie sekcje advisory.
+## Current next priorities
 
-Review jest równoległe wyłącznie dla read-only lanes. Deterministyczny agregator wymaga wszystkich
-skonfigurowanych lanes; execution failure reviewera nie staje się PASS.
+Repository evidence now moves the priority away from already-completed checkpoint/flake/PostgreSQL
+work. The smallest remaining high-value areas are, in order:
 
-Awaria wykonania modelu może uruchomić wyłącznie skończoną, jawnie skonfigurowaną sekwencję primary
-retry i fallback profiles. Każda próba zachowuje role permissions i świeżą sesję, ponownie przechodzi
-context budget oraz zapisuje model/profile/exit evidence bez raw output. Malformed output albo
-semantic reject nie są maskowane jako provider failure.
+1. **Production observability and multi-node storage boundary** — structured metrics/tracing,
+   backup/restore and either external/shared evidence/workspace storage or an explicit deployable
+   workload-affinity contract. PostgreSQL already covers control/checkpoint state.
+2. **Cross-language deterministic compatibility/architecture adapters** — source-level Node plus Go/Rust
+   public API and dependency-boundary rules, extending the current Python AST and Node manifest policy.
+3. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry only
+   after operational durability is sufficiently hardened.
 
-`ExecutionSandbox` otacza OpenCode, quality gates i requirement verifiers. Deterministyczny Git/GitHub
-integrator pozostaje na hoście. Builder jest jedynym writerem worktree; reszta ról ma mount RO. W
-container mode działają read-only root, drop capabilities, no-new-privileges, limity zasobów, tmpfs,
-ENV allowlist, sieci kontrolowane i cleanup kontenera po timeout.
+Optional issue synchronization, richer dashboards and broader UX must not displace these core items.
+Parallel Builders should remain disabled until a deterministic scheduler can prove non-overlapping write
+sets and revalidate integration against the current main branch.
 
-## TDD i deterministic risk policy
+## Target operational criterion
 
-Dla `change_kind=behavior` Planner musi dostarczyć structured TDD contract wskazujący istniejący test
-gate i test paths. RED jest ważny tylko dla deterministycznie rozpoznawalnych artefaktów testowych i
-normalnego test failure z nowym literalnym markerem. Po RED hashe testów są zamrażane; GREEN musi
-przejść na tym samym gate bez zmiany zaakceptowanych testów.
+Converge is operationally converged with the reference vision when all of the following remain true:
 
-Przed semantic review finalny diff przechodzi deterministic risk classification. Wykryty secret
-material jest hard BLOCK i raw diff nie jest wtedy wysyłany reviewerom. Destructive migration,
-public-API compatibility i krytyczne auth/authz zmiany mogą wymagać HITL, ale approval jest związane z
-SHA-256 dokładnego candidate diffu i wygasa po repair.
-
-## Priorytety dalszej zbieżności
-
-Kolejność prac po domknięciu effective GitHub policy:
-
-1. **Cross-language compatibility adapters** — public API/data migration safety i bezpieczne
-   shim/roll-forward strategies redukujące HITL.
-2. **Crash/chaos completion** — E2E kill/restart testy dla service/OpenCode/provider/integrate/CI-wait.
-3. **Flake-aware CI policy** — selektywny retry tylko dla jawnie sklasyfikowanych flaky jobs.
-4. **Production state + observability** — PostgreSQL checkpointer/control registry, backup,
-   OpenTelemetry/metrics i opcjonalny LangSmith bez przenoszenia evidence poza system.
-5. **Cross-language architecture analyzers** — deterministic dependency rules poza Python AST/import.
-
-## Kryterium docelowe
-
-Projekt jest uznany za operacyjnie zbieżny z referencyjną wizją, gdy:
-
-- immutable requirements nie mogą zostać zmienione ani wyparte przez derived summary;
-- każde zadanie jest bounded i ma jednego writera;
-- behavior-changing task ma zweryfikowany RED przed GREEN;
-- deterministic gates i wszystkie wymagane review lanes przechodzą przed integracją;
-- GitHub required CI policy potwierdza dokładny candidate commit;
-- workflow można bezpiecznie wznowić po crashu bez utraty lub duplikowania side effects;
-- system sam naprawia/replanuje do limitu i dopiero potem eskaluje wyjątki;
-- OpenWebUI steruje procesem bez przechowywania durable state w chacie;
-- execution sandbox ogranicza blast radius niezależnie od zachowania modelu;
-- context rotation pozwala na długie projekty bez kumulowania nieograniczonej historii;
-- cleanup po awarii nigdy nie usuwa zasobu należącego do aktywnego/recoverable runu.
+- immutable requirements cannot be changed or displaced by derived summaries;
+- every task is bounded and has one writer;
+- behavior-changing tasks prove RED before GREEN when TDD is applicable;
+- deterministic gates and every configured independent review lane pass before integration;
+- GitHub required CI policy validates the exact candidate commit;
+- crash recovery neither loses nor duplicates externally visible side effects;
+- one durable run cannot change execution policy because mutable project configuration changed;
+- routine failures repair/replan/retry autonomously within explicit budgets before HITL;
+- OpenWebUI controls the process without becoming durable workflow storage;
+- sandbox and role permissions bound blast radius independently of model behavior;
+- context remains bounded during long-running projects;
+- cleanup never removes resources belonging to active, recoverable, interrupted or CI-wait runs.
