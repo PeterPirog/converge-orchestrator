@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from converge_orchestrator.backup import create_deployment_backup
 from converge_orchestrator.registry import ControlRegistry
 from converge_orchestrator.restore import plan_deployment_restore
@@ -132,6 +134,19 @@ def test_existing_restore_target_blocks_and_changes_confirmation_token(tmp_path:
     assert blocked.confirmation_token != ready.confirmation_token
 
 
+def test_broken_symlink_restore_target_is_not_treated_as_absent(tmp_path: Path) -> None:
+    backup, control_db, repo, _, _, _ = _lost_sqlite_deployment(tmp_path)
+    try:
+        repo.symlink_to(tmp_path / "missing-repository", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available on this platform")
+
+    plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
+
+    assert plan.ready is False
+    assert any("repository restore target already exists" in item for item in plan.blockers)
+
+
 def test_restore_preflight_validates_manifest_head_against_git_bundle(tmp_path: Path) -> None:
     backup, control_db, _, _, _, _ = _lost_sqlite_deployment(tmp_path)
     manifest_path = backup / "manifest.json"
@@ -167,3 +182,5 @@ def test_postgres_restore_plan_never_exposes_database_url(tmp_path: Path) -> Non
     assert "super-secret" not in serialized
     assert database_url not in serialized
     assert plan.database_target == "postgres:configured"
+    assert plan.ready is False
+    assert any("database artifact" in item for item in plan.blockers)
