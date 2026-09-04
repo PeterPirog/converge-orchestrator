@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from .git import changed_files
 from .models import ProjectConfig, TaskEnvelope
+from .node_compat import node_export_surface
 from .shell import run
 
 RiskKind = Literal[
@@ -115,6 +116,7 @@ _AUTH_WEAKENING = re.compile(
 _TEST_SEGMENTS = {"test", "tests", "spec", "specs", "__tests__"}
 
 _NODE_ENTRYPOINT_FIELDS = ("main", "module", "types", "typings", "browser")
+_NODE_SOURCE_ENTRY_NAMES = {"main", "module", "types", "typings"}
 
 
 def _read_candidate(cwd: Path, path: str) -> str | None:
@@ -678,6 +680,70 @@ def _node_published_target_findings(
     return findings
 
 
+def _node_source_entry(entry: str) -> bool:
+    return entry in _NODE_SOURCE_ENTRY_NAMES or entry.startswith("exports:")
+
+
+def _node_published_source_export_findings(
+    paths: list[str],
+    base_source: Callable[[str], str | None],
+    candidate_source: Callable[[str], str | None],
+) -> list[RiskFinding]:
+    """Compare definite named exports on unchanged exact public Node source targets."""
+    changed = set(paths)
+    findings: list[RiskFinding] = []
+    for manifest_path in _node_manifest_candidates(paths):
+        baseline = _node_package_contract(base_source(manifest_path))
+        current = _node_package_contract(candidate_source(manifest_path))
+        if not baseline or not current:
+            continue
+        for entry in sorted(set(baseline).intersection(current)):
+            if not _node_source_entry(entry):
+                continue
+            baseline_targets = _node_local_targets(entry, baseline[entry])
+            current_targets = _node_local_targets(entry, current[entry])
+            for target in sorted(baseline_targets.intersection(current_targets)):
+                target_path = _node_target_path(manifest_path, target)
+                if target_path is None or target_path not in changed:
+                    continue
+                baseline_surface = node_export_surface(target_path, base_source(target_path))
+                candidate_surface = node_export_surface(target_path, candidate_source(target_path))
+                if baseline_surface is None or not baseline_surface.complete:
+                    continue
+                if candidate_surface is None:
+                    # Exact published-target deletion is handled by _node_published_target_findings.
+                    continue
+                if not candidate_surface.complete:
+                    findings.append(
+                        RiskFinding(
+                            kind="public_api_break",
+                            disposition="observe",
+                            path=target_path,
+                            evidence=(
+                                "public Node source export surface could not be proven after change: "
+                                f"{manifest_path}:{entry} -> {target}"
+                            ),
+                        )
+                    )
+                    continue
+                for symbol in sorted(baseline_surface.symbols - candidate_surface.symbols):
+                    findings.append(
+                        RiskFinding(
+                            kind="public_api_break",
+                            disposition="interrupt",
+                            flag="forbidden_public_api_change",
+                            path=target_path,
+                            evidence=(
+                                "public Node source export removed: "
+                                f"{manifest_path}:{entry} -> {target}:{symbol}"
+                            ),
+                        )
+                    )
+                    if len(findings) >= 20:
+                        return findings
+    return findings
+
+
 def classify_repository_risk(
     config: ProjectConfig,
     cwd: Path,
@@ -702,6 +768,9 @@ def classify_repository_risk(
 
     findings.extend(
         _node_published_target_findings(paths, base_source, candidate_source)
+    )
+    findings.extend(
+        _node_published_source_export_findings(paths, base_source, candidate_source)
     )
     for path in paths:
         base = base_source(path)
