@@ -16,7 +16,9 @@ from .persistence import PersistenceBackend
 from .workflow import bootstrap
 from .workspace_identity import (
     WorkspaceAffinityError,
+    assert_state_store_affinity,
     assert_workspace_affinity,
+    state_store_id,
     workspace_id,
 )
 
@@ -74,15 +76,18 @@ class RunController:
         if not cfg.requirements_path.is_file():
             raise ValueError(f"Requirements file not found: {cfg.requirements_path}")
         local_workspace_id = workspace_id(cfg.repo_path)
+        local_state_store_id = state_store_id(cfg.state_dir)
         return self.registry.register_project(
             project_id,
             config_path,
             workspace_id=local_workspace_id,
+            state_store_id=local_state_store_id,
         )
 
     def _config_for_project(self, project: dict[str, Any]):
         cfg = load_config(project["config_path"])
         assert_workspace_affinity(project, cfg.repo_path)
+        assert_state_store_affinity(project, cfg.state_dir)
         return cfg
 
     def _local_project(self, project_id: str) -> tuple[dict[str, Any], Any]:

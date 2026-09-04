@@ -61,6 +61,7 @@ class PostgresControlRegistry:
                     id TEXT PRIMARY KEY,
                     config_path TEXT NOT NULL,
                     workspace_id TEXT,
+                    state_store_id TEXT,
                     requirements_hash TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -71,6 +72,19 @@ class PostgresControlRegistry:
                 """
                 ALTER TABLE converge_projects
                 ADD COLUMN IF NOT EXISTS workspace_id TEXT
+                """
+            )
+            db.execute(
+                """
+                ALTER TABLE converge_projects
+                ADD COLUMN IF NOT EXISTS state_store_id TEXT
+                """
+            )
+            db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_converge_projects_state_store_unique
+                ON converge_projects(state_store_id)
+                WHERE state_store_id IS NOT NULL
                 """
             )
             db.execute(
@@ -103,52 +117,85 @@ class PostgresControlRegistry:
                 """
             )
 
+    def _state_store_owner(self, state_store_id: str) -> str | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT id FROM converge_projects WHERE state_store_id = %s",
+                (state_store_id,),
+            ).fetchone()
+        return str(row["id"]) if row is not None else None
+
     def register_project(
         self,
         project_id: str,
         config_path: Any,
         workspace_id: str | None = None,
+        state_store_id: str | None = None,
     ) -> dict[str, Any]:
         now = _now()
         resolved = str(config_path.expanduser().resolve())
-        with self._connection() as db:
-            if workspace_id is None:
-                db.execute(
-                    """
-                    INSERT INTO converge_projects(id, config_path, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT(id) DO UPDATE SET
-                        config_path = EXCLUDED.config_path,
-                        updated_at = EXCLUDED.updated_at
-                    """,
-                    (project_id, resolved, now, now),
-                )
-            else:
+        psycopg, _ = _psycopg()
+        try:
+            with self._connection() as db:
                 cursor = db.execute(
                     """
                     INSERT INTO converge_projects(
-                        id, config_path, workspace_id, created_at, updated_at
+                        id, config_path, workspace_id, state_store_id, created_at, updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT(id) DO UPDATE SET
                         config_path = EXCLUDED.config_path,
-                        workspace_id = EXCLUDED.workspace_id,
+                        workspace_id = COALESCE(
+                            EXCLUDED.workspace_id, converge_projects.workspace_id
+                        ),
+                        state_store_id = COALESCE(
+                            EXCLUDED.state_store_id, converge_projects.state_store_id
+                        ),
                         updated_at = EXCLUDED.updated_at
-                    WHERE converge_projects.workspace_id IS NULL
-                       OR converge_projects.workspace_id = EXCLUDED.workspace_id
+                    WHERE (EXCLUDED.workspace_id IS NULL
+                           OR converge_projects.workspace_id IS NULL
+                           OR converge_projects.workspace_id = EXCLUDED.workspace_id)
+                      AND (EXCLUDED.state_store_id IS NULL
+                           OR converge_projects.state_store_id IS NULL
+                           OR converge_projects.state_store_id = EXCLUDED.state_store_id)
                     """,
-                    (project_id, resolved, workspace_id, now, now),
+                    (project_id, resolved, workspace_id, state_store_id, now, now),
                 )
                 if cursor.rowcount != 1:
                     existing = db.execute(
-                        "SELECT workspace_id FROM converge_projects WHERE id = %s",
+                        """
+                        SELECT workspace_id, state_store_id
+                        FROM converge_projects
+                        WHERE id = %s
+                        """,
                         (project_id,),
                     ).fetchone()
-                    expected = existing["workspace_id"] if existing else "<missing>"
+                    if existing is None:
+                        raise KeyError(project_id)
+                    if workspace_id is not None and existing["workspace_id"] not in (
+                        None,
+                        workspace_id,
+                    ):
+                        raise ValueError(
+                            f"Project {project_id} is already bound to workspace "
+                            f"{existing['workspace_id']}; refusing registration from workspace "
+                            f"{workspace_id}"
+                        )
                     raise ValueError(
-                        f"Project {project_id} is already bound to workspace {expected}; "
-                        f"refusing registration from workspace {workspace_id}"
+                        f"Project {project_id} is already bound to state store "
+                        f"{existing['state_store_id']}; refusing registration from state store "
+                        f"{state_store_id}"
                     )
+        except psycopg.errors.UniqueViolation as exc:
+            if state_store_id is None:
+                raise
+            owner = self._state_store_owner(state_store_id)
+            if owner is None or owner == project_id:
+                raise
+            raise ValueError(
+                f"State store {state_store_id} is already assigned to project {owner}; "
+                f"project {project_id} must use its own state_dir"
+            ) from exc
         return self.get_project(project_id)
 
     def set_requirements_hash(self, project_id: str, requirements_hash: str) -> None:
