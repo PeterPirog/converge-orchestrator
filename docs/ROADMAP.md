@@ -127,8 +127,8 @@ Next priorities, in order:
 
 1. **PostgreSQL restore apply** — extend the already-proven preflight/apply contract to PostgreSQL. It
    must keep the no-force operator boundary and prove a deterministic crash-recovery boundary around
-   database publication before local journal acknowledgement; a naive `pg_restore` followed by a local
-   receipt is not sufficient.
+   database publication before local journal acknowledgement; the implementation must not rely on an
+   ambiguous external-write-then-local-receipt sequence.
 2. **Broader language adapters** — source-level Node plus Go/Rust API and dependency rules beyond the
    implemented Python AST and Node package-manifest policies.
 3. **Cost/time governance** — bounded project/run budgets and provider-reported telemetry after the
