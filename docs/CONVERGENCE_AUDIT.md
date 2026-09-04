@@ -31,12 +31,16 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
 - each new run owns a hash-pinned normalized configuration snapshot, so changing `converge.yaml`
   cannot silently change model, gate, retry/replan, CI or merge policy in a run already in progress;
 - CLI recovery resolves an existing durable run from control-registry identity before reading or
-  re-registering mutable source YAML, preserving the same pinned execution policy after restart.
+  re-registering mutable source YAML, preserving the same pinned execution policy after restart;
+- durable low-cardinality diagnostics/Prometheus metrics are reconstructed from shared registry state;
+- an authenticated workload-affinity probe lets an external scheduler identify which worker can safely
+  execute a filesystem-bound project, using the active run's pinned configuration when one exists.
 
 This does **not** mean production hardening is finished. The largest remaining production boundary is
-shared filesystem state: evidence, target workspaces/worktrees and some generated runtime artifacts are
-still filesystem-backed. A multi-node deployment therefore needs shared storage or explicit workload
-affinity plus backup/restore and observability.
+durable artifact protection: evidence, target workspaces/worktrees and some generated runtime artifacts
+are still filesystem-backed. Local-filesystem deployments now have an explicit placement contract, but
+they still need backup/restore or deliberately shared/external artifact storage to survive node/storage
+loss without manual reconstruction.
 
 ## Convergence matrix
 
@@ -47,7 +51,7 @@ affinity plus backup/restore and observability.
 | Deterministic controller above LLMs | **STRONGER** | LangGraph + Pydantic state + deterministic policy; model output cannot waive gates or authorize merge | no critical gap |
 | Planner / Worker / Reviewer separation | **STRONGER** | Scout RO, Planner RO, Builder sole worktree writer, independent correctness/architecture/security reviewers RO, deterministic Integrator | specialty analyzers remain optional extensions |
 | Autonomous TDD / repair loop | **ALIGNED** | behavior tasks use baseline, test-only RED, frozen test hashes and GREEN; bounded repair and replan; no human bypass of deterministic failures | language-specific `change_kind` inference can be stronger |
-| Git isolation | **STRONGER** | one deterministic worktree per task, crash-safe adoption, ownership-aware cleanup, active/recoverable/CI-wait resource protection | distributed workspace placement remains deployment-specific |
+| Git isolation | **STRONGER** | one deterministic worktree per task, crash-safe adoption, ownership-aware cleanup, active/recoverable/CI-wait resource protection, explicit worker-affinity probe | filesystem workspace durability and backup/restore remain deployment work |
 | Independent review barrier | **STRONGER** | deterministic risk scan before semantic review, three independent lanes, one reject/execution failure blocks integration, secret material blocked before reviewer exposure | additional specialty lanes are optional |
 | GitHub PR + CI | **STRONGER** | retry-safe push/PR/merge, origin validation, classic protection + effective Rulesets checks, App-ID-aware matching, checkpointable CI wait, explicit bounded flaky-job retry | GitHub remains final enforcement point for policies Converge intentionally does not duplicate |
 | MCP as universal tool bus | **PARTIAL BY DESIGN** | role-scoped MCP configuration generated for OpenCode | critical Git/GitHub/test/integration authority intentionally stays deterministic rather than MCP-only |
@@ -56,7 +60,7 @@ affinity plus backup/restore and observability.
 | Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically | additional deterministic compatibility policy can further reduce valid escalations |
 | Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits and timeout cleanup | pinned production images and deployment hardening |
 | Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry |
-| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state | shared artifact/object storage, backup and structured production telemetry |
+| Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics | shared artifact/object storage and coordinated backup/restore |
 
 ## Canonical execution path
 
@@ -160,14 +164,30 @@ stays outside the Builder authority. Container mode enforces read-only root, dro
 no-new-privileges, resource limits, tmpfs, controlled environment forwarding, network policy and
 cleanup on timeout.
 
+## Multi-node placement boundary
+
+The shared PostgreSQL registry/checkpointer does not imply that arbitrary workers own every project
+filesystem. Converge preserves the existing workspace/state-store binding as the deterministic execution
+guard and exposes a read-only authenticated affinity probe for deployment routing.
+
+For an unfinished run, the probe validates worker eligibility against the run's pinned configuration;
+it does not consult current mutable YAML. With no unfinished run it validates current project
+configuration because that is the policy a future run would start from. Missing storage, mismatch,
+invalid configuration or ambiguous unfinished runs produce bounded fail-closed classifications without
+raw paths or exception text.
+
+This endpoint is advisory to the external scheduler but not advisory to Converge's safety checks: a
+worker selected incorrectly still fails the controller's workspace/state-store assertions. The probe
+does not migrate workspaces, rewrite registry bindings or become a workflow-state authority.
+
 ## Current next priorities
 
-Repository evidence now moves the priority away from already-completed checkpoint/flake/PostgreSQL
-work. The smallest remaining high-value areas are, in order:
+Repository evidence now moves the priority away from already-completed checkpoint/flake/PostgreSQL,
+metrics and workload-placement work. The smallest remaining high-value areas are, in order:
 
-1. **Production observability and multi-node storage boundary** — structured metrics/tracing,
-   backup/restore and either external/shared evidence/workspace storage or an explicit deployable
-   workload-affinity contract. PostgreSQL already covers control/checkpoint state.
+1. **Production storage backup/restore** — coordinated protection for PostgreSQL control/checkpoint
+   state plus filesystem-backed evidence/workspaces, or deliberate migration of those artifacts to
+   shared/external storage. Backup must fail closed rather than capture an inconsistent active run.
 2. **Cross-language deterministic compatibility/architecture adapters** — source-level Node plus Go/Rust
    public API and dependency-boundary rules, extending the current Python AST and Node manifest policy.
 3. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry only
@@ -188,6 +208,7 @@ Converge is operationally converged with the reference vision when all of the fo
 - GitHub required CI policy validates the exact candidate commit;
 - crash recovery neither loses nor duplicates externally visible side effects;
 - one durable run cannot change execution policy because mutable project configuration changed;
+- filesystem-bound project operations are routed only to workers that satisfy deterministic affinity;
 - routine failures repair/replan/retry autonomously within explicit budgets before HITL;
 - OpenWebUI controls the process without becoming durable workflow storage;
 - sandbox and role permissions bound blast radius independently of model behavior;
