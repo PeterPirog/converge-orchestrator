@@ -452,7 +452,9 @@ def test_resume_rejects_tampered_journal_plan(tmp_path: Path) -> None:
         )
 
 
-def test_completed_restore_receipt_is_retry_safe_and_reusable_after_full_loss(tmp_path: Path) -> None:
+def test_completed_restore_receipt_is_retry_safe_and_reusable_after_full_loss(
+    tmp_path: Path,
+) -> None:
     backup, control_db, repo, state_dir, config, requirements = _lost_sqlite_deployment(tmp_path)
     plan = plan_deployment_restore(backup, control_db_path=control_db, database_url=None)
 
