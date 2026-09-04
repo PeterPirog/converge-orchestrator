@@ -108,7 +108,7 @@ def test_cli_run_registers_and_starts_through_scheduled_controller(tmp_path) -> 
             "configured_control_db_path",
             return_value=tmp_path / "control.sqlite",
         ),
-        patch.object(cli, "ScheduledRunController", return_value=controller),
+        patch.object(cli, "ScheduledRunController", return_value=controller) as factory,
         patch.object(
             cli,
             "_wait_until_terminal_or_human_interrupt",
@@ -118,7 +118,12 @@ def test_cli_run_registers_and_starts_through_scheduled_controller(tmp_path) -> 
     ):
         cli.run(config, thread_id=None, project_id=None)
 
+    factory.assert_called_once_with(
+        tmp_path / "control.sqlite",
+        restore_on_start=False,
+    )
     controller.register_project.assert_called_once_with("payments", config.resolve())
+    controller.restore_durable_runs.assert_called_once_with("payments")
     controller.start_run.assert_called_once_with("payments", thread_id=None)
     wait.assert_called_once_with(controller, "run-1")
     print_json.assert_called_once_with(data=terminal)
