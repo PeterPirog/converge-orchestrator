@@ -154,9 +154,7 @@ def _task_bundle_checks(
     )
 
     reviewer_map = review.get("reviewers", {}) if isinstance(review, dict) else {}
-    configured_roles_ok = all(
-        reviewer_map.get(role) == "pass" for role in config.review_roles
-    )
+    configured_roles_ok = all(reviewer_map.get(role) == "pass" for role in config.review_roles)
     review_ok = (
         isinstance(review, dict)
         and review.get("verdict") == "pass"
@@ -226,7 +224,11 @@ def _compliance_check(status: dict[str, Any]) -> AcceptanceCheck:
     compliance = values.get("compliance") if isinstance(values, dict) else None
     entries = compliance.get("entries") if isinstance(compliance, dict) else None
     if not isinstance(requirements, list) or not isinstance(entries, dict):
-        return _check("final_compliance", False, "terminal LangGraph compliance evidence is missing")
+        return _check(
+            "final_compliance",
+            False,
+            "terminal LangGraph compliance evidence is missing",
+        )
 
     mandatory = [
         str(item.get("id"))
@@ -323,8 +325,17 @@ def _supervisor_checks(
         and exception.action in {"approve", "edit"}
         and exception.no_manual_code_edit
     )
-    required_audits = {"requirements", "architecture", "compatibility", "security", "evidence"}
-    audits = {str(key): str(value).lower() for key, value in evidence.final_independent_checks.items()}
+    required_audits = {
+        "requirements",
+        "architecture",
+        "compatibility",
+        "security",
+        "evidence",
+    }
+    audits = {
+        str(key): str(value).lower()
+        for key, value in evidence.final_independent_checks.items()
+    }
     audit_ok = identity_ok and all(audits.get(name) == "pass" for name in required_audits)
     return [
         _check(
@@ -368,9 +379,9 @@ def evaluate_external_acceptance(
 ) -> ExternalAcceptanceReport:
     """Evaluate the general-purpose release gate from durable run/evidence artifacts.
 
-    This verifier never calls a model and never mutates the target repository. External process-restart
-    and deliberately exceptional HITL proof must come from an acceptance supervisor rather than being
-    inferred from chat history or operator claims.
+    This verifier never calls a model and never mutates the target repository. External
+    process-restart and deliberately exceptional HITL proof must come from an acceptance supervisor
+    rather than being inferred from chat history or operator claims.
     """
 
     run_id = str(status.get("id") or "").strip()
@@ -383,8 +394,7 @@ def evaluate_external_acceptance(
     checks.append(
         _check(
             "external_target_repository",
-            bool(target_repository)
-            and target_repository.lower() != _ORCHESTRATOR_REPOSITORY,
+            bool(target_repository) and target_repository.lower() != _ORCHESTRATOR_REPOSITORY,
             f"configured GitHub target={target_repository or 'none'}",
         )
     )
