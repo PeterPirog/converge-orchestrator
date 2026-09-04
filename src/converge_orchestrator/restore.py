@@ -135,7 +135,7 @@ def _check_bundle(project_dir: Path | None, project: BackupProject, blockers: li
     heads = {
         line.split(maxsplit=1)[0]
         for line in result.stdout.splitlines()
-        if line.strip() and line.split(maxsplit=1)
+        if line.strip()
     }
     if project.repo_head not in heads:
         blockers.append("repository bundle does not contain the manifest HEAD")
@@ -184,6 +184,20 @@ def _postgres_target_empty(database_url: str) -> bool:
         ) from exc
 
 
+def _database_artifact_blockers(root: Path, manifest: BackupManifest) -> list[str]:
+    blockers: list[str] = []
+    sqlite_artifact = root / "database" / "control.sqlite"
+    postgres_artifact = root / "database" / "postgres.dump"
+    expected = sqlite_artifact if manifest.persistence_backend == "sqlite" else postgres_artifact
+    unexpected = postgres_artifact if manifest.persistence_backend == "sqlite" else sqlite_artifact
+
+    if expected.is_symlink() or not expected.is_file():
+        blockers.append("backup database artifact does not match declared persistence backend")
+    if unexpected.exists() or unexpected.is_symlink():
+        blockers.append("backup contains a database artifact for a different persistence backend")
+    return blockers
+
+
 def _database_blockers(
     manifest: BackupManifest,
     control_db_path: Path,
@@ -196,7 +210,7 @@ def _database_blockers(
             blockers.append(
                 "backup uses SQLite but CONVERGE_DATABASE_URL selects PostgreSQL on this host"
             )
-        if target.exists():
+        if target.exists() or target.is_symlink():
             blockers.append("SQLite control database target already exists")
         return str(target), blockers
 
@@ -237,9 +251,21 @@ def plan_deployment_restore(
 
     manifest_path = root / "manifest.json"
     manifest_hash = _sha256(manifest_path)
-    database_target, blockers = _database_blockers(manifest, control_db_path, database_url)
-    project_plans: list[RestoreProjectPlan] = []
+    blockers = _database_artifact_blockers(root, manifest)
+    database_target, database_blockers = _database_blockers(
+        manifest,
+        control_db_path,
+        database_url,
+    )
+    blockers.extend(database_blockers)
 
+    project_ids = [project.project_id for project in manifest.projects]
+    if not project_ids:
+        blockers.append("backup manifest contains no projects")
+    elif len(project_ids) != len(set(project_ids)):
+        blockers.append("backup manifest contains duplicate project IDs")
+
+    project_plans: list[RestoreProjectPlan] = []
     seen_directory_targets: list[tuple[str, Path]] = []
     for project in manifest.projects:
         project_blockers: list[str] = []
@@ -277,7 +303,7 @@ def plan_deployment_restore(
             ("state", state_target),
             ("worktree", worktree_target),
         ):
-            if path is not None and path.exists():
+            if path is not None and (path.exists() or path.is_symlink()):
                 project_blockers.append(f"{label} restore target already exists")
 
         for label, path in (("repository", repo_target), ("state", state_target)):
