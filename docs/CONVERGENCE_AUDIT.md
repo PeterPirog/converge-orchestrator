@@ -45,16 +45,19 @@ The earlier high-priority recovery gaps are now closed with executable evidence:
 - exact published Node source modules have Tree-sitter-backed direct named-export comparison, so a
   proven exported-name removal is blocked before semantic review while ambiguous or unresolved syntax
   remains review evidence rather than a guessed failure;
-- direct TypeScript callables on the same exact published target now expose a parser-derived minimum
+- direct TypeScript callables on the same exact published target expose a parser-derived minimum
   call-argument contract; a proven increase is blocked while optional/default/rest changes and plain
-  JavaScript parameter growth do not create false HITL.
+  JavaScript parameter growth do not create false HITL;
+- bounded local Node wildcard re-export graphs are resolved only for relative package-confined paths,
+  under explicit depth/module/edge budgets; proven named exports and TypeScript minimum-call-arity
+  evidence now propagate through unchanged public barrels, while cycles/ambiguity remain conservative.
 
 This does **not** mean production hardening is finished. Both SQLite and PostgreSQL deployments now have
 a complete create/verify/plan/apply recovery path for the backed-up artifacts. Independent multi-node
 deployments still require a shared/consistent project filesystem or deliberate external artifact
-storage. Python compatibility remains broader than Node because bounded re-export resolution and
-broader TypeScript signature/type compatibility are not yet deterministic; Go/Rust source
-compatibility also remains future work.
+storage. Python compatibility remains broader than Node because broader TypeScript signature/type
+compatibility is intentionally not guessed; Go/Rust source compatibility also remains future work.
+The next production-readiness blocker is fail-closed cost/time/model-usage governance.
 
 ## Convergence matrix
 
@@ -71,9 +74,9 @@ compatibility also remains future work.
 | MCP as universal tool bus | **PARTIAL BY DESIGN** | role-scoped MCP configuration generated for OpenCode | critical Git/GitHub/test/integration authority intentionally stays deterministic rather than MCP-only |
 | OpenWebUI operator entry point | **ALIGNED** | confirmed Workspace Tool over Bearer-authenticated FastAPI; status/compliance/evidence/interrupt operations; durable state outside chat | richer dashboard is optional UX |
 | Reusable project configuration | **STRONGER** | one `converge.yaml`, relative paths, model profiles, MCP, sandbox, quality/workflow policy, per-run normalized immutable execution snapshot | GUI editor is optional |
-| Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically | additional deterministic compatibility policy can further reduce valid escalations |
+| Minimal HITL | **STRONGER** | HITL only for explicit risk/ambiguity or exhausted bounded recovery; routine provider failures, CI waits and recoverable crashes resume automatically; bounded Node barrel analysis reduces avoidable compatibility ambiguity | additional high-confidence compatibility rules can further reduce valid escalations |
 | Least privilege / sandbox | **STRONGER** | protected role permissions, Builder-only write, RO Git metadata, container root RO, cap-drop, no-new-privileges, resource/network/env limits and timeout cleanup | pinned production images and deployment hardening |
-| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry |
+| Context rotation / bounded memory | **ALIGNED** | fresh OpenCode sessions, LangGraph/evidence continuity, authoritative core never silently truncated, advisory compaction, bounded fallback attempts | provider token/cost telemetry and global run budgets |
 | Evidence + durable compliance | **STRONGER** | event/evidence bundles, persistent compliance, verifier/TDD/risk/CI evidence, SQLite or PostgreSQL durable workflow state, durable registry diagnostics, coordinated backup and crash-safe restore for both persistence backends | optional shared/external artifact storage |
 
 ## Canonical execution path
@@ -116,7 +119,7 @@ released while idle, and a new controller reconstructs the timer after restart.
 
 ## Immutable intent versus pinned execution policy
 
-Converge now protects two distinct classes of drift and does not conflate them:
+Converge protects two distinct classes of drift and does not conflate them:
 
 1. `architecture.md` is the immutable **Source of Truth**. Its SHA-256 and source anchors protect what
    the repository is required to become. `contract.json` remains an index, never a replacement.
@@ -209,17 +212,17 @@ does not migrate workspaces, rewrite registry bindings or become a workflow-stat
 ## Current next priorities
 
 Repository evidence now moves the priority away from completed checkpoint/flake/PostgreSQL persistence,
-metrics, workload-placement and deployment backup/restore recovery work. The smallest remaining
-high-value areas are, in order:
+metrics, workload-placement, deployment backup/restore and bounded Node barrel-resolution work. The
+smallest remaining high-value areas are, in order:
 
-1. **Cross-language deterministic compatibility/architecture adapters** — complete bounded Node local
-   re-export resolution and additional high-confidence source-signature rules on top of the direct
-   named-export and minimum-call-arity parser, then add Go/Rust public API and dependency-boundary
-   rules. These gates should reduce semantic-review ambiguity and therefore avoid otherwise valid HITL
-   escalations without giving models policy authority.
-2. **Cost/time governance** — bounded run/project budgets and provider-reported usage telemetry after
-   the core operational durability path is hardened.
-3. **Deployment portability hardening** — pinned production sandbox images and deliberately
+1. **Cost/time governance** — add fail-closed run/project wall-time and model-usage budgets with durable
+   accounting before autonomous execution can exceed its configured resource envelope. Provider usage
+   telemetry is evidence; deterministic policy owns the stop/continue decision.
+2. **Cross-language deterministic compatibility/architecture adapters** — add only high-confidence
+   parser-backed Node source-signature rules that materially reduce review ambiguity, then Go/Rust
+   public API and dependency-boundary rules. Uncertain semantics must remain conservative rather than
+   guessed.
+3. **Deployment portability hardening** — digest-pinned project sandbox images and deliberately
    shared/external artifact storage where independent multi-node workers require it.
 
 Optional issue synchronization, richer dashboards and broader UX must not displace these core items.
@@ -235,10 +238,11 @@ meaningful operational milestone, but it is not yet the release criterion for un
 repository development.
 
 The general-purpose readiness gate is maintained in `ROADMAP.md`. In practical terms, the remaining
-blockers before that declaration are a bounded compatibility scope for the claimed language set,
-fail-closed cost/time budgets, a digest-pinned production sandbox profile, and a representative external
-repository acceptance run that reaches convergence across multiple PR/CI cycles with restart recovery
-and no manual code edits. This keeps the declaration evidence-based instead of tied to a calendar date.
+blockers before that declaration are an explicitly bounded compatibility scope for the claimed language
+set, fail-closed cost/time/model-usage budgets, a digest-pinned production sandbox profile, and a
+representative external repository acceptance run that reaches convergence across multiple PR/CI cycles
+with restart recovery and no manual code edits. This keeps the declaration evidence-based instead of
+tied to a calendar date.
 
 ## Target operational criterion
 

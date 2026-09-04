@@ -35,52 +35,69 @@ its package/ancestor scopes. If an existing public `exports`, `bin`, `main`, `mo
 `typings` or `browser` entry still points to that exact local file in the candidate manifest, deletion
 is a definite compatibility break and produces `forbidden_public_api_change` even when the manifest
 itself was not edited. This check is deliberately limited to exact `./...` targets that existed in the
-base revision; wildcard exports and generated targets that were never tracked are not guessed.
+base revision; wildcard package targets and generated targets that were never tracked are not guessed.
 Retargeting an existing public entry to a different present file remains review evidence rather than
 automatic HITL.
 
-## Node direct source exports
+## Node source exports and bounded local re-exports
 
 For exact local source modules that remain published through a pre-existing `exports`, `main`,
-`module`, `types` or `typings` entry, Converge additionally parses changed JavaScript/TypeScript source
-with the Tree-sitter TypeScript/TSX grammars. The target repository code is never imported or executed.
-The adapter compares only the direct top-level syntactic export names that it can prove from both the
-canonical base and candidate module.
+`module`, `types` or `typings` entry, Converge parses JavaScript/TypeScript source with the Tree-sitter
+TypeScript/TSX grammars. The target repository code is never imported or executed. Direct named
+exports are compared structurally, and local wildcard barrels can be resolved through a deliberately
+bounded module graph.
 
-A direct baseline export that disappears from the same still-published module produces
+A baseline export that disappears from the same still-published consumer surface produces
 `forbidden_public_api_change`. Additive named exports proceed autonomously. Explicit aliases and
 explicit named re-exports are compared by their consumer-visible exported names, and declaration-file
 exports are covered through the same parser.
 
-For direct callable declarations in TypeScript-family targets (`.ts`, `.tsx`, `.mts`, `.cts`, including
-`.d.ts`), the same parse also records the **minimum number of positional call arguments** accepted by
-each exported callable. `this` pseudo-parameters and rest parameters do not consume a required call
-position; optional/defaulted parameters do not raise the minimum themselves, while a later required
-parameter still makes preceding positions necessary. Multiple direct overload declarations are
-represented by the least minimum they accept. If the same still-published direct callable is provable
+Local `export * from "..."` resolution is intentionally narrower than full Node/TypeScript module
+resolution:
+
+- only relative specifiers are considered;
+- every resolved path must remain inside the package root owning the published manifest;
+- an exact supported source path is accepted directly;
+- an extensionless path is accepted only when exactly one supported source or `index` candidate
+  exists;
+- traversal is bounded by maximum depth, unique-module count and re-export-edge count;
+- cycles, external packages, escaped/encoded specifiers, package-root escapes, ambiguous targets,
+  duplicate wildcard bindings and exhausted budgets make the surface incomplete rather than guessed.
+
+The default resolver envelope is depth 4, 32 unique modules and 64 re-export edges. These are policy
+safety bounds, not claims of full language semantics. A change in an internal module reached through
+an otherwise unchanged public barrel is still considered when that module participated in the proven
+base/candidate surface.
+
+For callable declarations in TypeScript-family targets (`.ts`, `.tsx`, `.mts`, `.cts`, including
+`.d.ts`), the parse records the **minimum number of positional call arguments** accepted by each
+provable exported callable. `this` pseudo-parameters and rest parameters do not consume a required
+call position; optional/defaulted parameters do not raise the minimum themselves, while a later
+required parameter still makes preceding positions necessary. Multiple direct overload declarations
+are represented by the least minimum they accept. Proven minimum-argument evidence is propagated
+through a completely resolved local wildcard barrel. If the same still-published callable is provable
 in both revisions and the candidate raises that minimum, the change produces
 `forbidden_public_api_change` before semantic review.
 
 This call-shape rule deliberately does not treat growth of a plain JavaScript parameter list as a
-proven break, because JavaScript permits calls with fewer arguments. It also does not resolve callable
-variables, aliases, explicit re-exports, wildcard re-export graphs or semantic type assignability.
-Those cases remain available to tests and independent semantic review instead of generating guessed
-HITL.
+proven break, because JavaScript permits calls with fewer arguments. It also does not infer semantic
+type assignability, callable-valued variables or arbitrary package/module-resolution behavior.
 
-The adapter deliberately fails conservative rather than pretending to understand more than the syntax
-proves:
+The adapter fails conservative rather than pretending to understand more than the parser and bounded
+resolver prove:
 
 - an incomplete baseline surface is not used as evidence that a public name existed;
-- a candidate containing unresolved wildcard exports, unsupported/ambiguous export syntax or parser
-  errors produces `observe` evidence for independent review instead of a deterministic break/HITL;
+- an incomplete candidate surface produces `observe` evidence when the changed paths intersect the
+  inspected public surface, rather than a deterministic break/HITL;
 - manifest retargeting is not compared as if the old and new modules were the same public source;
 - `bin` and `browser` targets are not treated as named-module export surfaces;
-- CommonJS assignment semantics, wildcard re-export graphs, module resolution and broader source-level
-  type/signature equivalence are not inferred by this policy.
+- CommonJS assignment semantics, semantic type/signature equivalence, path aliases, package `imports`,
+  dependency-package resolution and other full compiler/runtime resolution rules are not inferred by
+  this policy.
 
 This boundary is intentional: the deterministic gate blocks only a compatibility break it can prove.
-The next Node compatibility work is bounded local re-export resolution and additional conservative
-source-signature rules, not regex-based approximation.
+Remaining Node work should add only high-confidence source-signature rules with parser-backed evidence;
+uncertain semantics stay with tests and independent review rather than generating false HITL.
 
 ## Policy boundary
 
