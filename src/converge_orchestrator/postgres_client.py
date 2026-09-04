@@ -34,7 +34,7 @@ _LIBPQ_ENV = {
     "sslmode": "PGSSLMODE",
     "sslpassword": "PGSSLPASSWORD",
     "sslrootcert": "PGSSLROOTCERT",
-    "sslsni": "PGSSLSNI",
+    "sslsni": "PGSSNI",
     "ssl_min_protocol_version": "PGSSLMINPROTOCOLVERSION",
     "ssl_max_protocol_version": "PGSSLMAXPROTOCOLVERSION",
     "target_session_attrs": "PGTARGETSESSIONATTRS",
@@ -65,7 +65,7 @@ def libpq_env(
     *,
     base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Convert a URI/conninfo into libpq environment variables without argv secrets."""
+    """Convert a URI/conninfo into isolated libpq environment variables without argv secrets."""
     parsed = _conninfo_to_dict(database_url)
     unsupported = sorted(set(parsed) - set(_LIBPQ_ENV))
     if unsupported:
@@ -75,6 +75,8 @@ def libpq_env(
         )
 
     env = dict(os.environ if base is None else base)
+    for variable in set(_LIBPQ_ENV.values()):
+        env.pop(variable, None)
     for key, value in parsed.items():
         env[_LIBPQ_ENV[key]] = value
     if not env.get("PGDATABASE") and not env.get("PGSERVICE"):
