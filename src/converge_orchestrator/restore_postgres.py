@@ -109,19 +109,24 @@ def _receipt_sql(
     database_target_binding: str,
 ) -> bytes:
     values = (manifest_sha256, confirmation_token, database_target_binding)
-    if any(len(value) != 64 or any(char not in "0123456789abcdef" for char in value) for value in values):
+    invalid = any(
+        len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+        for value in values
+    )
+    if invalid:
         raise RestoreApplyError("PostgreSQL restore receipt identity is invalid")
     sql = f"""
 
-DROP SCHEMA IF EXISTS {_RECEIPT_SCHEMA} CASCADE;
-CREATE SCHEMA {_RECEIPT_SCHEMA};
-CREATE TABLE {_RECEIPT_SCHEMA}.{_RECEIPT_TABLE} (
+CREATE SCHEMA IF NOT EXISTS {_RECEIPT_SCHEMA};
+CREATE TABLE IF NOT EXISTS {_RECEIPT_SCHEMA}.{_RECEIPT_TABLE} (
     singleton smallint PRIMARY KEY CHECK (singleton = 1),
     protocol_version integer NOT NULL,
     backup_manifest_sha256 char(64) NOT NULL,
     confirmation_token char(64) NOT NULL,
     database_target_binding char(64) NOT NULL
 );
+DELETE FROM {_RECEIPT_SCHEMA}.{_RECEIPT_TABLE};
 INSERT INTO {_RECEIPT_SCHEMA}.{_RECEIPT_TABLE}(
     singleton,
     protocol_version,
@@ -267,8 +272,12 @@ def _receipt_matches(
 ) -> bool:
     if receipt is None:
         return False
+    try:
+        protocol_version = int(receipt.get("protocol_version") or 0)
+    except (TypeError, ValueError):
+        return False
     return (
-        int(receipt.get("protocol_version") or 0) == 1
+        protocol_version == 1
         and str(receipt.get("backup_manifest_sha256") or "").strip() == manifest_sha256
         and str(receipt.get("confirmation_token") or "").strip() == confirmation_token
         and str(receipt.get("database_target_binding") or "").strip()
