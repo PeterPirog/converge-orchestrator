@@ -17,11 +17,14 @@ Before starting the live run:
 1. normalize the source PDF/DOCX/design material into one reviewed Markdown requirements artifact;
 2. make that requirements artifact read-only;
 3. configure a representative external GitHub repository with meaningful deterministic tests and CI;
-4. use a hash-pinned `converge.yaml` run budget and a digest-pinned container sandbox profile;
-5. run `converge doctor --config <config>` successfully;
-6. provision model-gateway and GitHub credentials through the deployment environment, never in
+4. configure the acceptance base branch with at least one authoritative required GitHub status check
+   through branch protection or an effective Ruleset; a workflow that merely happens to run is not an
+   integration gate;
+5. use a hash-pinned `converge.yaml` run budget and a digest-pinned container sandbox profile;
+6. run `converge doctor --config <config>` successfully;
+7. provision model-gateway and GitHub credentials through the deployment environment, never in
    requirements, prompts, evidence or repository files;
-7. configure `auto_merge: true` and the required correctness, architecture and security review lanes.
+8. configure `auto_merge: true` and the required correctness, architecture and security review lanes.
 
 The target must exercise at least two independently useful mandatory requirements so convergence
 requires at least two merged task/PR/CI cycles. Do not split one trivial edit into artificial tasks
@@ -52,7 +55,7 @@ and recovery without becoming workflow policy.
 During the same durable run the supervisor must prove all of the following:
 
 1. at least one task completes through Builder, deterministic gates, all configured independent review
-   lanes, PR, authoritative CI and merge;
+   lanes, PR, authoritative required CI and merge;
 2. the supervisor terminates that controller process at a nonterminal point and starts a new controller
    process with a different PID;
 3. the same durable run/thread resumes automatically without `/resume`, manual repository repair or a
@@ -110,7 +113,8 @@ resource budget and evidence bundle. It requires:
 - complete task/diff/quality/risk/review/PR/CI evidence for each merged task;
 - all required deterministic quality gates PASS;
 - every configured independent review lane PASS;
-- authoritative CI PASS;
+- CI status PASS under an authoritative recorded GitHub policy containing at least one required status
+  check; an unprotected branch with zero required checks cannot satisfy the release report;
 - final mandatory compliance PASS;
 - a real controller PID change followed by automatic same-run recovery;
 - exactly the deliberately injected exceptional `risk_policy` HITL decision with no manual code edit;
