@@ -5,10 +5,12 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, TypedDict
+from typing import TypedDict
 from unittest.mock import patch
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import pytest
@@ -43,20 +45,20 @@ def _counter_graph(checkpointer):
 def _psycopg():
     import psycopg
     from psycopg import sql
-    from psycopg.conninfo import make_conninfo
 
-    return psycopg, sql, make_conninfo
+    return psycopg, sql
 
 
 def _database_url(name: str) -> str:
     assert DATABASE_URL is not None
-    _, _, make_conninfo = _psycopg()
-    return make_conninfo(DATABASE_URL, dbname=name)
+    parsed = urlsplit(DATABASE_URL)
+    assert parsed.scheme in {"postgres", "postgresql"}
+    return urlunsplit((parsed.scheme, parsed.netloc, f"/{name}", parsed.query, ""))
 
 
 @contextmanager
 def _isolated_databases() -> Iterator[tuple[str, str]]:
-    psycopg, sql, _ = _psycopg()
+    psycopg, sql = _psycopg()
     source_name = f"converge_src_{uuid4().hex[:12]}"
     target_name = f"converge_dst_{uuid4().hex[:12]}"
     admin_url = _database_url("postgres")
