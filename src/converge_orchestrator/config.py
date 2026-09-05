@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from .ci_flakes import flaky_ci_policy_from_mapping
 from .models import ModelProfile, ProjectConfig
@@ -83,6 +84,8 @@ def _select_model_profile_set(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "models.profile_sets must be a non-empty mapping when models.mode is set"
         )
+    if any(not isinstance(set_name, str) for set_name in profile_sets):
+        raise ValueError("models.profile_sets keys must be strings")
 
     unknown_modes = sorted(set(profile_sets) - _MODEL_MODES)
     if unknown_modes:
@@ -97,7 +100,7 @@ def _select_model_profile_set(data: dict[str, Any]) -> dict[str, Any]:
         for profile_name, profile in profiles.items():
             try:
                 ModelProfile.model_validate(profile)
-            except Exception as exc:
+            except ValidationError as exc:
                 raise ValueError(
                     f"invalid model profile models.profile_sets.{set_name}.{profile_name}: {exc}"
                 ) from exc
