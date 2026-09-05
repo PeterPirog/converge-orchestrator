@@ -311,7 +311,13 @@ class OpenCodeAdapter:
             cmd += ["--attach", self.config.opencode_attach_url]
         # Fresh-session invariant: Converge never supplies --continue or --session. Long-running
         # continuity comes from LangGraph state and explicit evidence, not hidden model history.
-        cmd += ["--dir", str(cwd), rendered_prompt]
+        # The --dir value is a declared path argument: ExecutionSandbox translates it into
+        # the container-visible cwd bind destination so OpenCode operates inside the sandbox
+        # workdir instead of receiving a Windows host path in a Linux container. The prompt
+        # itself is never path-rewritten.
+        cmd += ["--dir", str(cwd)]
+        path_arguments = (len(cmd) - 1,)
+        cmd.append(rendered_prompt)
         profile_overrides = {role: model_profile} if model_profile else None
         runtime_config = json.dumps(
             runtime_opencode_config(
@@ -328,8 +334,6 @@ class OpenCodeAdapter:
                 cwd=cwd,
                 timeout=attempt_timeout,
                 env={
-                    "OPENCODE_CONFIG": str(generated_config),
-                    "OPENCODE_CONFIG_DIR": str(managed_config_dir),
                     # Stable OpenCode loads inline config after project config and `.opencode`.
                     # This keeps orchestrator safety policy authoritative even for a target
                     # repository that contains its own OpenCode configuration.
@@ -340,6 +344,14 @@ class OpenCodeAdapter:
                 include_state=False,
                 agent_role=role,
                 readonly_paths=(generated_config, managed_config_dir),
+                path_arguments=path_arguments,
+                # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR are path-valued and must stay
+                # container-visible; OPENCODE_CONFIG_CONTENT is inline JSON and is never
+                # path-rewritten.
+                path_env={
+                    "OPENCODE_CONFIG": generated_config,
+                    "OPENCODE_CONFIG_DIR": managed_config_dir,
+                },
             )
         except Exception:
             append_context_ledger(self.config, context_report, cwd)
