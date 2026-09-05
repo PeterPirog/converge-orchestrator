@@ -598,13 +598,17 @@ def test_real_linked_worktree_mounts_readonly_git_metadata(tmp_path: Path) -> No
     git_src = str((repo / ".git").resolve())
     assert git_src in mounts
     assert mounts[git_src][1] is True
-    assert str((worktree / ".git").resolve()) not in mounts
     gitdir = real_dirs[0]
     process_env = run.call_args.kwargs["env"]
+    pointer_src = str((worktree / ".git").resolve())
     if is_windows_form_path(str(gitdir)):
+        # A Windows pointer is unusable inside the container, so it stays unmounted.
+        assert pointer_src not in mounts
         assert process_env["GIT_DIR"] == container_path_for(str(gitdir))
         assert process_env["GIT_WORK_TREE"] == container_path_for(str(worktree.resolve()))
         assert {"GIT_DIR", "GIT_WORK_TREE"} <= _env_names(argv)
     else:
+        # A POSIX pointer is container-consumable: historical behavior is preserved.
+        assert mounts[pointer_src] == (container_path_for(pointer_src), True)
         assert "GIT_DIR" not in process_env
         assert "GIT_WORK_TREE" not in process_env
