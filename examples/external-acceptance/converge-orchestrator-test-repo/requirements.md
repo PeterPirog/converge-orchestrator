@@ -4,9 +4,9 @@ This document is the reviewed acceptance fixture for the isolated
 `PeterPirog/converge-orchestrator-test-repo:converge-acceptance` branch. It is not a roadmap for the
 repository's normal `main` line.
 
-During the live release scenario copy this file outside both the target repository and its writable
-worktrees, review it, make it physically read-only, and use that copy as Converge's immutable Source of
-Truth. The acceptance run must not edit this document.
+During the live release scenario this file is copied outside both the target repository and its writable
+worktrees, reviewed, made physically read-only, and used as Converge's immutable Source of Truth for that
+run.
 
 ## ACCEPT-001 — Structured command simulation
 
