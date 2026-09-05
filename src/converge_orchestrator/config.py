@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from .ci_flakes import flaky_ci_policy_from_mapping
-from .models import ProjectConfig
+from .models import ModelProfile, ProjectConfig
 
 _PATH_KEYS = (
     "repo_path",
@@ -16,6 +17,7 @@ _PATH_KEYS = (
     "state_dir",
     "worktree_dir",
 )
+_MODEL_MODES = {"cloud", "local"}
 _RUN_CONFIG_DIR = "run-configs"
 _RUN_CONFIG_PATTERN = re.compile(r"^.+-sha256-([0-9a-f]{64})\.yaml$")
 
@@ -62,6 +64,59 @@ def _resolve_relative_paths(data: dict[str, Any], base_dir: Path) -> dict[str, A
     return resolved
 
 
+def _select_model_profile_set(data: dict[str, Any]) -> dict[str, Any]:
+    """Select one validated cloud/local profile set before runtime config validation."""
+    resolved = dict(data)
+    models = resolved.get("models")
+    if not isinstance(models, dict):
+        return resolved
+
+    mode = models.get("mode")
+    profile_sets = models.get("profile_sets")
+    if mode is None and profile_sets is None:
+        return resolved
+
+    if mode not in _MODEL_MODES:
+        raise ValueError("models.mode must be one of: cloud, local")
+    if "profiles" in models:
+        raise ValueError("models.profiles cannot be combined with models.profile_sets")
+    if not isinstance(profile_sets, dict) or not profile_sets:
+        raise ValueError(
+            "models.profile_sets must be a non-empty mapping when models.mode is set"
+        )
+    if any(not isinstance(set_name, str) for set_name in profile_sets):
+        raise ValueError("models.profile_sets keys must be strings")
+
+    unknown_modes = sorted(set(profile_sets) - _MODEL_MODES)
+    if unknown_modes:
+        raise ValueError(
+            f"models.profile_sets contains unsupported modes: {unknown_modes}; "
+            "allowed: ['cloud', 'local']"
+        )
+
+    for set_name, profiles in profile_sets.items():
+        if not isinstance(profiles, dict) or not profiles:
+            raise ValueError(f"models.profile_sets.{set_name} must be a non-empty mapping")
+        for profile_name, profile in profiles.items():
+            try:
+                ModelProfile.model_validate(profile)
+            except ValidationError as exc:
+                raise ValueError(
+                    f"invalid model profile models.profile_sets.{set_name}.{profile_name}: {exc}"
+                ) from exc
+
+    selected = profile_sets.get(mode)
+    if selected is None:
+        raise ValueError(f"models.profile_sets does not define selected mode {mode!r}")
+
+    normalized_models = dict(models)
+    normalized_models.pop("mode", None)
+    normalized_models.pop("profile_sets", None)
+    normalized_models["profiles"] = dict(selected)
+    resolved["models"] = normalized_models
+    return resolved
+
+
 def _snapshot_digest_from_path(source: Path) -> str | None:
     if source.parent.name != _RUN_CONFIG_DIR:
         return None
@@ -89,7 +144,8 @@ def _load_mapping(source: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("converge.yaml must contain a YAML mapping at the document root")
     flaky_ci_policy_from_mapping(data)
-    return _resolve_relative_paths(data, source.parent)
+    selected = _select_model_profile_set(data)
+    return _resolve_relative_paths(selected, source.parent)
 
 
 def _validated_config(data: dict[str, Any]) -> ProjectConfig:
