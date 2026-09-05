@@ -363,20 +363,44 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["project"]["repo_path"]
     assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
-    profiles = raw["models"]["profiles"]
-    assert profiles["scout"]["model"] == "deepseek-v4-flash:cloud"
-    assert profiles["scout"]["context_tokens"] == 1048576
-    assert profiles["planner"]["model"] == "deepseek-v4-pro:cloud"
-    assert profiles["planner"]["context_tokens"] == 1048576
-    assert profiles["builder"]["model"] == "kimi-k2.7-code:cloud"
-    assert profiles["builder"]["context_tokens"] == 262144
-    assert profiles["builder_fallback"]["model"] == "qwen3-coder-next:cloud"
-    assert profiles["builder_fallback"]["context_tokens"] == 262144
-    assert profiles["reviewer"]["model"] == "glm-5.3-flash:cloud"
-    assert profiles["reviewer"]["context_tokens"] == 1048576
-    assert profiles["security"]["model"] == "gpt-oss:120b"
-    assert profiles["security"]["context_tokens"] == 131072
-    assert all(profile["request_body"] == {} for profile in profiles.values())
+    assert raw["models"]["mode"] == "local"
+
+    profile_sets = raw["models"]["profile_sets"]
+    assert set(profile_sets) == {"cloud", "local"}
+
+    cloud = profile_sets["cloud"]
+    assert cloud["scout"]["model"] == "deepseek-v4-flash:cloud"
+    assert cloud["scout"]["context_tokens"] == 1048576
+    assert cloud["planner"]["model"] == "deepseek-v4-pro:cloud"
+    assert cloud["planner"]["context_tokens"] == 1048576
+    assert cloud["builder"]["model"] == "kimi-k2.7-code:cloud"
+    assert cloud["builder"]["context_tokens"] == 262144
+    assert cloud["builder_fallback"]["model"] == "qwen3-coder-next:cloud"
+    assert cloud["builder_fallback"]["context_tokens"] == 262144
+    assert cloud["reviewer"]["model"] == "glm-5.3-flash:cloud"
+    assert cloud["reviewer"]["context_tokens"] == 1048576
+    assert cloud["security"]["model"] == "gpt-oss:120b"
+    assert cloud["security"]["context_tokens"] == 131072
+
+    local = profile_sets["local"]
+    assert local["scout"]["model"] == "nemotron-3.5-lightning:latest"
+    assert local["scout"]["context_tokens"] == 1048576
+    assert local["planner"]["model"] == "laguna-s-2.1:latest"
+    assert local["planner"]["context_tokens"] == 262144
+    assert local["builder"]["model"] == "qwen3.8:latest"
+    assert local["builder"]["context_tokens"] == 262144
+    assert local["builder_fallback"]["model"] == "nemotron-3.5-lightning:latest"
+    assert local["builder_fallback"]["context_tokens"] == 1048576
+    assert local["reviewer"]["model"] == "muse-glimmer:latest"
+    assert local["reviewer"]["context_tokens"] == 131072
+    assert local["security"]["model"] == "gpt-oss:120b"
+    assert local["security"]["context_tokens"] == 131072
+
+    assert all(
+        profile["request_body"] == {}
+        for profiles in profile_sets.values()
+        for profile in profiles.values()
+    )
     assert raw["agents"]["scout"]["steps"] == 12
     assert raw["agents"]["planner"]["steps"] == 18
     assert raw["agents"]["builder"]["steps"] == 60
