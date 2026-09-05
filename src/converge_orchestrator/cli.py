@@ -243,10 +243,28 @@ def doctor(config: ConfigOption, offline: OfflineOption = False) -> None:
     if cfg.sandbox.mode == "host":
         _require_executable(cfg.opencode_binary, "OpenCode")
     else:
+        sandbox = ExecutionSandbox(cfg)
         try:
-            ExecutionSandbox(cfg).preflight()
+            sandbox.preflight()
+            # No-inference smoke: a real container execution proves the sandbox can start with
+            # a valid workdir and mounts. This catches container path/launch failures (for
+            # example a Windows host path used as a Linux container workdir, Docker rc=125)
+            # before any model budget is reserved.
+            smoke = sandbox.run(
+                ["/bin/sh", "-lc", "exit 0"],
+                cwd=cfg.repo_path,
+                timeout=120,
+                scope="quality",
+                writable_cwd=False,
+            )
         except SandboxPreflightError as exc:
             raise typer.BadParameter(str(exc)) from exc
+        if smoke.returncode != 0:
+            raise typer.BadParameter(
+                f"sandbox smoke command failed with exit code {smoke.returncode}: "
+                f"{(smoke.stdout or '')[-400:]}"
+            )
+        console.print("sandbox smoke: pass")
     if cfg.github_repo:
         _require_executable(cfg.github_binary, "GitHub CLI")
 

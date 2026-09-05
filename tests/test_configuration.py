@@ -287,7 +287,10 @@ def test_opencode_adapter_sets_high_precedence_inline_runtime_config(tmp_path: P
     call = runner.call_args
     env = call.kwargs["env"]
     inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-    assert env["OPENCODE_CONFIG"] == str(cfg.opencode_generated_config_path)
+    path_env = call.kwargs["path_env"]
+    assert path_env["OPENCODE_CONFIG"] == cfg.opencode_generated_config_path
+    assert "OPENCODE_CONFIG" not in env
+    assert "OPENCODE_CONFIG_DIR" not in env
     assert inline["agent"]["converge-builder"]["permission"]["bash"]["gh *"] == "deny"
     assert call.kwargs["writable_cwd"] is True
     assert call.kwargs["scope"] == "agent"

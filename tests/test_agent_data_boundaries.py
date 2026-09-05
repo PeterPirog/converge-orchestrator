@@ -180,7 +180,11 @@ def test_adapter_does_not_mount_full_state_into_agent_runtime(tmp_path: Path) ->
     assert managed_dir in readonly_paths
     assert cfg.state_dir not in readonly_paths
     env = call.kwargs["env"]
-    assert env["OPENCODE_CONFIG_DIR"] == str(managed_dir)
+    path_env = call.kwargs["path_env"]
+    assert path_env["OPENCODE_CONFIG_DIR"] == managed_dir
+    assert path_env["OPENCODE_CONFIG"] == cfg.opencode_generated_config_path
+    assert "OPENCODE_CONFIG" not in env
+    assert "OPENCODE_CONFIG_DIR" not in env
     inline = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     assert inline["mcp"]["docs"]["enabled"] is True
     assert inline["mcp"]["deploy"]["enabled"] is False

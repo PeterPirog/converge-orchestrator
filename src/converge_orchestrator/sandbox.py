@@ -7,7 +7,8 @@ import shlex
 import shutil
 import subprocess
 import uuid
-from pathlib import Path
+from collections.abc import Mapping, Sequence
+from pathlib import Path, PurePath
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -86,9 +87,52 @@ def _host_agent_environment(
     return process_env
 
 
-def _mount(source: Path, *, readonly: bool) -> str:
+_CONTAINER_HOST_MOUNT_ROOT = "/converge/host"
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def is_windows_form_path(text: str) -> bool:
+    """Return whether text is a Windows drive path form (C:\\ or C:/ prefix)."""
+    return _WINDOWS_DRIVE_PATH.match(text) is not None
+
+
+def container_path_for(path: str | PurePath) -> str:
+    """Map a host path to its deterministic container-side absolute path.
+
+    POSIX-form paths keep the historical identity mapping. Windows drive paths
+    map into a fixed POSIX namespace (/converge/host/<drive>/...) so Linux
+    containers always receive a POSIX absolute workdir and bind destination.
+    UNC and device path forms are rejected instead of guessed.
+    """
+    text = str(path)
+    if _WINDOWS_DRIVE_PATH.match(text):
+        drive = text[0].lower()
+        remainder = text[2:].replace("\\", "/").strip("/")
+        return f"{_CONTAINER_HOST_MOUNT_ROOT}/{drive}/{remainder}"
+    if text.startswith("\\\\") or text.startswith("//"):
+        raise SandboxPreflightError(
+            f"container sandbox cannot map UNC/device host paths safely: {text!r}; "
+            "use a local drive path"
+        )
+    return text
+
+
+def _mount(source: Path, *, readonly: bool, destination: str | None = None) -> str:
+    """Build a bind-mount option whose source stays the real host path.
+
+    Docker resolves the source on the host side, so it must remain a Windows
+    host path on Windows. The container-side destination is the deterministic
+    mapped path so a Linux container never receives a Windows path as a bind
+    destination or workdir.
+    """
     resolved = source.resolve()
-    option = f"type=bind,src={resolved},dst={resolved}"
+    src_text = str(resolved)
+    if any(character in src_text for character in (",", '"')):
+        raise SandboxPreflightError(
+            f"bind mount source cannot be represented safely in --mount: {src_text!r}"
+        )
+    dst_text = destination if destination is not None else container_path_for(resolved)
+    option = f"type=bind,src={src_text},dst={dst_text}"
     return f"{option},readonly" if readonly else option
 
 
@@ -105,6 +149,72 @@ def _inner_command(command: str | list[str], *, shell: bool) -> list[str]:
         rendered = shlex.join(command) if isinstance(command, list) else command
         return ["/bin/sh", "-lc", rendered]
     return list(command) if isinstance(command, list) else shlex.split(command)
+
+
+def _translate_declared_path_arguments(
+    command: str | list[str],
+    path_arguments: Sequence[int],
+) -> str | list[str]:
+    """Translate declared command arguments that refer to mounted host paths.
+
+    Windows-form absolute arguments resolve on the host and map to the same
+    deterministic container path used as their bind destination. POSIX or
+    relative arguments pass through unchanged. Declared indexes must exist;
+    declaring path arguments on a non-list command fails closed instead of
+    silently sending a Windows host path into a Linux container.
+    """
+    if not path_arguments:
+        return command
+    if not isinstance(command, list):
+        raise SandboxPreflightError(
+            "path_arguments requires a list command with declared argument indexes"
+        )
+    translated = [str(item) for item in command]
+    for index in path_arguments:
+        if not isinstance(index, int) or not 0 <= index < len(translated):
+            raise SandboxPreflightError(
+                f"declared path argument index is outside the command: {index!r}"
+            )
+        value = translated[index]
+        if is_windows_form_path(value):
+            translated[index] = container_path_for(Path(value).resolve())
+    return translated
+
+
+def _host_git_rev_parse_abs(cwd: Path, option: str) -> Path | None:
+    try:
+        result = run_configured(
+            ["git", "-C", str(cwd), "rev-parse", option],
+            cwd=cwd,
+            timeout=30,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    text = result.stdout.strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    return Path(os.path.abspath(candidate))
+
+
+def _resolve_worktree_git_dirs(cwd: Path) -> tuple[Path, Path] | None:
+    """Resolve (worktree git dir, common git dir) on the host for a linked worktree.
+
+    Windows writes worktree `.git` pointers as Windows host paths that a Linux
+    container cannot consume. Resolution therefore happens on the host so the
+    container can receive a read-only common-git mount plus container-visible
+    GIT_DIR/GIT_WORK_TREE. Returns None when git is unavailable or fails; the
+    caller then preserves the historical behavior.
+    """
+    git_dir = _host_git_rev_parse_abs(cwd, "--git-dir")
+    common_dir = _host_git_rev_parse_abs(cwd, "--git-common-dir")
+    if git_dir is None or common_dir is None:
+        return None
+    return git_dir, common_dir
 
 
 def _is_loopback_url(url: str | None) -> bool:
@@ -251,8 +361,14 @@ class ExecutionSandbox:
         include_state: bool = False,
         agent_role: str | None = None,
         readonly_paths: tuple[Path, ...] = (),
+        path_arguments: Sequence[int] = (),
+        path_env: Mapping[str, Path] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         if self.config.sandbox.mode == "host":
+            if path_env:
+                # Host mode keeps host-visible path values; container mode translates them.
+                env = dict(env or {})
+                env.update({name: str(path) for name, path in path_env.items()})
             if scope == "agent":
                 return run_configured(
                     command,
@@ -285,6 +401,8 @@ class ExecutionSandbox:
             include_state=include_state,
             agent_role=agent_role,
             readonly_paths=readonly_paths,
+            path_arguments=path_arguments,
+            path_env=path_env,
         )
 
     def _run_container(
@@ -300,16 +418,23 @@ class ExecutionSandbox:
         include_state: bool,
         agent_role: str | None,
         readonly_paths: tuple[Path, ...],
+        path_arguments: Sequence[int],
+        path_env: Mapping[str, Path] | None,
     ) -> subprocess.CompletedProcess[str]:
         policy = self.config.sandbox
         image = policy.image
         if not image:
             raise SandboxPreflightError("sandbox image is not configured")
 
+        command = _translate_declared_path_arguments(command, path_arguments)
         cwd = cwd.resolve()
+        container_cwd = container_path_for(cwd)
         process_env = os.environ.copy()
         if env:
             process_env.update(env)
+        if path_env:
+            for name, path_value in path_env.items():
+                process_env[name] = container_path_for(path_value.resolve())
         process_env["GIT_OPTIONAL_LOCKS"] = "0"
         process_env["HOME"] = "/tmp/converge-home"
         process_env["XDG_CACHE_HOME"] = "/tmp/converge-cache"
@@ -334,7 +459,7 @@ class ExecutionSandbox:
             "--network",
             network,
             "--workdir",
-            str(cwd),
+            container_cwd,
         ]
         if policy.read_only_root:
             argv.append("--read-only")
@@ -346,23 +471,48 @@ class ExecutionSandbox:
         if policy.user == "host" and os.name == "posix":
             argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
 
-        argv += ["--mount", _mount(cwd, readonly=not writable_cwd)]
+        mount_specs = [_mount(cwd, readonly=not writable_cwd, destination=container_cwd)]
+        worktree_env: dict[str, str] = {}
         worktree_git = cwd / ".git"
-        if writable_cwd and worktree_git.is_file():
-            argv += ["--mount", _mount(worktree_git, readonly=True)]
+        if worktree_git.is_file():
+            # A linked worktree pointer. Windows writes `gitdir:` as a Windows host path that
+            # a Linux container cannot consume, so resolve the real git dirs on the host and
+            # expose the common Git metadata read-only at its container path with
+            # container-visible GIT_DIR/GIT_WORK_TREE. The pointer itself stays unmounted.
+            resolved_dirs = _resolve_worktree_git_dirs(cwd)
+            if resolved_dirs is not None and is_windows_form_path(str(resolved_dirs[0])):
+                worktree_git_dir, common_git_dir = resolved_dirs
+                if not common_git_dir.is_dir():
+                    raise SandboxPreflightError(
+                        "linked worktree common git directory is missing: "
+                        f"{common_git_dir}; refusing to run with unverifiable git metadata"
+                    )
+                mount_specs.append(_mount(common_git_dir, readonly=True))
+                worktree_env = {
+                    "GIT_DIR": container_path_for(worktree_git_dir),
+                    "GIT_WORK_TREE": container_cwd,
+                }
+            elif writable_cwd:
+                mount_specs.append(_mount(worktree_git, readonly=True))
         git_dir = self.config.repo_path / ".git"
         if git_dir.exists() and not _is_within(git_dir, cwd):
-            argv += ["--mount", _mount(git_dir, readonly=True)]
+            mount_specs.append(_mount(git_dir, readonly=True))
         if include_state and self.config.state_dir.exists():
             if not _is_within(self.config.state_dir, cwd):
-                argv += ["--mount", _mount(self.config.state_dir, readonly=True)]
+                mount_specs.append(_mount(self.config.state_dir, readonly=True))
         for path in readonly_paths:
             resolved = path.resolve()
             if resolved.exists() and not _is_within(resolved, cwd):
-                argv += ["--mount", _mount(resolved, readonly=True)]
+                mount_specs.append(_mount(resolved, readonly=True))
+        for option in dict.fromkeys(mount_specs):
+            argv += ["--mount", option]
+        process_env.update(worktree_env)
 
         env_names = _configured_env_names(self.config, scope, agent_role)
         env_names.update((env or {}).keys())
+        if path_env:
+            env_names.update(path_env.keys())
+        env_names.update(worktree_env.keys())
         env_names.update({"GIT_OPTIONAL_LOCKS", "HOME", "XDG_CACHE_HOME"})
         for name in sorted(env_names):
             if name in process_env:
