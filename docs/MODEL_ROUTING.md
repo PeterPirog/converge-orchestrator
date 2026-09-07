@@ -174,6 +174,10 @@ models:
 - `context_tokens` trafia do OpenCode `limit.context`.
 - `output_tokens`, jeżeli jest znane i jawnie ustawione, trafia do `limit.output`.
 - `null` oznacza: nie zgaduj; pozostaw zarządzanie providerowi/OpenCode.
+- Generated-catalog wpis `limit` jest emitowany tylko wtedy, gdy znane są OBA limit
+  (`context` i `output`), ponieważ OpenCode odrzuca konfigurację z niepełnym `limit`
+  (`Missing key ...limit.output`). Częściowo znany limit jest pomijany w całości,
+  a sprzeczne jawne limity dla tego samego modelu pozostają błędem konfiguracji.
 
 Jeżeli kilka profili wskazuje ten sam model przez ten sam gateway, sprzeczne jawne limity są błędem
 konfiguracji zamiast cichego wyboru jednej wartości.
