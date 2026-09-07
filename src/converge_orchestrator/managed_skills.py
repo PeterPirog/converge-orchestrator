@@ -4,6 +4,18 @@ from pathlib import Path
 
 from .models import ProjectConfig
 
+# OpenCode 1.18.x ensures a .gitignore inside its configured config directory on every
+# session start and fails hard ("FileSystem.writeFile (.../.gitignore)") when the
+# directory is read-only. Converge mounts the managed per-role config directory read-only
+# so agents can never rewrite trusted Skills, so the exact file OpenCode wants is
+# materialized here ahead of time. Content mirrors what OpenCode writes itself.
+_MANAGED_CONFIG_DIR_GITIGNORE = """node_modules
+package.json
+package-lock.json
+bun.lock
+.gitignore
+"""
+
 _MANAGED_SKILLS: dict[str, str] = {
     "requirements-compliance": """---
 name: requirements-compliance
@@ -106,4 +118,6 @@ def materialize_managed_skills(config: ProjectConfig, role: str) -> Path:
         target = skills_root / name / "SKILL.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(_MANAGED_SKILLS[name].rstrip() + "\n", encoding="utf-8")
+    gitignore = root / ".gitignore"
+    gitignore.write_text(_MANAGED_CONFIG_DIR_GITIGNORE, encoding="utf-8")
     return root
