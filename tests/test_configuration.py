@@ -160,7 +160,9 @@ def test_generated_stable_opencode_config_contains_gateway_agents_mcp_and_safety
     assert provider["options"]["baseURL"] == "http://127.0.0.1:3000/api"
     assert provider["options"]["apiKey"] == "{env:OPENWEBUI_API_KEY}"
     assert set(provider["models"]) == {"reasoning/model", "coding-model"}
-    assert provider["models"]["reasoning/model"]["limit"] == {"context": 200000}
+    # A partially known limit (only context_tokens) must be omitted entirely:
+    # OpenCode rejects a `limit` object without `limit.output`.
+    assert "limit" not in provider["models"]["reasoning/model"]
     assert provider["models"]["coding-model"]["limit"] == {
         "context": 128000,
         "output": 16000,
@@ -216,6 +218,71 @@ def test_conflicting_limits_for_same_gateway_model_are_rejected(tmp_path: Path) 
     cfg = ProjectConfig.model_validate(raw)
     with pytest.raises(ValueError, match="conflicting OpenCode context/output limits"):
         build_opencode_config(cfg)
+
+
+def test_conflicting_partial_limits_for_same_gateway_model_are_rejected(
+    tmp_path: Path,
+) -> None:
+    raw = _nested_config(tmp_path)
+    raw["models"]["profiles"]["context-only"] = {
+        "model": "reasoning/model",
+        "context_tokens": 100000,
+    }
+    raw["agents"]["context-only"] = {
+        "agent": "converge-correctness-reviewer",
+        "model_profile": "context-only",
+    }
+    cfg = ProjectConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="conflicting OpenCode context/output limits"):
+        build_opencode_config(cfg)
+
+
+def test_generated_catalog_never_contains_partial_model_limits(tmp_path: Path) -> None:
+    """Regression: the live V3 acceptance run produced `limit: {context: N}` entries that
+    OpenCode rejects (`Missing key provider.hal.models.<model>.limit.output`), burning the
+    planner budget and escalating to an unexpected HITL before the first merged task."""
+
+    raw = _nested_config(tmp_path)
+    raw["models"]["profiles"] = {
+        "scout": {"model": "local-scout", "context_tokens": 1048576},
+        "builder": {"model": "local-builder", "context_tokens": 262144},
+        "security": {"model": "local-security", "context_tokens": 131072},
+    }
+    raw["agents"] = {
+        "scout": {"agent": "converge-scout", "model_profile": "scout"},
+        "builder": {"agent": "converge-builder", "model_profile": "builder"},
+        "security_reviewer": {
+            "agent": "converge-security-reviewer",
+            "model_profile": "security",
+        },
+    }
+    cfg = ProjectConfig.model_validate(raw)
+    payload = build_opencode_config(cfg)
+
+    models = payload["provider"]["openwebui"]["models"]
+    assert set(models) == {"local-scout", "local-builder", "local-security"}
+    for model_id, entry in models.items():
+        assert "limit" not in entry, f"partial limit generated for {model_id}"
+
+
+def test_complete_later_profile_fills_generated_limit_for_shared_model(
+    tmp_path: Path,
+) -> None:
+    raw = _nested_config(tmp_path)
+    raw["models"]["profiles"]["shared-full"] = {
+        "model": "reasoning/model",
+        "context_tokens": 200000,
+        "output_tokens": 32000,
+    }
+    raw["agents"]["correctness_reviewer"] = {
+        "agent": "converge-correctness-reviewer",
+        "model_profile": "shared-full",
+    }
+    cfg = ProjectConfig.model_validate(raw)
+    payload = build_opencode_config(cfg)
+
+    entry = payload["provider"]["openwebui"]["models"]["reasoning/model"]
+    assert entry["limit"] == {"context": 200000, "output": 32000}
 
 
 def test_request_body_cannot_override_orchestrator_safety_fields(tmp_path: Path) -> None:
