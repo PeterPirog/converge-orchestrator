@@ -324,16 +324,31 @@ def _candidate_fingerprint(
     return actual
 
 
+def _first_json_object(text: str, role: str) -> dict[str, Any]:
+    """Return the first complete JSON object embedded anywhere in ``text``.
+
+    Prose can contain unrelated brace groups (for example Python set literals such as
+    ``{"a", "b"}``); a brace span from the first ``{`` to the last ``}`` then fails even though
+    the output contains a perfectly valid JSON verdict. Scan every brace position instead and
+    accept the first position that parses as a complete JSON object.
+    """
+
+    decoder = json.JSONDecoder()
+    for start in (index for index, char in enumerate(text) if char == "{"):
+        try:
+            payload, _end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            continue
+        return payload
+    raise AcceptanceSupervisorError(f"{role} final audit did not return JSON") from None
+
+
 def _parse_review(role: str, output: str) -> ReviewResult:
     stripped = output.strip()
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise AcceptanceSupervisorError(f"{role} final audit did not return JSON") from None
-        payload = json.loads(stripped[start : end + 1])
+        payload = _first_json_object(stripped, role)
     try:
         return ReviewResult.model_validate(payload)
     except ValidationError as exc:

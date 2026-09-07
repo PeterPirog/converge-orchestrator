@@ -42,16 +42,32 @@ from .risk import classify_repository_risk
 from .spec import compile_contract, is_read_only, sha256_file, write_contract
 
 
+def _first_json_object(text: str) -> dict[str, Any]:
+    """Return the first complete JSON object embedded anywhere in ``text``.
+
+    LLM outputs routinely mix narrative prose with the requested JSON payload. A brace span
+    taken from the first ``{`` to the last ``}`` fails when the prose contains unrelated brace
+    groups (for example a Python set literal such as ``{"a", "b"}``), which falsely rejects
+    outputs that contain a perfectly valid JSON object. Scan every brace position instead and
+    accept the first position that parses as a complete JSON object.
+    """
+
+    decoder = json.JSONDecoder()
+    for start in (index for index, char in enumerate(text) if char == "{"):
+        try:
+            payload, _end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            continue
+        return payload
+    raise ValueError("Agent did not return a JSON object") from None
+
+
 def _json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("Agent did not return a JSON object") from None
-        payload = json.loads(stripped[start : end + 1])
+        payload = _first_json_object(stripped)
     if not isinstance(payload, dict):
         raise ValueError("Agent output must be a JSON object")
     return payload
