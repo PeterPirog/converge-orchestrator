@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from pathlib import Path
+import shutil
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .shell import run
@@ -249,6 +250,26 @@ def diff(worktree: Path, base_branch: str) -> str:
     return f"{committed}\n{working}".strip()
 
 
+_CACHE_DIRECTORY_NAMES = frozenset(
+    {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+)
+_CACHE_FILE_SUFFIXES = (".pyc", ".pyo")
+
+
+def is_deterministic_cache_artifact(path: str) -> bool:
+    """Match regenerable interpreter/test-runner artifacts produced by gate execution itself.
+
+    Bytecode caches and test-runner caches are deterministic byproducts of running the quality
+    gates inside the candidate worktree, not candidate changes. Treating them as worktree
+    mutations would make every gate that runs a test interpreter invalidate its own evidence.
+    """
+
+    posix = PurePosixPath(path.replace("\\", "/"))
+    if posix.suffix in _CACHE_FILE_SUFFIXES:
+        return True
+    return any(part in _CACHE_DIRECTORY_NAMES for part in posix.parts)
+
+
 def changed_files(worktree: Path, base_branch: str) -> list[str]:
     names: set[str] = set()
     for args in (
@@ -257,12 +278,16 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     ):
         output = _git(worktree, *args)
         names.update(line for line in output.splitlines() if line)
-    status = _git(worktree, "status", "--porcelain")
+    # -uall enumerates every untracked file individually instead of collapsing fully untracked
+    # directories, so per-file cache-artifact filtering stays exact.
+    status = _git(worktree, "status", "--porcelain", "-uall")
     for line in status.splitlines():
         path = line[3:].split(" -> ")[-1].strip()
         if path:
             names.add(path)
-    return sorted(names)
+    return sorted(
+        name for name in names if not is_deterministic_cache_artifact(name)
+    )
 
 
 def diff_line_count(worktree: Path, base_branch: str) -> int:
@@ -279,12 +304,12 @@ def diff_line_count(worktree: Path, base_branch: str) -> int:
             total += int(added)
         if deleted.isdigit():
             total += int(deleted)
-    status = _git(worktree, "status", "--porcelain")
+    status = _git(worktree, "status", "--porcelain", "-uall")
     for line in status.splitlines():
         if not line.startswith("?? "):
             continue
         path = line[3:].strip()
-        if path in tracked:
+        if path in tracked or is_deterministic_cache_artifact(path):
             continue
         candidate = worktree / path
         if candidate.is_file():
@@ -305,9 +330,54 @@ def delete_remote_branch(repo: Path, branch: str) -> None:
     run(["git", "push", "origin", "--delete", branch], cwd=repo, timeout=300)
 
 
+def _remove_untracked_cache_artifacts(worktree: Path) -> None:
+    """Delete only untracked regenerable cache artifacts so they never enter candidate commits."""
+
+    root = worktree.resolve()
+    prunable: set[Path] = set()
+    status = _git(worktree, "status", "--porcelain", "-uall")
+    for line in status.splitlines():
+        if not line.startswith("?? "):
+            continue
+        path = line[3:].split(" -> ")[-1].strip().strip('"')
+        if not path or not is_deterministic_cache_artifact(path):
+            continue
+        target = (worktree / path).resolve()
+        if root not in target.parents:
+            continue
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target, ignore_errors=True)
+            prunable.add(target.parent)
+        elif target.is_file() or target.is_symlink():
+            target.unlink(missing_ok=True)
+            prunable.add(target.parent)
+    for parent in sorted(prunable, key=lambda item: len(item.parts), reverse=True):
+        _prune_empty_cache_ancestors(root, parent)
+
+
+def _prune_empty_cache_ancestors(root: Path, start: Path) -> None:
+    """Remove cache-named directories left empty by artifact deletion, up to the worktree root."""
+
+    current = start.resolve()
+    while root in current.parents:
+        if not current.is_dir() or any(current.iterdir()):
+            return
+        relative_parts = current.relative_to(root).parts
+        if current.name not in _CACHE_DIRECTORY_NAMES and relative_parts[0] not in (
+            _CACHE_DIRECTORY_NAMES
+        ):
+            return
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
+
+
 def commit_all(worktree: Path, message: str) -> str | None:
     if not _git(worktree, "status", "--porcelain"):
         return None
+    _remove_untracked_cache_artifacts(worktree)
     _git(worktree, "add", "-A")
     _git(worktree, "commit", "-m", message)
     return current_head(worktree)
