@@ -130,6 +130,26 @@ def test_managed_skills_are_materialized_per_role_outside_target_repo(tmp_path: 
     assert not (builder_root / "skills" / "security-review" / "SKILL.md").exists()
 
 
+# OpenCode 1.18.x hard-fails when it cannot write its own .gitignore inside the
+# configured config directory, so Converge must pre-seed the exact file it wants.
+def test_managed_config_dir_preseeds_opencode_gitignore(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    planner_root = materialize_managed_skills(cfg, "planner")
+
+    gitignore = planner_root / ".gitignore"
+    assert gitignore.is_file()
+    assert gitignore.read_text(encoding="utf-8").splitlines() == [
+        "node_modules",
+        "package.json",
+        "package-lock.json",
+        "bun.lock",
+        ".gitignore",
+    ]
+
+    builder_root = materialize_managed_skills(cfg, "builder")
+    assert (builder_root / ".gitignore").is_file()
+
+
 def test_host_agent_environment_excludes_other_role_and_unrelated_secrets(
     tmp_path: Path,
     monkeypatch,
