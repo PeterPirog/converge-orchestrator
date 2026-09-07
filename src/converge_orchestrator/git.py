@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import shutil
+import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -22,6 +23,31 @@ def _git(repo: Path, *args: str, timeout: int = 300) -> str:
     if result.returncode != 0:
         raise GitError(result.stdout)
     return result.stdout.strip()
+
+
+def _git_lines(repo: Path, *args: str, timeout: int = 300) -> list[str]:
+    """Run a path-listing git command and return only its stdout lines.
+
+    run() merges stderr into stdout, so git's CRLF/EOL warnings (emitted on stderr while a
+    core.autocrlf working copy is read) would otherwise be parsed as file paths. _git() also
+    strips the whole command output, which removes the first porcelain line's leading status
+    column and shifts any positional column parse by one character; a leading-dot path such as
+    .github/... was then enumerated as github/... (external acceptance V6 defect). Path
+    enumeration must read stdout with stderr captured separately so diagnostics never become
+    file paths and no output edge can shift the parse.
+    """
+
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise GitError(f"{result.stdout}{result.stderr}".strip())
+    return [line for line in result.stdout.splitlines() if line]
 
 
 def ensure_clean(repo: Path) -> None:
@@ -271,30 +297,32 @@ def is_deterministic_cache_artifact(path: str) -> bool:
 
 
 def changed_files(worktree: Path, base_branch: str) -> list[str]:
+    """List candidate-changed files by content, immune to EOL/stat status noise.
+
+    Tracked changes come from content-based `git diff --name-only`, so files the sandbox
+    rewrote byte-identically with a different EOL convention (a core.autocrlf smudge
+    mismatch: `git status` reports them modified while the content diff is empty) never
+    count as candidate changes. Untracked files are enumerated individually with
+    `ls-files --others --exclude-standard` -- the same per-file guarantee as
+    `status --porcelain -uall`, so per-file cache-artifact filtering stays exact.
+    """
+
     names: set[str] = set()
     for args in (
         ("diff", "--name-only", f"origin/{base_branch}...HEAD"),
         ("diff", "--name-only", "HEAD"),
     ):
-        output = _git(worktree, *args)
-        names.update(line for line in output.splitlines() if line)
-    # -uall enumerates every untracked file individually instead of collapsing fully untracked
-    # directories, so per-file cache-artifact filtering stays exact.
-    status = _git(worktree, "status", "--porcelain", "-uall")
-    for line in status.splitlines():
-        path = line[3:].split(" -> ")[-1].strip()
-        if path:
-            names.add(path)
+        names.update(_git_lines(worktree, *args))
+    names.update(_git_lines(worktree, "ls-files", "--others", "--exclude-standard"))
     return sorted(
         name for name in names if not is_deterministic_cache_artifact(name)
     )
 
 
 def diff_line_count(worktree: Path, base_branch: str) -> int:
-    output = _git(worktree, "diff", "--numstat", f"origin/{base_branch}")
     total = 0
     tracked: set[str] = set()
-    for line in output.splitlines():
+    for line in _git_lines(worktree, "diff", "--numstat", f"origin/{base_branch}"):
         parts = line.split("\t")
         if len(parts) != 3:
             continue
@@ -304,11 +332,7 @@ def diff_line_count(worktree: Path, base_branch: str) -> int:
             total += int(added)
         if deleted.isdigit():
             total += int(deleted)
-    status = _git(worktree, "status", "--porcelain", "-uall")
-    for line in status.splitlines():
-        if not line.startswith("?? "):
-            continue
-        path = line[3:].strip()
+    for path in _git_lines(worktree, "ls-files", "--others", "--exclude-standard"):
         if path in tracked or is_deterministic_cache_artifact(path):
             continue
         candidate = worktree / path
