@@ -36,16 +36,31 @@ from .sandbox import ExecutionSandbox
 _PROVIDER_LEDGER_LOCK = threading.Lock()
 
 
+def _first_json_object(text: str) -> dict:
+    """Return the first complete JSON object embedded anywhere in ``text``.
+
+    Prose can contain unrelated brace groups (for example Python set literals such as
+    ``{"a", "b"}``); a brace span from the first ``{`` to the last ``}`` then fails even though
+    the output contains a perfectly valid JSON verdict. Scan every brace position instead and
+    accept the first position that parses as a complete JSON object.
+    """
+
+    decoder = json.JSONDecoder()
+    for start in (index for index, char in enumerate(text) if char == "{"):
+        try:
+            payload, _end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            continue
+        return payload
+    raise ValueError("reviewer did not return a JSON object") from None
+
+
 def _json_object(text: str) -> dict:
     stripped = text.strip()
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("reviewer did not return a JSON object") from None
-        payload = json.loads(stripped[start : end + 1])
+        payload = _first_json_object(stripped)
     if not isinstance(payload, dict):
         raise ValueError("reviewer output must be a JSON object")
     return payload
