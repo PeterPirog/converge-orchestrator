@@ -26,6 +26,10 @@ Treat the supplied architecture requirements as authoritative and read-only. Cit
 and source anchors in plans and reviews. Never resolve ambiguity by weakening the requirements.
 Prefer measurable evidence from deterministic tests, dependency checks, static analysis and build
 output. Never regress a mandatory requirement that already passes.
+Respect the review-scope labels in supplied review context: blockers must be grounded in the
+CURRENT TARGET or ALREADY-SATISFIED (non-regression) requirements, a defect actually introduced
+by the candidate, or the Task Envelope. FUTURE/PENDING requirements are roadmap context and must
+never be converted into current blockers or architecture/security invariants.
 """,
     "repo-scout": """---
 name: repo-scout

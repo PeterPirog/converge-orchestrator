@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from .models import Requirement, TaskEnvelope
+from .models import ComplianceSnapshot, Requirement, TaskEnvelope
+from .review_scope import SATISFIED_STATUSES, requirement_statuses
 
 
 def contract_excerpt(requirements: list[Requirement], limit: int | None = None) -> str:
@@ -139,10 +140,65 @@ TASK:
 """
 
 
+REVIEW_SCOPE_TARGET_HEADER = (
+    "CURRENT TARGET REQUIREMENTS (mandatory acceptance criteria for this candidate):"
+)
+REVIEW_SCOPE_NON_REGRESSION_HEADER = (
+    "ALREADY-SATISFIED REQUIREMENTS - NON-REGRESSION CONTRACT (must not regress):"
+)
+REVIEW_SCOPE_FUTURE_HEADER = (
+    "FUTURE / PENDING REQUIREMENTS - AUTHORITATIVE ROADMAP CONTEXT, "
+    "NOT CURRENT BLOCKING ACCEPTANCE CRITERIA:"
+)
+
+
+def review_scope_sections(
+    task: TaskEnvelope,
+    requirements: list[Requirement],
+    compliance: ComplianceSnapshot | None = None,
+) -> str:
+    """Render the deterministic blocking-scope context for one candidate review."""
+
+    target_ids = set(task.requirement_ids)
+    statuses = requirement_statuses(requirements, compliance)
+    targets = [requirement for requirement in requirements if requirement.id in target_ids]
+    non_regression = [
+        requirement
+        for requirement in requirements
+        if requirement.id not in target_ids
+        and statuses[requirement.id] in SATISFIED_STATUSES
+    ]
+    nonreg_ids = {requirement.id for requirement in non_regression}
+    pending = [
+        requirement
+        for requirement in requirements
+        if requirement.id not in target_ids and requirement.id not in nonreg_ids
+    ]
+    return f"""REVIEW SCOPE (deterministic, derived from the immutable requirements and run state):
+BLOCKING SCOPE FOR THIS CANDIDATE = CURRENT TARGET REQUIREMENTS + ALREADY-SATISFIED REQUIREMENTS
+(non-regression) + defects actually introduced by this diff + the Task Envelope contract above.
+{REVIEW_SCOPE_TARGET_HEADER}
+{contract_excerpt(targets, limit=len(targets)) or "(none)"}
+{REVIEW_SCOPE_NON_REGRESSION_HEADER}
+{contract_excerpt(non_regression, limit=len(non_regression)) or "(none yet)"}
+{REVIEW_SCOPE_FUTURE_HEADER}
+{contract_excerpt(pending, limit=len(pending)) or "(none)"}
+These remain mandatory goals for the overall run, but the current candidate MUST NOT be rejected
+merely because it has not implemented them yet. Never issue a blocker whose only basis is a
+FUTURE/PENDING requirement, and never convert a future functional requirement into a present
+architecture or security invariant. Findings whose only requirement citation is a FUTURE/PENDING
+requirement lie outside this candidate's blocking scope and are deterministically discarded.
+You must still reject the candidate for an actual security, architecture or compatibility defect
+introduced by this diff, or for regressing an ALREADY-SATISFIED requirement; cite the concrete
+defect (with file/line evidence) or the in-scope requirement, never the future requirement.
+"""
+
+
 def reviewer_prompt(
     task: TaskEnvelope,
     diff_text: str,
     requirements: list[Requirement],
+    compliance: ComplianceSnapshot | None = None,
 ) -> str:
     schema = {
         "verdict": "pass|reject",
@@ -165,12 +221,12 @@ regressions, hidden behavior changes, violations of the Task Envelope, and disho
 classification. For behavior tasks, reject changes that weaken/remove the RED test instead of making
 it pass through the intended implementation. Reject unexplained removals or retargeting of existing
 Node package exports, CLI commands, or legacy main/module/type entry points.
+Every blocker must be grounded in the BLOCKING SCOPE below.
 Return ONLY JSON matching this shape: {json.dumps(schema)}
 
 TASK:
 {task.model_dump_json(indent=2)}
-REQUIREMENTS:
-{contract_excerpt(requirements)}
+{review_scope_sections(task, requirements, compliance)}
 DIFF:
 {diff_text}
 """
@@ -189,6 +245,9 @@ def repair_prompt(
 Keep requirements unchanged. Fix all required quality-gate or review failures and rerun relevant
 tests. Stay inside the original Task Envelope. If the task has verified TDD RED evidence, preserve
 the frozen RED test exactly; do not weaken/delete/skip it to obtain GREEN. Do not push or merge.
+Review findings whose only requirement citation is a FUTURE/PENDING requirement outside the target
+and already-satisfied sets are advisory context only (deterministically downgraded to notes); do not
+modify the candidate to satisfy them and never violate the Task Envelope constraints for a finding.
 When repairing a Node compatibility finding, retain the old consumer-visible entry point as a shim
 and add the new path separately whenever that satisfies the immutable requirement.
 TARGET REQUIREMENTS:

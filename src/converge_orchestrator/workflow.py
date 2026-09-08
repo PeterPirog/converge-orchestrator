@@ -38,6 +38,7 @@ from .opencode import OpenCodeAdapter
 from .policy import BLOCKING_RISK_FLAGS, DecisionKind, can_integrate
 from .prompts import builder_prompt, planner_prompt, repair_prompt, reviewer_prompt
 from .quality import required_gates_pass, run_quality_gates, run_scope_gate
+from .review_scope import scope_review
 from .risk import classify_repository_risk
 from .spec import compile_contract, is_read_only, sha256_file, write_contract
 
@@ -430,9 +431,10 @@ def review(state: WorkflowState) -> WorkflowState:
             "status": "risk_blocked",
         }
 
+    compliance_snapshot = ComplianceSnapshot.model_validate(state.get("compliance") or {})
     result = OpenCodeAdapter(cfg).invoke(
         "reviewer",
-        reviewer_prompt(task, patch, requirements),
+        reviewer_prompt(task, patch, requirements, compliance_snapshot),
         worktree,
     )
     if context := getattr(result, "context", None):
@@ -455,12 +457,21 @@ def review(state: WorkflowState) -> WorkflowState:
                 }
             ],
         )
+    review_result, scoping = scope_review(
+        review=review_result,
+        target_requirement_ids=set(task.requirement_ids),
+        requirements=requirements,
+        compliance=compliance_snapshot,
+    )
     store.write_text(state["run_id"], task.id, "diff.patch", patch)
+    review_payload = review_result.model_dump(mode="json")
+    if scoping:
+        review_payload["scoping"] = scoping
     store.write_json(
         state["run_id"],
         task.id,
         "review.json",
-        review_result.model_dump(mode="json"),
+        review_payload,
     )
     return {
         **state,
@@ -468,7 +479,7 @@ def review(state: WorkflowState) -> WorkflowState:
         "approved_risk_flags": approved_risk_flags,
         "risk_report": risk_report,
         "risk_fingerprint": fingerprint,
-        "review_result": review_result.model_dump(mode="json"),
+        "review_result": review_payload,
         "status": "reviewed",
     }
 
