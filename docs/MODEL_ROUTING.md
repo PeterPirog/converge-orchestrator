@@ -45,8 +45,9 @@ zarządzać compaction względem rzeczywistego limitu custom gateway.
 
 Każda rola może mieć `provider_retries` (0–3 dodatkowe próby primary modelu) oraz uporządkowane
 `fallback_model_profiles` (maksymalnie cztery profile, każdy użyty raz). Referencyjny preset ustawia
-`provider_retries: 0`, aby nie czekać ponownie na niedostępny model, i przechodzi bezpośrednio do
-jawnego fallbacku. Profil fallback może wskazać inny model w OpenWebUI albo innego istniejącego
+`provider_retries: 1`: kolejne próby oddziela deterministyczny backoff (5–60 s), więc krótkie
+przerwy transportowe są mostkowane w ramach jednego wywołania zamiast natychmiastowego
+przełączania. Profil fallback może wskazać inny model w OpenWebUI albo innego istniejącego
 providera OpenCode.
 
 Failover nie zmienia roli ani polityki: nowe wywołanie ma świeżą sesję, identyczny system prompt,
@@ -58,6 +59,14 @@ próbę, lecz malformed JSON i semantic rejection pozostają normalnym wynikiem 
 Każda próba zapisuje role/model/profile/exit status do `<state_dir>/provider-health.jsonl` bez raw
 output. Wybrany model i cała bounded lista prób trafiają również do context evidence fazy, więc
 failover nie jest ukrytą zmianą policy.
+
+Niepowodzenie całego wywołania klasyfikuje się strukturalnie (protokołowe `error` events OpenCode,
+wyjątki executora) jako awaria transportowa lub procesowa — nigdy przez dopasowanie tekstu błędu.
+Gdy wszystkie próby Plannera były transportowe, Graph wykorzystuje osobny ograniczony budżet
+odzyskiwania providera (3 próby, backoff 30/60/120 s) bez zużywania semantycznych prób planowania;
+wyczerpanie budżetu deterministycznie zatrzymuje run (awaria runtime) bez bramki HITL Plannera,
+która pozostaje zarezerwowana dla powtarzających się semantycznych błędów kontraktu. Krótka
+awaria providera nie pyta człowieka, dopóki budżet odzyskiwania nie jest wyczerpany.
 
 Domyślne profile pozostawiają `request_body: {}`. Jest to świadome: modele reasoning/coding mają
 provider-specific ustawienia i ich optymalnych parametrów nie należy zgadywać w uniwersalnym

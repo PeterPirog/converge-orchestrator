@@ -477,7 +477,7 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["agents"]["builder"]["fallback_model_profiles"] == [
         "builder_fallback"
     ]
-    assert all(agent["provider_retries"] == 0 for agent in raw["agents"].values())
+    assert all(agent["provider_retries"] == 1 for agent in raw["agents"].values())
     assert set(raw["agents"]) == {
         "scout",
         "planner",

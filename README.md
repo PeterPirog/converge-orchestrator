@@ -207,10 +207,15 @@ highest-precedence inline configuration environment so a target repository's own
 `.opencode/` cannot weaken Converge's Builder/Reviewer permission boundaries.
 
 An agent may declare ordered `fallback_model_profiles` and a small `provider_retries` budget. Only
-OpenCode execution failures trigger this path. Every attempt is a fresh session with the same role
-prompt, tool permissions and worktree access; fallback-specific model limits/options are applied and
-re-checked. Attempts are recorded without raw model output in
-`<state_dir>/provider-health.jsonl` and in the stage context evidence.
+OpenCode execution failures trigger this path, and consecutive attempts are separated by a small
+deterministic backoff. Every attempt is a fresh session with the same role prompt, tool permissions
+and worktree access; fallback-specific model limits/options are applied and re-checked. Attempts
+are recorded without raw model output in `<state_dir>/provider-health.jsonl` and in the stage
+context evidence. When every attempt in a Planner invocation failed at the transport level —
+classified structurally from OpenCode protocol error events, never by matching error text — the
+Planner recovers through a separate bounded provider-recovery budget instead of consuming its
+semantic plan attempts; exhaustion stops the run deterministically, without reaching the Planner
+human gate, which stays reserved for repeated semantic contract failures.
 
 Do not edit this generated JSON. Edit `converge.yaml` and run `doctor` again.
 

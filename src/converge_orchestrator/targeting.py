@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Literal
 
 from langgraph.types import interrupt
@@ -27,6 +28,16 @@ from .verification import (
 )
 
 _MAX_PLAN_ATTEMPTS = 2
+# Transport-level provider outages recover inside a bounded, evidence-recorded provider budget
+# instead of consuming the small semantic Planner attempt budget that ends in HITL.
+_MAX_PROVIDER_RECOVERY_ATTEMPTS = 3
+_PROVIDER_RECOVERY_BACKOFF_SECONDS: tuple[float, ...] = (30.0, 60.0, 120.0)
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 _STATUS_PRIORITY = {
     RequirementStatus.FAIL: 0,
     RequirementStatus.PARTIAL: 1,
@@ -137,6 +148,7 @@ def _planner_control(baseline: dict, target_id: str) -> dict:
             "attempts": 0,
             "last_error": None,
             "last_failure_kind": None,
+            "provider_recovery_attempts": 0,
         }
     return dict(raw)
 
@@ -189,11 +201,19 @@ def _planner_failure(
 ) -> WorkflowState:
     cfg = load_config(state["config_path"])
     clipped_error = error.strip()[:2000]
+    previous_control = baseline.get("planner_control")
     control = {
         "target_requirement_id": target.id,
         "attempts": attempt,
         "last_error": clipped_error,
         "last_failure_kind": kind,
+        # The provider-recovery budget survives semantic failures so an alternating
+        # outage/contract streak cannot resurrect retries beyond the bounded envelope.
+        "provider_recovery_attempts": (
+            int(previous_control.get("provider_recovery_attempts", 0))
+            if isinstance(previous_control, dict)
+            else 0
+        ),
     }
     if attempt < _MAX_PLAN_ATTEMPTS:
         status = "planner_retry"
@@ -223,6 +243,79 @@ def _planner_failure(
         payload,
     )
     store.append_event(state["run_id"], "planner_rejected", payload)
+    return {
+        **state,
+        "baseline": updated_baseline,
+        "task": None,
+        "status": status,
+        "message": clipped_error,
+    }
+
+
+def _planner_provider_failure(
+    state: WorkflowState,
+    *,
+    baseline: dict,
+    target: Requirement,
+    error: str,
+    output_tail: str,
+) -> WorkflowState:
+    """Bounded transport-level recovery that never consumes semantic Planner attempts.
+
+    Structured OpenCode evidence (``provider_failure_class``) classified the whole invocation
+    as a provider/transport outage. The next attempt waits a deterministic backoff and every
+    step is recorded as durable evidence; budget exhaustion stops the run deterministically —
+    a persistent transport outage is a runtime failure, not a Planner semantic contract
+    failure, so it never spends the ``planner_failure_budget`` HITL that belongs to repeated
+    semantic contract failures.
+    """
+
+    clipped_error = error.strip()[:2000]
+    control = dict(baseline.get("planner_control") or {})
+    recovery_attempts = int(control.get("provider_recovery_attempts", 0))
+    control.update(
+        {
+            "target_requirement_id": target.id,
+            "last_error": clipped_error,
+            "last_failure_kind": "provider",
+        }
+    )
+    if recovery_attempts < _MAX_PROVIDER_RECOVERY_ATTEMPTS:
+        backoff_seconds = _PROVIDER_RECOVERY_BACKOFF_SECONDS[recovery_attempts]
+        control["provider_recovery_attempts"] = recovery_attempts + 1
+        status = "planner_provider_retry"
+        event = "planner_provider_retry"
+    else:
+        # Deterministic fail-closed stop: a persistent transport outage is a runtime failure,
+        # not a Planner semantic contract failure, so it must not spend the HITL budget that
+        # belongs to planner_failure_budget (repeated semantic contract failures).
+        backoff_seconds = None
+        status = "planner_provider_stopped"
+        event = "planner_provider_exhausted"
+
+    updated_baseline = dict(baseline)
+    updated_baseline["planner_control"] = control
+    payload = {
+        "target_requirement_id": target.id,
+        "recovery_attempts": recovery_attempts,
+        "max_recovery_attempts": _MAX_PROVIDER_RECOVERY_ATTEMPTS,
+        "failure_kind": "provider",
+        "error": clipped_error,
+        "output_tail": output_tail[-2000:],
+        "backoff_seconds": backoff_seconds,
+        "next_status": status,
+    }
+    store = wf._evidence(state)
+    iteration = state.get("iteration", 0) + 1
+    store.write_json(
+        state["run_id"],
+        "run",
+        f"planner-provider-recovery-{iteration:04d}-{recovery_attempts + 1:02d}.json",
+        payload,
+    )
+    store.append_event(state["run_id"], event, payload)
+    if backoff_seconds is not None:
+        _sleep(backoff_seconds)
     return {
         **state,
         "baseline": updated_baseline,
@@ -268,6 +361,14 @@ def _invoke_target_planner(
             result.context,
         )
     if not result.ok:
+        if (result.context or {}).get("provider_failure_class") == "transport":
+            return _planner_provider_failure(
+                state,
+                baseline=baseline,
+                target=target,
+                error=f"Planner provider transport failed: {result.output[-1200:]}",
+                output_tail=result.output,
+            )
         return _planner_failure(
             state,
             baseline=baseline,
@@ -310,6 +411,7 @@ def _invoke_target_planner(
         "attempts": 0,
         "last_error": None,
         "last_failure_kind": None,
+        "provider_recovery_attempts": 0,
     }
     next_state: WorkflowState = {
         **state,
@@ -423,9 +525,11 @@ def route_after_targeted_plan(
     status = state.get("status")
     if status == "target_converged":
         return "end"
+    if status == "planner_provider_stopped":
+        return "end"
     if status in {"iteration_budget_exhausted", "planner_human_required"}:
         return "human"
-    if status == "planner_retry":
+    if status in {"planner_retry", "planner_provider_retry"}:
         return "retry"
     if status == "planner_replan_required":
         return "replan"
@@ -455,6 +559,7 @@ def planner_human_gate(state: WorkflowState) -> WorkflowState:
         if isinstance(control, dict):
             control = dict(control)
             control["attempts"] = 0
+            control["provider_recovery_attempts"] = 0
             baseline["planner_control"] = control
         return {
             **state,

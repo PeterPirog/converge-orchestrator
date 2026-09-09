@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +35,20 @@ from .opencode_config import (
 from .sandbox import ExecutionSandbox
 
 _PROVIDER_LEDGER_LOCK = threading.Lock()
+
+# Structured failure classification uses protocol-level evidence only (never string matching on
+# error text): OpenCode ``error`` events and executor/process exceptions. ``process_failure``
+# without a protocol error event stays unclassified so unknown failures keep fail-closed paths.
+_TRANSPORT_FAILURE_KINDS = frozenset({"provider_error", "execution_exception"})
+
+# Bounded deterministic backoff between provider attempts inside one invocation. Fixed small
+# delays make retries meaningful during short provider blips while the schedule stays capped
+# inside the pinned run wall-time/model-attempt budgets. Tests patch ``_sleep``.
+_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 15.0, 30.0, 60.0, 60.0, 60.0, 60.0)
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def _first_json_object(text: str) -> dict:
@@ -181,6 +196,9 @@ class OpenCodeAdapter:
         for profile_index, profile_name in enumerate(profiles):
             repeats = 1 + agent_cfg.provider_retries if profile_index == 0 else 1
             for retry_index in range(repeats):
+                if attempts:
+                    backoff_index = min(len(attempts) - 1, len(_RETRY_BACKOFF_SECONDS) - 1)
+                    _sleep(_RETRY_BACKOFF_SECONDS[backoff_index])
                 model = (
                     resolve_profile_model(self.config, self.config.model_profiles[profile_name])
                     if profile_name
@@ -200,6 +218,8 @@ class OpenCodeAdapter:
                         if result.ok
                         else "context_budget"
                         if result.returncode == 78
+                        else "provider_error"
+                        if (result.context or {}).get("provider_error_events")
                         else "process_failure"
                     )
                 except (RunBudgetExceeded, RunBudgetIntegrityError):
@@ -229,6 +249,7 @@ class OpenCodeAdapter:
                     "provider_usage",
                     "provider_usage_persistence",
                     "provider_usage_record",
+                    "provider_error_events",
                 ):
                     if key in result_context:
                         attempt[key] = result_context[key]
@@ -255,6 +276,15 @@ class OpenCodeAdapter:
                 "fallback_used": not selected["primary"],
             }
         )
+        if not result.ok and attempts:
+            context["provider_failure_class"] = (
+                "transport"
+                if all(
+                    item["failure_kind"] in _TRANSPORT_FAILURE_KINDS
+                    for item in attempts
+                )
+                else "process"
+            )
         return result.model_copy(update={"context": context})
 
     def _output_reserve_tokens(self, model_profile: str | None) -> int:
@@ -376,6 +406,7 @@ class OpenCodeAdapter:
         append_context_ledger(self.config, context_report, cwd)
         context = context_report.model_dump(mode="json")
         context["provider_usage_status"] = parsed_output.usage_status
+        context["provider_error_events"] = parsed_output.error_event_count
         if parsed_output.usage is not None:
             context["provider_usage"] = parsed_output.usage.model_dump(mode="json")
         if budget_reservation is not None:

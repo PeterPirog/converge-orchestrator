@@ -96,8 +96,16 @@ def _store() -> SimpleNamespace:
     return SimpleNamespace(write_json=Mock(), append_event=Mock())
 
 
-def _agent_result(*, ok: bool, output: str) -> SimpleNamespace:
-    return SimpleNamespace(ok=ok, output=output, context={"budget_status": "bounded"})
+def _agent_result(
+    *,
+    ok: bool,
+    output: str,
+    context: dict | None = None,
+) -> SimpleNamespace:
+    payload: dict = {"budget_status": "bounded"}
+    if context is not None:
+        payload.update(context)
+    return SimpleNamespace(ok=ok, output=output, context=payload)
 
 
 def _valid_task() -> TaskEnvelope:
@@ -324,6 +332,179 @@ def test_repeated_execution_failure_escalates_without_wasting_scout_replans(
     assert route_after_targeted_plan(result) == "human"
 
 
+def test_transport_outage_recovers_without_consuming_semantic_attempts(
+    tmp_path: Path,
+) -> None:
+    """A transient provider 502-equivalent must not burn semantic plan attempts or HITL."""
+
+    config = _config(tmp_path)
+    compliance = _compliance(
+        ARCH_001=RequirementStatus.FAIL,
+        ARCH_002=RequirementStatus.UNVERIFIED,
+        ARCH_003=RequirementStatus.UNVERIFIED,
+    )
+    state = _state(tmp_path, compliance)
+    store = _store()
+    task = _valid_task()
+    results = [
+        _agent_result(
+            ok=False,
+            output="APIError: 502 upstream prematurely closed connection",
+            context={"provider_failure_class": "transport"},
+        ),
+        _agent_result(ok=True, output=task.model_dump_json()),
+    ]
+
+    with (
+        patch("converge_orchestrator.targeting.load_config", return_value=config),
+        patch("converge_orchestrator.targeting.wf._write_compliance"),
+        patch("converge_orchestrator.targeting.wf._evidence", return_value=store),
+        patch("converge_orchestrator.targeting._sleep") as sleeper,
+        patch(
+            "converge_orchestrator.targeting.OpenCodeAdapter.invoke",
+            side_effect=results,
+        ),
+    ):
+        outage = targeted_plan(state)  # type: ignore[arg-type]
+
+    assert outage["status"] == "planner_provider_retry"
+    assert route_after_targeted_plan(outage) == "retry"
+    control = outage["baseline"]["planner_control"]
+    assert control["attempts"] == 0
+    assert control["provider_recovery_attempts"] == 1
+    assert control["last_failure_kind"] == "provider"
+    assert outage["task"] is None
+    sleeper.assert_called_once_with(30.0)
+    events = [call.args[1] for call in store.append_event.call_args_list]
+    assert "planner_provider_retry" in events
+
+    with (
+        patch("converge_orchestrator.targeting.load_config", return_value=config),
+        patch("converge_orchestrator.targeting.wf._write_compliance"),
+        patch("converge_orchestrator.targeting.wf._evidence", return_value=store),
+        patch(
+            "converge_orchestrator.targeting.OpenCodeAdapter.invoke",
+            return_value=results[1],
+        ),
+    ):
+        recovered = targeted_plan(outage)  # type: ignore[arg-type]
+
+    assert recovered["status"] == "planned"
+    assert recovered["task"]["requirement_ids"] == ["ARCH-001"]
+    recovered_control = recovered["baseline"]["planner_control"]
+    assert recovered_control["attempts"] == 0
+    assert recovered_control["provider_recovery_attempts"] == 0
+
+
+def test_persistent_provider_outage_stops_deterministically_after_bounded_budget(
+    tmp_path: Path,
+) -> None:
+    """Exhausting the provider-recovery budget stops deterministically without Planner HITL."""
+
+    config = _config(tmp_path)
+    compliance = _compliance(
+        ARCH_001=RequirementStatus.FAIL,
+        ARCH_002=RequirementStatus.UNVERIFIED,
+        ARCH_003=RequirementStatus.UNVERIFIED,
+    )
+    state = _state(tmp_path, compliance)
+    store = _store()
+    failure = _agent_result(
+        ok=False,
+        output="APIError: 502 upstream temporarily unavailable",
+        context={"provider_failure_class": "transport"},
+    )
+
+    with (
+        patch("converge_orchestrator.targeting.load_config", return_value=config),
+        patch("converge_orchestrator.targeting.wf._write_compliance"),
+        patch("converge_orchestrator.targeting.wf._evidence", return_value=store),
+        patch("converge_orchestrator.targeting._sleep") as sleeper,
+        patch(
+            "converge_orchestrator.targeting.OpenCodeAdapter.invoke",
+            return_value=failure,
+        ),
+    ):
+        current = state
+        statuses = []
+        for _ in range(4):
+            current = targeted_plan(current)  # type: ignore[arg-type]
+            statuses.append(current["status"])
+            if current["status"] == "planner_provider_stopped":
+                break
+
+    assert statuses == [
+        "planner_provider_retry",
+        "planner_provider_retry",
+        "planner_provider_retry",
+        "planner_provider_stopped",
+    ]
+    control = current["baseline"]["planner_control"]
+    assert control["provider_recovery_attempts"] == 3
+    assert control["attempts"] == 0
+    assert control["last_failure_kind"] == "provider"
+    assert [call.args[0] for call in sleeper.call_args_list] == [30.0, 60.0, 120.0]
+    assert route_after_targeted_plan(current) == "end"
+    assert current["status"] != "planner_human_required"
+    events = [call.args[1] for call in store.append_event.call_args_list]
+    assert events.count("planner_provider_retry") == 3
+    assert "planner_provider_exhausted" in events
+
+
+def test_v10_sequence_semantic_failure_then_transient_outage_recovers(
+    tmp_path: Path,
+) -> None:
+    """Faithful V10 reproduction: contract failure, then 502 outage, then a valid envelope."""
+
+    config = _config(tmp_path)
+    compliance = _compliance(
+        ARCH_001=RequirementStatus.FAIL,
+        ARCH_002=RequirementStatus.UNVERIFIED,
+        ARCH_003=RequirementStatus.UNVERIFIED,
+    )
+    state = _state(tmp_path, compliance)
+    store = _store()
+    task = _valid_task()
+    results = [
+        _agent_result(ok=True, output="not-json"),
+        _agent_result(
+            ok=False,
+            output="APIError: 502 upstream prematurely closed connection",
+            context={"provider_failure_class": "transport"},
+        ),
+        _agent_result(ok=True, output=task.model_dump_json()),
+    ]
+
+    with (
+        patch("converge_orchestrator.targeting.load_config", return_value=config),
+        patch("converge_orchestrator.targeting.wf._write_compliance"),
+        patch("converge_orchestrator.targeting.wf._evidence", return_value=store),
+        patch("converge_orchestrator.targeting._sleep"),
+        patch(
+            "converge_orchestrator.targeting.OpenCodeAdapter.invoke",
+            side_effect=results,
+        ),
+    ):
+        contract_failure = targeted_plan(state)  # type: ignore[arg-type]
+        assert contract_failure["status"] == "planner_retry"
+        assert contract_failure["baseline"]["planner_control"]["attempts"] == 1
+
+        outage = targeted_plan(contract_failure)  # type: ignore[arg-type]
+        assert outage["status"] == "planner_provider_retry"
+        # The transport failure must not increment the semantic attempt counter.
+        assert outage["baseline"]["planner_control"]["attempts"] == 1
+        assert outage["baseline"]["planner_control"]["provider_recovery_attempts"] == 1
+
+        recovered = targeted_plan(outage)  # type: ignore[arg-type]
+
+    assert recovered["status"] == "planned"
+    assert recovered["task"]["requirement_ids"] == ["ARCH-001"]
+    events = [call.args[1] for call in store.append_event.call_args_list]
+    assert events.count("planner_rejected") == 1
+    assert events.count("planner_provider_retry") == 1
+    assert "planner_provider_exhausted" not in events
+
+
 def test_planner_human_gate_cannot_edit_or_replace_deterministic_target() -> None:
     state = {
         "baseline": {
@@ -350,6 +531,7 @@ def test_planner_human_gate_cannot_edit_or_replace_deterministic_target() -> Non
     assert captured["target"] == "ARCH-001"
     assert result["replan_attempts"] == 0
     assert result["baseline"]["planner_control"]["attempts"] == 0
+    assert result["baseline"]["planner_control"]["provider_recovery_attempts"] == 0
     assert route_after_planner_human(result) == "retry"
 
 

@@ -265,7 +265,7 @@ agents:
     steps: 12
     # Ordered, explicit failover only. Every fallback is a fresh session with the same role policy.
     fallback_model_profiles: [planner]
-    provider_retries: 0
+    provider_retries: 1
     tool_permissions: {}
 
   planner:
@@ -275,7 +275,10 @@ agents:
     timeout_seconds: 1800
     steps: 18
     fallback_model_profiles: [reviewer]
-    provider_retries: 0
+    # One bounded primary retry with deterministic backoff bridges short provider blips without
+    # consuming semantic plan attempts; sustained outages use the planner provider-recovery
+    # budget (30/60/120 s backoff) and then stop the run deterministically, without Planner HITL.
+    provider_retries: 1
     tool_permissions: {}
 
   builder:
@@ -284,7 +287,7 @@ agents:
     timeout_seconds: 3600
     steps: 60
     fallback_model_profiles: [builder_fallback]
-    provider_retries: 0
+    provider_retries: 1
     # Builder has edit + local shell access, while git push/gh/external paths stay denied.
     tool_permissions: {}
 
@@ -294,7 +297,7 @@ agents:
     timeout_seconds: 1800
     steps: 24
     fallback_model_profiles: [planner]
-    provider_retries: 0
+    provider_retries: 1
     tool_permissions: {}
 
   architecture_reviewer:
@@ -303,7 +306,7 @@ agents:
     timeout_seconds: 1800
     steps: 24
     fallback_model_profiles: [reviewer]
-    provider_retries: 0
+    provider_retries: 1
     tool_permissions: {}
 
   security_reviewer:
@@ -312,7 +315,7 @@ agents:
     timeout_seconds: 1800
     steps: 24
     fallback_model_profiles: [planner]
-    provider_retries: 0
+    provider_retries: 1
     tool_permissions: {}
 
 quality:
