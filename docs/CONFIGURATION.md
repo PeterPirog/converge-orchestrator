@@ -413,8 +413,9 @@ Pola agenta:
 - `model`: alternatywa dla profilu; nie ustawiaj jednocześnie obu.
 - `fallback_model_profiles`: uporządkowana lista maksymalnie czterech jawnych profili. Każdy jest
   próbowany raz po wyczerpaniu primary execution attempts.
-- `provider_retries`: liczba dodatkowych prób primary modelu (0–3). `0` minimalizuje latency i od
-  razu przechodzi do skonfigurowanego fallbacku.
+- `provider_retries`: liczba dodatkowych prób primary modelu (0–3). Referencyjny preset ustawia `1`:
+  kolejne próby oddziela deterministyczny backoff (5–60 s), więc krótkie wahania transportowe
+  są mostkowane w ramach jednego wywołania zamiast natychmiastowego przełączania na fallback.
 - `timeout_seconds`: twardy timeout pojedynczego agent call.
 - `steps`: maksymalny tool/model loop budget.
 - `request_body`: per-agent override profilu, bez chronionych safety fields.
@@ -435,6 +436,14 @@ walidacji/replan/review i nie jest maskowany jako awaria providera. Każda prób
 tego samego role promptu i identycznych permissions; limity kontekstu oraz `request_body` są ponownie
 wyliczane dla wybranego profilu. Audyt bez raw output trafia do
 `<state_dir>/provider-health.jsonl`, a pełna lista prób do context evidence danej fazy.
+
+Niepowodzenie wszystkich prób w jednym wywołaniu klasyfikuje się strukturalnie na podstawie
+protokołu OpenCode (`error` events) lub wyjątku executora — nigdy przez dopasowanie tekstu błędu.
+Gdy każda próba wywołania Plannera była awarią transportową, Planner korzysta z osobnego,
+ograniczonego budżetu odzyskiwania (3 próby z backoffem 30/60/120 s), który nie zużywa
+semantycznych prób planowania; po wyczerpaniu budżetu run zatrzymuje się deterministycznie,
+a bramka HITL (`planner_failure_budget`) pozostaje zarezerwowana dla powtarzających się
+semantycznych błędów kontraktu Plannera.
 
 ---
 

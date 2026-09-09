@@ -3,9 +3,16 @@ from __future__ import annotations
 import json
 import sys
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from converge_orchestrator.budget import (
+    bind_run_id,
+    initialize_run_budget,
+    reset_run_id,
+    run_budget_status,
+)
 from converge_orchestrator.models import ProjectConfig
 from converge_orchestrator.opencode import OpenCodeAdapter
 
@@ -62,7 +69,10 @@ def test_failed_primary_uses_explicit_fallback_with_attempt_evidence(tmp_path: P
     ]
 
     target = "converge_orchestrator.opencode.ExecutionSandbox.run"
-    with patch(target, side_effect=responses) as runner:
+    with (
+        patch(target, side_effect=responses) as runner,
+        patch("converge_orchestrator.opencode._sleep"),
+    ):
         result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
 
     assert result.ok is True
@@ -114,7 +124,10 @@ def test_primary_retries_are_bounded_before_single_fallback(tmp_path: Path) -> N
     ]
 
     target = "converge_orchestrator.opencode.ExecutionSandbox.run"
-    with patch(target, side_effect=responses) as runner:
+    with (
+        patch(target, side_effect=responses) as runner,
+        patch("converge_orchestrator.opencode._sleep"),
+    ):
         result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
 
     assert result.ok is True
@@ -185,7 +198,8 @@ def test_real_executor_process_death_retries_same_prompt_and_model(tmp_path: Pat
     )
 
     prompt = "Plan one immutable target"
-    result = adapter.invoke("planner", prompt, cfg.repo_path)
+    with patch("converge_orchestrator.opencode._sleep"):
+        result = adapter.invoke("planner", prompt, cfg.repo_path)
 
     assert result.ok is True
     attempts = result.context["provider_attempts"]
@@ -220,3 +234,116 @@ def test_real_executor_process_death_retries_same_prompt_and_model(tmp_path: Pat
     assert [item["returncode"] for item in health] == [91, 0]
     assert all(item["model"] == "openwebui/primary-model" for item in health)
     assert all("output" not in item for item in health)
+
+
+def _error_event_stdout() -> str:
+    """Stable OpenCode JSON protocol stream that reports a provider/runtime error."""
+
+    return (
+        json.dumps(
+            {"type": "error", "error": {"name": "APIError", "isRetryable": True}}
+        )
+        + "\n"
+    )
+
+
+def test_protocol_error_events_classify_transport_failure_with_backoff(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    adapter = OpenCodeAdapter(cfg)
+    responses = [
+        types.SimpleNamespace(returncode=1, stdout=_error_event_stdout()),
+        types.SimpleNamespace(returncode=0, stdout='{"task": "ok"}'),
+    ]
+
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with (
+        patch(target, side_effect=responses) as runner,
+        patch("converge_orchestrator.opencode._sleep") as sleeper,
+    ):
+        result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
+
+    assert result.ok is True
+    assert runner.call_count == 2
+    sleeper.assert_called_once_with(5.0)
+    attempts = result.context["provider_attempts"]
+    assert attempts[0]["failure_kind"] == "provider_error"
+    assert attempts[0]["provider_error_events"] == 1
+    assert attempts[1]["failure_kind"] is None
+
+
+def test_all_transport_failures_mark_invocation_as_transport(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    adapter = OpenCodeAdapter(cfg)
+    responses = [
+        types.SimpleNamespace(returncode=1, stdout=_error_event_stdout()),
+        types.SimpleNamespace(returncode=1, stdout=_error_event_stdout()),
+    ]
+
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with (
+        patch(target, side_effect=responses),
+        patch("converge_orchestrator.opencode._sleep") as sleeper,
+    ):
+        result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
+
+    assert result.ok is False
+    assert result.context["provider_failure_class"] == "transport"
+    attempts = result.context["provider_attempts"]
+    assert [item["failure_kind"] for item in attempts] == [
+        "provider_error",
+        "provider_error",
+    ]
+    assert [call.args[0] for call in sleeper.call_args_list] == [5.0]
+
+
+def test_generic_process_failure_keeps_fail_closed_classification(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    adapter = OpenCodeAdapter(cfg)
+    responses = [
+        types.SimpleNamespace(returncode=1, stdout=_error_event_stdout()),
+        types.SimpleNamespace(returncode=1, stdout="segmentation fault: core dumped"),
+    ]
+
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with (
+        patch(target, side_effect=responses),
+        patch("converge_orchestrator.opencode._sleep"),
+    ):
+        result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
+
+    assert result.ok is False
+    assert result.context["provider_failure_class"] == "process"
+    attempts = result.context["provider_attempts"]
+    assert [item["failure_kind"] for item in attempts] == [
+        "provider_error",
+        "process_failure",
+    ]
+
+
+def test_provider_retries_consume_durable_run_budget(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, provider_retries=1)
+    adapter = OpenCodeAdapter(cfg)
+    responses = [
+        types.SimpleNamespace(returncode=1, stdout="temporary provider failure"),
+        types.SimpleNamespace(returncode=1, stdout="temporary provider failure"),
+        types.SimpleNamespace(returncode=0, stdout="ok"),
+    ]
+
+    token = bind_run_id("run-budget-1")
+    initialize_run_budget(cfg, "run-budget-1", started_at=datetime.now(UTC))
+    try:
+        target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+        with (
+            patch(target, side_effect=responses),
+            patch("converge_orchestrator.opencode._sleep"),
+        ):
+            result = adapter.invoke("planner", "Plan one task", cfg.repo_path)
+    finally:
+        reset_run_id(token)
+
+    assert result.ok is True
+    assert (
+        run_budget_status(cfg, "run-budget-1").model_attempts_reserved == 3
+    )

@@ -38,6 +38,7 @@ class ParsedOpenCodeOutput(BaseModel):
     format: Literal["json", "plain"]
     usage_status: Literal["reported", "unavailable", "invalid"]
     usage: ProviderUsage | None = None
+    error_event_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def usage_matches_status(self) -> ParsedOpenCodeOutput:
@@ -116,11 +117,14 @@ def parse_opencode_output(stdout: str) -> ParsedOpenCodeOutput:
     Plain output remains supported for older/test executors. Once any OpenCode event is
     recognized, malformed JSON or a malformed step-finish makes telemetry invalid rather than
     silently publishing partial cost data. Agent text remains usable because telemetry is
-    observational and cannot weaken or block the conservative run budget.
+    observational and cannot weaken or block the conservative run budget. Protocol-level
+    ``error`` events are preserved structurally as ``error_event_count`` so transport failures
+    can be classified without string matching on error message text.
     """
 
     recognized = 0
     invalid = False
+    error_event_count = 0
     text_parts: list[str] = []
     error_parts: list[str] = []
     step_usages: list[_StepFinish] = []
@@ -155,6 +159,7 @@ def parse_opencode_output(stdout: str) -> ParsedOpenCodeOutput:
             except ValidationError:
                 invalid = True
         elif event_type == "error":
+            error_event_count += 1
             error = event.get("error")
             error_parts.append(
                 error if isinstance(error, str) else json.dumps(error, ensure_ascii=False)
@@ -171,9 +176,19 @@ def parse_opencode_output(stdout: str) -> ParsedOpenCodeOutput:
     if not text and error_parts:
         text = "\n".join(error_parts)
     if invalid:
-        return ParsedOpenCodeOutput(text=text, format="json", usage_status="invalid")
+        return ParsedOpenCodeOutput(
+            text=text,
+            format="json",
+            usage_status="invalid",
+            error_event_count=error_event_count,
+        )
     if not step_usages:
-        return ParsedOpenCodeOutput(text=text, format="json", usage_status="unavailable")
+        return ParsedOpenCodeOutput(
+            text=text,
+            format="json",
+            usage_status="unavailable",
+            error_event_count=error_event_count,
+        )
 
     tokens = TokenUsage(
         input=sum(step.tokens.input for step in step_usages),
@@ -192,6 +207,7 @@ def parse_opencode_output(stdout: str) -> ParsedOpenCodeOutput:
         format="json",
         usage_status="reported",
         usage=usage,
+        error_event_count=error_event_count,
     )
 
 
