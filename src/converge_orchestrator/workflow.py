@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -119,6 +120,78 @@ def _task_envelope_output(text: str) -> TaskEnvelope:
         # Preserve the leading candidate's exact validation error for contract evidence.
         return TaskEnvelope.model_validate(candidates[0])
     raise ValueError("Agent did not return a JSON object") from None
+
+
+_MAX_REPO_TREE_ENTRIES = 20000
+
+
+def _invalid_allowed_paths_error(repo_path: Path, patterns: list[str]) -> str | None:
+    """Return a deterministic error when a planned ``allowed_paths`` pattern cannot match.
+
+    The planner writes ``allowed_paths`` as repo-relative glob patterns that must bound the
+    candidate diff. A pattern whose literal base directory does not exist anywhere in the
+    target repository can never bound a real diff, so every candidate would deterministically
+    fail the scope gate and burn the bounded repair/replan budgets (V13 run
+    ``3e6300def11140d59453b82efce1e0ce``: the ACCEPT-003 plan copied the prompt's
+    ``["src/**", "tests/**"]`` schema example verbatim while the repository layout is
+    ``shared_tools/**``, and the ordinary ``repair_replan_budget`` HITL followed). Validation
+    is prefix-based so patterns may legitimately name files that do not exist yet as long as
+    they are rooted in an existing directory (``tests/test_new.py`` stays valid); planning a
+    brand-new top-level directory inside a bounded diff is not a supported plan shape.
+    Returns ``None`` when every pattern is rooted in an existing repository path.
+    """
+
+    if not patterns:
+        return None
+    root = Path(repo_path)
+    if not root.is_dir():
+        return None
+    file_entries: set[str] = set()
+    dir_entries: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        relative = Path(dirpath).relative_to(root)
+        if relative.parts and relative.parts[0] == ".git":
+            dirnames[:] = []
+            continue
+        dirnames[:] = [name for name in dirnames if name != ".git"]
+        for name in dirnames:
+            dir_entries.add((relative / name).as_posix().casefold())
+        for name in filenames:
+            file_entries.add((relative / name).as_posix().casefold())
+        if len(dir_entries) + len(file_entries) >= _MAX_REPO_TREE_ENTRIES:
+            break
+    try:
+        top_level = sorted(
+            (name + "/" if (root / name).is_dir() else name)
+            for name in os.listdir(root)
+            if name != ".git"
+        )
+    except OSError:
+        top_level = []
+    message = (
+        "allowed_paths pattern {pattern!r} cannot match any existing repository path; "
+        "existing top-level entries: {top_level}. Correct the patterns to real "
+        "repository paths."
+    )
+    for pattern in patterns:
+        posix = pattern.replace("\\", "/").strip()
+        first_glob = min(
+            (posix.find(char) for char in "*?[" if posix.find(char) != -1),
+            default=-1,
+        )
+        if first_glob == -1:
+            if posix.casefold() in file_entries or posix.casefold() in dir_entries:
+                continue
+            parent = posix.rsplit("/", 1)[0] if "/" in posix else ""
+            if not parent or parent.casefold() in dir_entries:
+                continue
+        else:
+            segment_start = posix.rfind("/", 0, first_glob) + 1
+            base_directory = posix[:segment_start].rstrip("/")
+            if not base_directory or base_directory.casefold() in dir_entries:
+                continue
+        return message.format(pattern=posix, top_level=top_level)
+    return None
 
 
 def _evidence(state: WorkflowState) -> EvidenceStore:

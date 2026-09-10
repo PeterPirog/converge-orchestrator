@@ -646,3 +646,77 @@ def test_v12_sequence_schema_echo_then_valid_envelope_plans_without_budget_loss(
     events = [call.args[1] for call in store.append_event.call_args_list]
     assert "planner_rejected" not in events
     assert events.count("planned") == 1
+
+
+def test_v13_sequence_impossible_allowed_paths_fails_contract_without_builder_cycles(
+    tmp_path: Path,
+) -> None:
+    """Faithful V13 reproduction (ACCEPT-003, REQ-280A8C4BB0): schema-copied allowed_paths.
+
+    The V13 planner copied the prompt's ``["src/**", "tests/**"]`` schema example verbatim
+    while the repository layout is ``shared_tools/**``. No deterministic check rejected the
+    pattern, so every candidate failed ``diff_scope`` and ``tdd_green`` until the repair and
+    replan budgets were exhausted and the ordinary ``repair_replan_budget`` HITL fired. The
+    plan must now fail the planner contract on the first attempt with targeted feedback (the
+    invalid pattern plus the actual repository top-level entries) instead of reaching builder
+    cycles, and a corrected envelope must plan with the attempt budget reset.
+    """
+
+    (tmp_path / "shared_tools").mkdir()
+    (tmp_path / "shared_tools" / "fake_terminal.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_shared_tools_fake_terminal.py").write_text(
+        "import shared_tools.fake_terminal\n",
+        encoding="utf-8",
+    )
+    config = _config(tmp_path)
+    compliance = _compliance(
+        ARCH_001=RequirementStatus.FAIL,
+        ARCH_002=RequirementStatus.UNVERIFIED,
+        ARCH_003=RequirementStatus.UNVERIFIED,
+    )
+    state = _state(tmp_path, compliance)
+    store = _store()
+    impossible = _valid_task().model_copy(
+        update={"allowed_paths": ["src/**", "tests/**"]},
+    )
+    corrected = _valid_task().model_copy(
+        update={"allowed_paths": ["shared_tools/**", "tests/**"]},
+    )
+
+    def invoke(_adapter, role, prompt, _cwd):  # type: ignore[no-untyped-def]
+        assert role == "planner"
+        section_names = [section.name for section in prompt.advisory]
+        if "planner validation feedback" in section_names:
+            assert "'src/**'" in prompt.advisory[-1].text
+            assert "shared_tools/" in prompt.advisory[-1].text
+            return _agent_result(ok=True, output=corrected.model_dump_json())
+        return _agent_result(ok=True, output=impossible.model_dump_json())
+
+    with (
+        patch("converge_orchestrator.targeting.load_config", return_value=config),
+        patch("converge_orchestrator.targeting.wf._write_compliance"),
+        patch("converge_orchestrator.targeting.wf._evidence", return_value=store),
+        patch("converge_orchestrator.targeting.OpenCodeAdapter.invoke", new=invoke),
+    ):
+        rejected = targeted_plan(state)  # type: ignore[arg-type]
+        recovery = targeted_plan(rejected)  # type: ignore[arg-type]
+
+    assert rejected["status"] == "planner_retry"
+    assert rejected["task"] is None
+    assert rejected["message"] is not None
+    assert "'src/**'" in rejected["message"]
+    assert "shared_tools/" in rejected["message"]
+    control = rejected["baseline"]["planner_control"]
+    assert control["target_requirement_id"] == "ARCH-001"
+    assert control["attempts"] == 1
+    assert control["last_failure_kind"] == "contract"
+
+    assert recovery["status"] == "planned"
+    assert recovery["task"]["allowed_paths"] == ["shared_tools/**", "tests/**"]
+    assert recovery["baseline"]["planner_control"]["attempts"] == 0
+    assert recovery["baseline"]["planner_control"]["last_failure_kind"] is None
+    assert recovery["replan_attempts"] == 0
+    events = [call.args[1] for call in store.append_event.call_args_list]
+    assert events.count("planner_rejected") == 1
+    assert events.count("planned") == 1
