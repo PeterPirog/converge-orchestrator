@@ -403,6 +403,17 @@ def _invoke_target_planner(
             ),
             output_tail=result.output,
         )
+    allowed_paths_error = wf._invalid_allowed_paths_error(cfg.repo_path, task.allowed_paths)
+    if allowed_paths_error is not None:
+        return _planner_failure(
+            state,
+            baseline=baseline,
+            target=target,
+            attempt=attempt,
+            kind="contract",
+            error=f"Planner returned an invalid Task Envelope: {allowed_paths_error}",
+            output_tail=result.output,
+        )
 
     success_baseline = dict(baseline)
     success_baseline["planner_control"] = {
