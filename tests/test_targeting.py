@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -601,3 +602,47 @@ def test_quality_reuses_cached_baseline_without_rerunning_verifiers(tmp_path: Pa
     execute.assert_not_called()
     assert cache_hit is True
     assert results == cached
+
+
+def test_v12_sequence_schema_echo_then_valid_envelope_plans_without_budget_loss(
+    tmp_path: Path,
+) -> None:
+    """Faithful V12 reproduction (event line 73): schema echo precedes the final envelope.
+
+    The V12 planner reply contained a complete JSON object echoing the TDD schema fragment
+    before the final valid Task Envelope. Selecting the first parseable object burned the
+    bounded semantic budget with envelope-shaped contract rejections and forced a
+    ``planner_failure_budget`` HITL; reply selection must plan on the first attempt without
+    recording any planner rejection.
+    """
+
+    config = _config(tmp_path)
+    compliance = _compliance(
+        ARCH_001=RequirementStatus.FAIL,
+        ARCH_002=RequirementStatus.UNVERIFIED,
+        ARCH_003=RequirementStatus.UNVERIFIED,
+    )
+    state = _state(tmp_path, compliance)
+    store = _store()
+    task = _valid_task()
+    schema_echo = json.dumps(task.tdd.model_dump(mode="json"), indent=2)
+    planner_output = schema_echo + "\n" + task.model_dump_json()
+
+    with (
+        patch("converge_orchestrator.targeting.load_config", return_value=config),
+        patch("converge_orchestrator.targeting.wf._write_compliance"),
+        patch("converge_orchestrator.targeting.wf._evidence", return_value=store),
+        patch(
+            "converge_orchestrator.targeting.OpenCodeAdapter.invoke",
+            return_value=_agent_result(ok=True, output=planner_output),
+        ),
+    ):
+        result = targeted_plan(state)  # type: ignore[arg-type]
+
+    assert result["status"] == "planned"
+    assert result["task"]["requirement_ids"] == ["ARCH-001"]
+    assert result["baseline"]["planner_control"]["attempts"] == 0
+    assert result["baseline"]["planner_control"]["provider_recovery_attempts"] == 0
+    events = [call.args[1] for call in store.append_event.call_args_list]
+    assert "planner_rejected" not in events
+    assert events.count("planned") == 1

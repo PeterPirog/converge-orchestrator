@@ -74,6 +74,53 @@ def _json_object(text: str) -> dict[str, Any]:
     return payload
 
 
+def _task_envelope_output(text: str) -> TaskEnvelope:
+    """Return the planner's Task Envelope reply from mixed narrative output.
+
+    The planner's answer is the LAST complete JSON object in its output. Earlier complete JSON
+    objects in the same reply are reasoning artifacts, not the answer: schema echoes, tool-call
+    payloads, todo items or empty brace groups. Selecting the first parseable object therefore
+    falsely rejects replies that contain a valid envelope (V12 run
+    ``4d75aa63837c44908c89c78c6856fa73``: a ``{"mode": ...}`` schema echo and a ``{}`` decoy
+    preceded the final valid envelope; the resulting envelope-shaped contract rejections
+    exhausted the bounded planner semantic budget and forced an ordinary
+    ``planner_failure_budget`` HITL during external acceptance). Candidates are validated
+    against the immutable Task Envelope schema and the last structurally valid envelope wins;
+    if no candidate validates, the first candidate's exact validation error is raised so
+    contract-failure evidence keeps pointing at the start of the agent's reply.
+    """
+
+    stripped = text.strip()
+    try:
+        return TaskEnvelope.model_validate(json.loads(stripped))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    index = 0
+    while index < len(stripped):
+        brace = stripped.find("{", index)
+        if brace == -1:
+            break
+        try:
+            payload, end = decoder.raw_decode(stripped, brace)
+        except json.JSONDecodeError:
+            index = brace + 1
+            continue
+        index = max(end, brace + 1)
+        if isinstance(payload, dict):
+            candidates.append(payload)
+    for candidate in reversed(candidates):
+        try:
+            return TaskEnvelope.model_validate(candidate)
+        except (ValueError, TypeError):
+            continue
+    if candidates:
+        # Preserve the leading candidate's exact validation error for contract evidence.
+        return TaskEnvelope.model_validate(candidates[0])
+    raise ValueError("Agent did not return a JSON object") from None
+
+
 def _evidence(state: WorkflowState) -> EvidenceStore:
     cfg = load_config(state["config_path"])
     return EvidenceStore(cfg.state_dir / "evidence")
@@ -296,7 +343,7 @@ def plan(state: WorkflowState) -> WorkflowState:
     )
     if not result.ok:
         raise RuntimeError(f"Planner failed: {result.output}")
-    task = TaskEnvelope.model_validate(_json_object(result.output))
+    task = _task_envelope_output(result.output)
     known_ids = {item.id for item in requirements}
     unknown_ids = set(task.requirement_ids) - known_ids
     if unknown_ids:

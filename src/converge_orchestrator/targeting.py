@@ -16,7 +16,6 @@ from .models import (
     Requirement,
     RequirementStatus,
     RequirementVerification,
-    TaskEnvelope,
     WorkflowState,
 )
 from .opencode import OpenCodeAdapter
@@ -380,7 +379,7 @@ def _invoke_target_planner(
         )
 
     try:
-        task = TaskEnvelope.model_validate(wf._json_object(result.output))
+        task = wf._task_envelope_output(result.output)
     except (ValueError, TypeError) as exc:
         return _planner_failure(
             state,
