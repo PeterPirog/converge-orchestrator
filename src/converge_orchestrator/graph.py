@@ -252,7 +252,7 @@ def plan(state: WorkflowState) -> WorkflowState:
         )
     if not result.ok:
         raise RuntimeError(f"Planner failed: {result.output}")
-    task = TaskEnvelope.model_validate(wf._json_object(result.output))
+    task = wf._task_envelope_output(result.output)
     known_ids = {item.id for item in requirements}
     unknown_ids = set(task.requirement_ids) - known_ids
     if unknown_ids:

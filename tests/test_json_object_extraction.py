@@ -13,12 +13,14 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from converge_orchestrator import opencode, workflow
 from converge_orchestrator.acceptance_supervisor import (
     AcceptanceSupervisorError,
     _parse_review,
 )
+from converge_orchestrator.models import TaskEnvelope
 
 ENVELOPE = json.dumps(
     {
@@ -55,6 +57,41 @@ NARRATIVE_WITH_SET_LITERAL = (
     "result: simulate_command(command: str) -> dict returning {\"command\", \"stdout\", "
     "\"stderr\", \"exit_code\"}, consistent with existing run_command output, plus a TDD test.\n"
     "Plan: add one additive public function.\n" + ENVELOPE
+)
+
+ENVELOPE_DICT = json.loads(ENVELOPE)
+
+# V12 run ``4d75aa63837c44908c89c78c6856fa73`` (event line 73): the planner echoed the TDD
+# schema fragment from its own prompt as a complete JSON object, then produced the final valid
+# envelope in the same reply. The first-JSON heuristic grabbed the echo and falsely rejected
+# the reply as a contract failure; the exhausted correction budget then forced a
+# ``planner_failure_budget`` HITL during external acceptance.
+TDD_SCHEMA_ECHO = json.dumps(
+    {
+        "mode": "required",
+        "test_paths": ["tests/test_shared_tools_fake_terminal.py"],
+        "test_gate": None,
+        "expected_failure_pattern": "test_simulate_command_returns_structured_result",
+        "rationale": "New observable function requires a failing test first.",
+    }
+)
+
+# Tool-call payload decoy (V12): planner narration included its own todo bookkeeping as JSON.
+TODOWRITE_TODO_ITEMS = json.dumps(
+    {
+        "todos": [
+            {
+                "content": "Inspect existing fake_terminal helpers",
+                "status": "completed",
+                "activeForm": "Inspecting existing fake_terminal helpers",
+            },
+            {
+                "content": "Write the failing regression test",
+                "status": "in_progress",
+                "activeForm": "Writing the failing regression test",
+            },
+        ]
+    }
 )
 
 
@@ -117,3 +154,57 @@ def test_final_audit_parse_with_decoy_braces() -> None:
 def test_final_audit_parse_without_json_raises() -> None:
     with pytest.raises(AcceptanceSupervisorError, match="did not return JSON"):
         _parse_review("requirements", "Narrative audit answer without any JSON payload.")
+
+
+# --- Task Envelope reply selection (V12 regression) -----------------------------
+
+
+def test_whole_text_task_envelope_fast_path() -> None:
+    envelope = workflow._task_envelope_output(ENVELOPE)
+    assert envelope == TaskEnvelope.model_validate(ENVELOPE_DICT)
+
+
+def test_schema_echo_before_valid_envelope_selects_the_final_object() -> None:
+    envelope = workflow._task_envelope_output("\n\n".join([TDD_SCHEMA_ECHO, ENVELOPE]))
+    assert envelope == TaskEnvelope.model_validate(ENVELOPE_DICT)
+
+
+def test_empty_object_decoy_before_valid_envelope() -> None:
+    envelope = workflow._task_envelope_output("\n\n".join(["{}", ENVELOPE]))
+    assert envelope == TaskEnvelope.model_validate(ENVELOPE_DICT)
+
+
+def test_todowrite_todo_item_decoys_before_valid_envelope() -> None:
+    envelope = workflow._task_envelope_output("\n\n".join([TODOWRITE_TODO_ITEMS, ENVELOPE]))
+    assert envelope.id == "REQ-F92FFC55BA-0001"
+
+
+def test_multiple_decoys_with_narrative_select_the_final_valid_envelope() -> None:
+    text = "\n".join(
+        [
+            "Reasoning narrative with a set literal {\"a\", \"b\"} in prose.",
+            TDD_SCHEMA_ECHO,
+            TODOWRITE_TODO_ITEMS,
+            "{}",
+            "Final answer:\n",
+            ENVELOPE,
+        ]
+    )
+    assert workflow._task_envelope_output(text) == TaskEnvelope.model_validate(ENVELOPE_DICT)
+
+
+def test_two_valid_envelopes_select_the_final_one() -> None:
+    earlier = dict(ENVELOPE_DICT, id="REQ-F92FFC55BA-0000", title="Earlier draft")
+    envelope = workflow._task_envelope_output("\n\n".join([json.dumps(earlier), ENVELOPE]))
+    assert envelope.id == "REQ-F92FFC55BA-0001"
+
+
+def test_decoys_only_preserve_first_candidate_validation_error() -> None:
+    text = "\n\n".join([TDD_SCHEMA_ECHO, "{}"])
+    with pytest.raises(ValidationError, match="Field required"):
+        workflow._task_envelope_output(text)
+
+
+def test_no_json_raises_agent_error() -> None:
+    with pytest.raises(ValueError, match="Agent did not return a JSON object"):
+        workflow._task_envelope_output("Plain narrative answer without any JSON payload.")
