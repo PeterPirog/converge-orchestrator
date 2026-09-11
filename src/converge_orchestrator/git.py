@@ -399,10 +399,24 @@ def _prune_empty_cache_ancestors(root: Path, start: Path) -> None:
 
 
 def commit_all(worktree: Path, message: str) -> str | None:
-    if not _git(worktree, "status", "--porcelain"):
-        return None
+    """Commit every candidate change, skipping noise-only candidate states.
+
+    Gate execution leaves untracked cache artifacts and EOL-phantom status entries in the
+    candidate worktree (external acceptance V15, run 88c5862fecc04ee0be6db1ad5b466396). The
+    pre-cleanup status check passed on that noise, the cache cleanup then removed it, and the
+    unconditional commit ran with an index that matched HEAD, so git exited 1 with "nothing to
+    commit" and the raw GitError aborted the run before the designed no_changes terminal was
+    reachable. Detection must therefore be staged-diff semantics, never the pre-staging status:
+    after cleanup and staging, commit only when `git diff --cached` (parsed stdout-only so CRLF
+    warnings never become entries) reports a real staged diff relative to HEAD; otherwise return
+    None so integrate reaches its designed no_changes outcome. Genuine git errors still fail
+    closed via GitError.
+    """
     _remove_untracked_cache_artifacts(worktree)
     _git(worktree, "add", "-A")
+    staged = _git_lines(worktree, "diff", "--cached", "--name-only", "HEAD")
+    if not staged:
+        return None
     _git(worktree, "commit", "-m", message)
     return current_head(worktree)
 
