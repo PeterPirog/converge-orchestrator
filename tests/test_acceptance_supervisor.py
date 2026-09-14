@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -17,6 +18,7 @@ from converge_orchestrator.acceptance_supervisor import (
     _run_final_audit,
     _validate_acceptance_preconditions,
     _wait_for_risk_interrupt,
+    supervise_external_acceptance,
 )
 from converge_orchestrator.models import AgentResult, ProjectConfig
 
@@ -214,7 +216,7 @@ def test_risk_interrupt_must_match_predeclared_injected_flag() -> None:
     }
     with (
         patch("converge_orchestrator.acceptance_supervisor._api_json", return_value=response),
-        pytest.raises(AcceptanceSupervisorError, match="predeclared injected risk flag"),
+        pytest.raises(AcceptanceSupervisorError) as exc_info,
     ):
         _wait_for_risk_interrupt(
             api,
@@ -223,3 +225,115 @@ def test_risk_interrupt_must_match_predeclared_injected_flag() -> None:
             deadline=10**12,
             poll_seconds=0.01,
         )
+
+    assert exc_info.value.failure_kind == "risk_flag_mismatch"
+    assert exc_info.value.interrupt_kind == "risk_policy"
+
+
+def test_risk_interrupt_structures_unexpected_human_interrupt() -> None:
+    api = SimpleNamespace(base_url="http://127.0.0.1:1", token="token")
+    response = {"interrupt": {"kind": "planner_failure_budget", "risk_flags": []}}
+    with (
+        patch("converge_orchestrator.acceptance_supervisor._api_json", return_value=response),
+        pytest.raises(AcceptanceSupervisorError) as exc_info,
+    ):
+        _wait_for_risk_interrupt(
+            api,
+            "run-1",
+            "forbidden_public_api_change",
+            deadline=10**12,
+            poll_seconds=0.01,
+        )
+
+    assert exc_info.value.failure_kind == "unexpected_human_interrupt"
+    assert exc_info.value.interrupt_kind == "planner_failure_budget"
+
+
+def test_supervise_writes_failure_record_on_unexpected_human_interrupt(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    output_path = tmp_path / "acceptance-supervisor.json"
+    api_calls: list[tuple[str, str]] = []
+
+    def fake_api_json(_base_url, _token, method, path, payload=None, **_kwargs):
+        api_calls.append((method, path))
+        if path == "/projects":
+            return {}
+        if path.endswith("/run"):
+            return {"id": "run-1"}
+        return {}
+
+    pids = iter([111, 222])
+
+    def fake_start_api(_config, _run_id_hint):
+        return SimpleNamespace(
+            process=SimpleNamespace(pid=next(pids), poll=lambda: 0),
+            stop=lambda: None,
+            base_url="http://127.0.0.1:1",
+            token="t",
+        )
+
+    decision = Mock(return_value="approve")
+    failure = AcceptanceSupervisorError(
+        "unexpected human interrupt during acceptance: planner_failure_budget",
+        failure_kind="unexpected_human_interrupt",
+        interrupt_kind="planner_failure_budget",
+    )
+
+    with (
+        patch("converge_orchestrator.acceptance_supervisor.load_config", return_value=cfg),
+        patch("converge_orchestrator.acceptance_supervisor._validate_acceptance_preconditions"),
+        patch(
+            "converge_orchestrator.acceptance_supervisor._project_and_unfinished_run",
+            return_value=(None, None),
+        ),
+        patch(
+            "converge_orchestrator.acceptance_supervisor._start_api",
+            side_effect=fake_start_api,
+        ),
+        patch("converge_orchestrator.acceptance_supervisor._api_json", side_effect=fake_api_json),
+        patch(
+            "converge_orchestrator.acceptance_supervisor._pinned_config_for_run",
+            return_value=cfg,
+        ),
+        patch(
+            "converge_orchestrator.acceptance_supervisor._observer",
+            return_value=SimpleNamespace(),
+        ),
+        patch("converge_orchestrator.acceptance_supervisor._wait_for_first_merge"),
+        patch("converge_orchestrator.acceptance_supervisor._events", return_value=[]),
+        patch("converge_orchestrator.acceptance_supervisor._wait_for_automatic_recovery"),
+        patch(
+            "converge_orchestrator.acceptance_supervisor._wait_for_risk_interrupt",
+            side_effect=failure,
+        ),
+        pytest.raises(AcceptanceSupervisorError) as exc_info,
+    ):
+        supervise_external_acceptance(
+            tmp_path / "converge.yaml",
+            project_id="external-acceptance",
+            expected_risk_flag="forbidden_public_api_change",
+            output_path=output_path,
+            decision_provider=decision,
+            poll_seconds=0.01,
+        )
+
+    assert exc_info.value is failure
+    decision.assert_not_called()
+    assert ("POST", "/runs/run-1/decision") not in api_calls
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["run_id"] == "run-1"
+    assert payload["project_id"] == "external-acceptance"
+    assert payload["target_repository"] == "example/target"
+    assert payload["expected_risk_flag"] == "forbidden_public_api_change"
+    assert payload["failure_kind"] == "unexpected_human_interrupt"
+    assert payload["interrupt_kind"] == "planner_failure_budget"
+    assert "planner_failure_budget" in payload["detail"]
+    assert payload["progress"]["restart_done"] is True
+    assert payload["progress"]["automatic_recovery_observed"] is True
+    assert payload["progress"]["hitl_done"] is False
+    evidence_copy = (
+        cfg.state_dir / "evidence" / "run-1" / "external-acceptance-failure.json"
+    )
+    assert json.loads(evidence_copy.read_text(encoding="utf-8")) == payload

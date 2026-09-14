@@ -10,6 +10,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -44,7 +45,23 @@ _API_START_TIMEOUT_SECONDS = 30.0
 
 
 class AcceptanceSupervisorError(RuntimeError):
-    """The live release scenario cannot be proven safely."""
+    """The live release scenario cannot be proven safely.
+
+    ``failure_kind`` and ``interrupt_kind`` carry a structured, machine-readable classification
+    of the deterministic scenario failure. Callers must never parse the human-readable message
+    to recover this information.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kind: str | None = None,
+        interrupt_kind: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.interrupt_kind = interrupt_kind
 
 
 class FinalAuditLane(BaseModel):
@@ -79,6 +96,27 @@ class SupervisorProgress(BaseModel):
     no_manual_code_edit: bool = False
 
 
+class SupervisorFailureRecord(BaseModel):
+    """Deterministic terminal classification for an acceptance scenario that failed closed.
+
+    Written by the supervisor itself (never hand-authored) whenever the live scenario cannot be
+    proven safely after the durable run exists. The release report schema is only ever emitted
+    for runs that reached the final audits; a failure record unambiguously classifies the abort
+    (failure kind, interrupt kind, progress snapshot) with ``ready`` implicitly false.
+    """
+
+    version: int = 1
+    run_id: str
+    project_id: str
+    target_repository: str
+    expected_risk_flag: str
+    failure_kind: str
+    interrupt_kind: str | None = None
+    detail: str
+    progress: dict[str, Any] = Field(default_factory=dict)
+    recorded_at: str
+
+
 @dataclass
 class _ManagedApi:
     process: subprocess.Popen[bytes]
@@ -105,6 +143,43 @@ def _atomic_json(path: Path, payload: object) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _write_failure_record(
+    *,
+    output_path: Path,
+    config: ProjectConfig,
+    project_id: str,
+    run_id: str,
+    exc: AcceptanceSupervisorError,
+    progress: SupervisorProgress | None,
+    expected_risk_flag: str,
+) -> None:
+    """Write the deterministic failure record for a failed acceptance scenario.
+
+    The record lands at the CLI ``--output`` path and in the durable evidence directory. The
+    pending interrupt is never consumed and nothing is approved on this path. Write errors are
+    deliberately swallowed: the original deterministic error must never be masked by an
+    evidence-write failure.
+    """
+    record = SupervisorFailureRecord(
+        run_id=run_id,
+        project_id=project_id,
+        target_repository=config.github_repo or "",
+        expected_risk_flag=expected_risk_flag,
+        failure_kind=exc.failure_kind or "acceptance_supervisor_error",
+        interrupt_kind=exc.interrupt_kind,
+        detail=str(exc),
+        progress=progress.model_dump(mode="json") if progress is not None else {},
+        recorded_at=datetime.now(UTC).isoformat(),
+    )
+    payload = record.model_dump(mode="json")
+    try:
+        _atomic_json(output_path, payload)
+        evidence_copy = config.state_dir / "evidence" / run_id / "external-acceptance-failure.json"
+        _atomic_json(evidence_copy, payload)
+    except OSError:
+        return
 
 
 def _api_json(
@@ -238,11 +313,15 @@ def _events(config: ProjectConfig, run_id: str) -> list[dict[str, Any]]:
             item = json.loads(raw)
             if not isinstance(item, dict) or not isinstance(item.get("event"), str):
                 raise AcceptanceSupervisorError(
-                    f"invalid event stream record at line {line_number}"
+                    f"invalid event stream record at line {line_number}",
+                    failure_kind="event_stream_invalid",
                 )
             records.append(item)
     except (OSError, json.JSONDecodeError) as exc:
-        raise AcceptanceSupervisorError(f"cannot read acceptance event stream: {exc}") from exc
+        raise AcceptanceSupervisorError(
+            f"cannot read acceptance event stream: {exc}",
+            failure_kind="event_stream_unreadable",
+        ) from exc
     return records
 
 
@@ -297,7 +376,8 @@ def _pinned_config_for_run(
     snapshot_hash = record.get("config_snapshot_sha256")
     if not snapshot_path or not snapshot_hash:
         raise AcceptanceSupervisorError(
-            "acceptance run is missing hash-pinned configuration metadata"
+            "acceptance run is missing hash-pinned configuration metadata",
+            failure_kind="config_metadata_missing",
         )
     return load_run_config_snapshot(str(snapshot_path), str(snapshot_hash))
 
@@ -312,14 +392,16 @@ def _candidate_fingerprint(
     expected = values.get("risk_fingerprint")
     if not isinstance(worktree, str) or not worktree or not isinstance(expected, str):
         raise AcceptanceSupervisorError(
-            "risk_policy checkpoint does not expose an exact worktree/candidate fingerprint"
+            "risk_policy checkpoint does not expose an exact worktree/candidate fingerprint",
+            failure_kind="fingerprint_missing",
         )
     config = _pinned_config_for_run(observer, run_id)
     patch = diff(Path(worktree), config.base_branch)
     actual = hashlib.sha256(patch.encode("utf-8")).hexdigest()
     if actual != expected:
         raise AcceptanceSupervisorError(
-            "candidate changed outside the checkpointed risk decision boundary; refusing approval"
+            "candidate changed outside the checkpointed risk decision boundary; refusing approval",
+            failure_kind="candidate_changed",
         )
     return actual
 
@@ -340,7 +422,10 @@ def _first_json_object(text: str, role: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         return payload
-    raise AcceptanceSupervisorError(f"{role} final audit did not return JSON") from None
+    raise AcceptanceSupervisorError(
+        f"{role} final audit did not return JSON",
+        failure_kind="final_audit_invalid_json",
+    ) from None
 
 
 def _parse_review(role: str, output: str) -> ReviewResult:
@@ -353,7 +438,8 @@ def _parse_review(role: str, output: str) -> ReviewResult:
         return ReviewResult.model_validate(payload)
     except ValidationError as exc:
         raise AcceptanceSupervisorError(
-            f"{role} final audit returned invalid review JSON: {exc}"
+            f"{role} final audit returned invalid review JSON: {exc}",
+            failure_kind="final_audit_invalid_json",
         ) from exc
 
 
@@ -464,14 +550,22 @@ def _wait_for_first_merge(
             return
         status = _api_json(api.base_url, api.token, "GET", f"/runs/{run_id}")
         if status.get("finished_at"):
-            raise AcceptanceSupervisorError("run finished before the required first merged task")
+            raise AcceptanceSupervisorError(
+                "run finished before the required first merged task",
+                failure_kind="no_first_merge",
+            )
         interrupt = status.get("interrupt")
         if interrupt and interrupt.get("kind") != "ci_wait":
             raise AcceptanceSupervisorError(
-                "acceptance scenario reached human intervention before its first merged task"
+                "acceptance scenario reached human intervention before its first merged task",
+                failure_kind="unexpected_human_interrupt",
+                interrupt_kind=str(interrupt.get("kind")),
             )
         time.sleep(poll_seconds)
-    raise AcceptanceSupervisorError("timed out waiting for the first merged task")
+    raise AcceptanceSupervisorError(
+        "timed out waiting for the first merged task",
+        failure_kind="timeout",
+    )
 
 
 def _wait_for_automatic_recovery(
@@ -488,11 +582,13 @@ def _wait_for_automatic_recovery(
             return
         if status.get("finished_at"):
             raise AcceptanceSupervisorError(
-                "run finished before restart recovery could be observed"
+                "run finished before restart recovery could be observed",
+                failure_kind="no_automatic_recovery",
             )
         time.sleep(poll_seconds)
     raise AcceptanceSupervisorError(
-        "automatic same-run recovery was not observed after restart"
+        "automatic same-run recovery was not observed after restart",
+        failure_kind="no_automatic_recovery",
     )
 
 
@@ -513,21 +609,29 @@ def _wait_for_risk_interrupt(
                 continue
             if kind != "risk_policy":
                 raise AcceptanceSupervisorError(
-                    f"unexpected human interrupt during acceptance: {kind}"
+                    f"unexpected human interrupt during acceptance: {kind}",
+                    failure_kind="unexpected_human_interrupt",
+                    interrupt_kind=str(kind),
                 )
             flags = set(interrupt.get("risk_flags") or [])
             if expected_risk_flag not in flags:
                 raise AcceptanceSupervisorError(
                     "risk_policy interrupt does not contain the predeclared injected risk flag "
-                    f"{expected_risk_flag!r}"
+                    f"{expected_risk_flag!r}",
+                    failure_kind="risk_flag_mismatch",
+                    interrupt_kind="risk_policy",
                 )
             return interrupt
         if status.get("finished_at"):
             raise AcceptanceSupervisorError(
-                "run converged without the deliberately injected exceptional risk_policy HITL"
+                "run converged without the deliberately injected exceptional risk_policy HITL",
+                failure_kind="missing_risk_interrupt",
             )
         time.sleep(poll_seconds)
-    raise AcceptanceSupervisorError("timed out waiting for the expected risk_policy interrupt")
+    raise AcceptanceSupervisorError(
+        "timed out waiting for the expected risk_policy interrupt",
+        failure_kind="timeout",
+    )
 
 
 def _wait_for_convergence(
@@ -541,16 +645,22 @@ def _wait_for_convergence(
         if status.get("finished_at"):
             if status.get("status") != "converged":
                 raise AcceptanceSupervisorError(
-                    f"acceptance run terminated without convergence: {status.get('status')}"
+                    f"acceptance run terminated without convergence: {status.get('status')}",
+                    failure_kind="no_convergence",
                 )
             return status
         interrupt = status.get("interrupt")
         if interrupt and interrupt.get("kind") != "ci_wait":
             raise AcceptanceSupervisorError(
-                f"unexpected additional HITL after injected exception: {interrupt.get('kind')}"
+                f"unexpected additional HITL after injected exception: {interrupt.get('kind')}",
+                failure_kind="unexpected_human_interrupt",
+                interrupt_kind=str(interrupt.get("kind")),
             )
         time.sleep(poll_seconds)
-    raise AcceptanceSupervisorError("timed out waiting for terminal convergence")
+    raise AcceptanceSupervisorError(
+        "timed out waiting for terminal convergence",
+        failure_kind="timeout",
+    )
 
 
 def supervise_external_acceptance(
@@ -567,7 +677,9 @@ def supervise_external_acceptance(
     The supervisor is outside LangGraph. It starts the normal API controller and observes durable
     evidence. It kills/restarts that controller once, routes exactly one predeclared exceptional
     risk decision through the public API, verifies the candidate stayed unchanged while awaiting
-    the operator, and finally runs fresh read-only independent audits. It never writes target code.
+    the operator, and finally runs fresh read-only independent audits. It never writes target
+    code. Every deterministic scenario failure is classified: a machine-readable failure record
+    (failure kind, interrupt kind, progress snapshot) is written before the error propagates.
     """
 
     if poll_seconds <= 0:
@@ -584,6 +696,9 @@ def supervise_external_acceptance(
     api = _start_api(config, run_id_hint)
     progress: SupervisorProgress | None = None
     observer: ScheduledRunController | None = None
+    pinned: ProjectConfig | None = None
+    run_id: str | None = None
+    success_evidence_written = False
     try:
         if existing_project is None:
             _api_json(
@@ -614,16 +729,21 @@ def supervise_external_acceptance(
                 )
             except (OSError, ValidationError) as exc:
                 raise AcceptanceSupervisorError(
-                    f"invalid supervisor progress journal: {exc}"
+                    f"invalid supervisor progress journal: {exc}",
+                    failure_kind="journal_invalid",
                 ) from exc
             if progress.run_id != run_id:
-                raise AcceptanceSupervisorError("supervisor progress journal run identity mismatch")
+                raise AcceptanceSupervisorError(
+                    "supervisor progress journal run identity mismatch",
+                    failure_kind="journal_mismatch",
+                )
         else:
             progress = SupervisorProgress(run_id=run_id, expected_risk_flag=expected_risk_flag)
             _atomic_json(progress_path, progress.model_dump(mode="json"))
         if progress.expected_risk_flag != expected_risk_flag:
             raise AcceptanceSupervisorError(
-                "existing supervisor journal was created for a different expected risk flag"
+                "existing supervisor journal was created for a different expected risk flag",
+                failure_kind="journal_mismatch",
             )
 
         observer = _observer()
@@ -636,7 +756,8 @@ def supervise_external_acceptance(
             after_pid = api.process.pid
             if before_pid == after_pid:
                 raise AcceptanceSupervisorError(
-                    "controller restart did not change process identity"
+                    "controller restart did not change process identity",
+                    failure_kind="restart_identity",
                 )
             progress = progress.model_copy(
                 update={
@@ -658,7 +779,8 @@ def supervise_external_acceptance(
             _atomic_json(progress_path, progress.model_dump(mode="json"))
         elif not progress.automatic_recovery_observed:
             raise AcceptanceSupervisorError(
-                "supervisor journal records a restart without proven automatic recovery"
+                "supervisor journal records a restart without proven automatic recovery",
+                failure_kind="journal_invalid",
             )
 
         if not progress.hitl_done:
@@ -674,13 +796,16 @@ def supervise_external_acceptance(
             if action != "approve":
                 raise AcceptanceSupervisorError(
                     "external acceptance requires the injected risk to be explicitly approved; "
-                    f"operator returned {action!r}"
+                    f"operator returned {action!r}",
+                    failure_kind="operator_rejected",
+                    interrupt_kind="risk_policy",
                 )
             after = _candidate_fingerprint(observer, run_id)
             no_manual_edit = before == after
             if not no_manual_edit:
                 raise AcceptanceSupervisorError(
-                    "candidate changed while the exceptional HITL decision was pending"
+                    "candidate changed while the exceptional HITL decision was pending",
+                    failure_kind="candidate_changed",
                 )
             _api_json(
                 api.base_url,
@@ -700,7 +825,8 @@ def supervise_external_acceptance(
             _atomic_json(progress_path, progress.model_dump(mode="json"))
         elif not progress.no_manual_code_edit:
             raise AcceptanceSupervisorError(
-                "supervisor journal does not prove an unchanged candidate during HITL"
+                "supervisor journal does not prove an unchanged candidate during HITL",
+                failure_kind="journal_invalid",
             )
 
         _wait_for_convergence(api, run_id, deadline, poll_seconds)
@@ -736,6 +862,7 @@ def supervise_external_acceptance(
         checks, audit = _run_final_audit(pinned, run_id, terminal, base_supervisor)
         supervisor = base_supervisor.model_copy(update={"final_independent_checks": checks})
         _atomic_json(output_path, supervisor.model_dump(mode="json"))
+        success_evidence_written = True
         audit_path = pinned.state_dir / "evidence" / run_id / "external-final-audit.json"
         _atomic_json(audit_path, audit.model_dump(mode="json"))
 
@@ -747,6 +874,23 @@ def supervise_external_acceptance(
         report_path = pinned.state_dir / "evidence" / run_id / "external-acceptance-report.json"
         _atomic_json(report_path, report.model_dump(mode="json"))
         return report
+    except AcceptanceSupervisorError as exc:
+        # Deterministic terminal classification for every failed acceptance attempt: the
+        # supervisor writes a machine-readable failure record (failure kind, interrupt kind,
+        # progress snapshot) before the original error propagates. The pending interrupt is
+        # never consumed and nothing is approved on this path. If the success-path supervisor
+        # evidence was already written, the record is skipped so it can never clobber it.
+        if run_id is not None and not success_evidence_written:
+            _write_failure_record(
+                output_path=output_path,
+                config=pinned if pinned is not None else config,
+                project_id=project_id,
+                run_id=run_id,
+                exc=exc,
+                progress=progress,
+                expected_risk_flag=expected_risk_flag,
+            )
+        raise
     finally:
         if api.process.poll() is None:
             api.stop()
