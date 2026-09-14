@@ -6,8 +6,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
-from converge_orchestrator.acceptance_cli import _acceptance_preflight, supervise
+from converge_orchestrator.acceptance_cli import _acceptance_preflight, app, supervise
 from converge_orchestrator.acceptance_supervisor import AcceptanceSupervisorError
 from converge_orchestrator.github import GitHubError, RemotePolicy, RequiredCheck
 
@@ -138,3 +139,17 @@ def test_supervise_stops_before_controller_when_remote_preflight_fails(tmp_path:
         )
 
     supervisor.assert_not_called()
+
+
+def test_acceptance_cli_click_app_builds_cleanly() -> None:
+    """Building the click app must succeed for every registered command.
+
+    Typer constructs each command's parameters lazily at invocation time, so a malformed option
+    (for example a tuple ``help=`` from a stray trailing comma) only surfaces when the CLI is
+    actually invoked. ``--help`` on the group forces every command's parameters to be built.
+    """
+
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "supervise" in result.output

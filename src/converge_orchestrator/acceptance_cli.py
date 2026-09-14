@@ -121,7 +121,7 @@ def supervise(
             "--output",
             help=(
                 "Supervisor evidence or deterministic failure record JSON written by the "
-                "command, not hand-authored after the run.",
+                "command, not hand-authored after the run."
             ),
         ),
     ] = Path("acceptance-supervisor.json"),
