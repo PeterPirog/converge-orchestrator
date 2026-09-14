@@ -120,8 +120,8 @@ def supervise(
         typer.Option(
             "--output",
             help=(
-                "Supervisor evidence JSON written by the command, not hand-authored "
-                "after the run."
+                "Supervisor evidence or deterministic failure record JSON written by the "
+                "command, not hand-authored after the run.",
             ),
         ),
     ] = Path("acceptance-supervisor.json"),
