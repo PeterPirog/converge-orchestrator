@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -7,8 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
+
+from converge_orchestrator.git import diff
 from converge_orchestrator.graph_service import build_graph
 from converge_orchestrator.models import CIResult, PullRequestInfo
+from converge_orchestrator.persistence import open_checkpointer
 from converge_orchestrator.spec import compile_contract
 
 
@@ -197,6 +203,145 @@ def test_canonical_graph_converges_one_requirement_without_hitl(tmp_path: Path) 
     assert result["iteration"] == 1
     assert result["task"] is None
     assert agent_calls == ["planner", "builder", "reviewer"]
+
+
+def test_risk_policy_pause_exposes_exact_candidate_fingerprint(tmp_path: Path) -> None:
+    """The paused risk_policy checkpoint exposes the exact candidate fingerprint.
+
+    Regression for the V17 acceptance abort (run ``3209c39ac88741e0ba4942e68aa30d31``):
+    ``WorkflowState`` did not declare ``risk_fingerprint``/``risk_report`` channels, so
+    LangGraph silently dropped review()'s writes. The paused checkpoint and the interrupt
+    payload then carried no fingerprint and the external supervisor fail-closed with
+    ``fingerprint_missing`` at the legitimate risk gate instead of approving the exact
+    candidate it had already validated.
+    """
+    repo, _origin = _repository(tmp_path)
+    requirements = tmp_path / "architecture.md"
+    requirements.write_text(
+        "# Goal\n"
+        "ARCH-001 The generated repository must contain RESULT.txt with the exact text done.\n",
+        encoding="utf-8",
+    )
+    requirement_id = compile_contract(requirements).requirements[0].id
+    assert requirement_id == "ARCH-001"
+    config_path = _configuration(tmp_path, repo, requirements)
+
+    def fake_invoke(_adapter, role, _prompt, cwd):
+        if role == "planner":
+            task = {
+                "id": "E2E-001",
+                "requirement_ids": [requirement_id],
+                "title": "Satisfy the deterministic smoke requirement",
+                "objective": "Create RESULT.txt with the exact required content.",
+                "allowed_paths": ["RESULT.txt"],
+                "acceptance": ["RESULT.txt contains exactly done followed by a newline."],
+                "max_diff_lines": 10,
+                "risk": "medium",
+                "risk_flags": ["forbidden_public_api_change"],
+                "change_kind": "docs",
+            }
+            return SimpleNamespace(ok=True, output=json.dumps(task), context=None)
+        if role == "builder":
+            Path(cwd, "RESULT.txt").write_text("done\n", encoding="utf-8")
+            return SimpleNamespace(ok=True, output="candidate written", context=None)
+        if role == "reviewer":
+            return SimpleNamespace(
+                ok=True,
+                output=json.dumps(
+                    {
+                        "verdict": "pass",
+                        "findings": [],
+                        "confidence": 1.0,
+                    }
+                ),
+                context=None,
+            )
+        raise AssertionError(f"unexpected agent role: {role}")
+
+    class FakeGitHubAdapter:
+        head_branch: str | None = None
+
+        def __init__(self, config):
+            self.config = config
+
+        def ensure_pull_request(self, *, head, base, title, body):
+            del base, title, body
+            type(self).head_branch = head
+            head_sha = _git(self.config.repo_path, "rev-parse", head)
+            return PullRequestInfo(
+                number=17,
+                url="https://github.invalid/example/convergence-target/pull/17",
+                head_sha=head_sha,
+                state="open",
+            )
+
+        def ci_status(self, head_sha):
+            return CIResult(status="pass", head_sha=head_sha, checks=[])
+
+        def merge(self, number):
+            assert number == 17
+            branch = type(self).head_branch
+            assert branch is not None
+            head_sha = _git(self.config.repo_path, "rev-parse", branch)
+            _git(self.config.repo_path, "push", "origin", f"{branch}:main")
+            return head_sha
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    checkpointer, db = open_checkpointer(state_dir)
+    try:
+        graph = build_graph(checkpointer=checkpointer)
+        graph_config = {"configurable": {"thread_id": "e2e-risk-thread"}}
+        initial = {
+            "project_id": "e2e",
+            "config_path": str(config_path),
+            "run_id": "e2e-risk-run",
+            "thread_id": "e2e-risk-thread",
+        }
+        with (
+            patch("converge_orchestrator.opencode.OpenCodeAdapter.invoke", new=fake_invoke),
+            patch("converge_orchestrator.workflow.GitHubAdapter", FakeGitHubAdapter),
+            patch("converge_orchestrator.ci.GitHubAdapter", FakeGitHubAdapter),
+        ):
+            try:
+                graph.invoke(initial, config=graph_config)
+            except GraphInterrupt:  # pragma: no cover - version-dependent surfacing
+                pass
+            snapshot = graph.get_state(graph_config)
+
+            assert snapshot.next == ("human",)
+            values = dict(snapshot.values)
+            assert values["status"] == "reviewed"
+            fingerprint = values["risk_fingerprint"]
+            assert isinstance(fingerprint, str) and fingerprint
+            expected = hashlib.sha256(
+                diff(Path(values["worktree"]), "main").encode("utf-8")
+            ).hexdigest()
+            assert fingerprint == expected
+
+            interrupts = list(getattr(snapshot, "interrupts", ()) or ())
+            for task in getattr(snapshot, "tasks", ()) or ():
+                interrupts.extend(getattr(task, "interrupts", ()) or ())
+            payloads = [
+                item.value
+                if isinstance(item.value, dict)
+                else {"kind": "human", "value": item.value}
+                for item in interrupts
+            ]
+            assert any(
+                payload.get("kind") == "risk_policy"
+                and payload.get("risk_fingerprint") == fingerprint
+                and isinstance(payload.get("risk_report"), dict)
+                for payload in payloads
+            )
+
+            result = graph.invoke(
+                Command(resume={"action": "approve"}), config=graph_config
+            )
+    finally:
+        db.close()
+
+    assert result["status"] == "converged"
     assert (repo / "RESULT.txt").read_text(encoding="utf-8") == "done\n"
     assert _git(repo, "rev-parse", "HEAD") == _git(repo, "rev-parse", "origin/main")
     assert not (tmp_path / "worktrees" / "e2e-001").exists()

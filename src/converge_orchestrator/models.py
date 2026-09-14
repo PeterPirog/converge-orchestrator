@@ -551,6 +551,8 @@ class WorkflowState(TypedDict, total=False):
     ci: dict[str, Any] | None
     risk_flags: list[str]
     approved_risk_flags: list[str]
+    risk_report: dict[str, Any] | None
+    risk_fingerprint: str | None
     human_decisions: list[dict[str, Any]]
     status: str
     message: str
