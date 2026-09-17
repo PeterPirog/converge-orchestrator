@@ -14,6 +14,12 @@ _DATABASE_URL_ENV = "CONVERGE_DATABASE_URL"
 _CONTROL_DB_ENV = "CONVERGE_CONTROL_DB"
 _STRICT_MSGPACK_ENV = "LANGGRAPH_STRICT_MSGPACK"
 _SCHEMA_PROBE_THREAD = "__converge_schema_probe__"
+# The checkpoint database is read on every status poll while the workflow thread writes large
+# checkpoints with a long-lived connection. In rollback-journal mode those writes take the
+# database EXCLUSIVE lock and block concurrent readers (observed as multi-second status stalls
+# during long model phases in external acceptance V20); WAL readers never block behind a
+# writer. A bounded busy_timeout keeps contended writers queueing instead of erroring early.
+_SQLITE_CHECKPOINT_BUSY_TIMEOUT_SECONDS = 30.0
 
 
 def configured_database_url() -> str | None:
@@ -63,7 +69,17 @@ def open_checkpointer(
         db = sqlite3.connect(
             state_dir / "langgraph.sqlite",
             check_same_thread=False,
+            timeout=_SQLITE_CHECKPOINT_BUSY_TIMEOUT_SECONDS,
         )
+        try:
+            db.execute("PRAGMA journal_mode = WAL")
+            db.execute(
+                "PRAGMA busy_timeout = "
+                f"{int(_SQLITE_CHECKPOINT_BUSY_TIMEOUT_SECONDS * 1000)}"
+            )
+        except sqlite3.DatabaseError:
+            db.close()
+            raise
         return SqliteSaver(db), db
 
     _require_strict_msgpack()

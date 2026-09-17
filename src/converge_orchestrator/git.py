@@ -40,6 +40,8 @@ def _git_lines(repo: Path, *args: str, timeout: int = 300) -> list[str]:
     result = subprocess.run(
         ["git", *args],
         cwd=repo,
+        encoding="utf-8",
+        errors="replace",
         text=True,
         capture_output=True,
         timeout=timeout,

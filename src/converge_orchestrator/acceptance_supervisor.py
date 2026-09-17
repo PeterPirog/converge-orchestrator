@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,18 @@ _REQUIRED_REVIEW_ROLES = {
 }
 _DEFAULT_POLL_SECONDS = 1.0
 _API_START_TIMEOUT_SECONDS = 30.0
+# Bounded transport recovery for the supervisor's control-plane reads. External acceptance V20
+# showed the driver dying with a bare TimeoutError escaping _api_json (no retry, no structured
+# failure record) after ~16s controller stalls. The recovery below is finite, only ever applied
+# to idempotent GET polls, and every attempt is recorded as durable evidence.
+_API_TRANSPORT_RETRIES = 3
+_API_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0)
+_API_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
+
+# Active transport-attempt observers (installed by supervise_external_acceptance and by tests).
+# Every retry/recovery/exhaustion record is forwarded to each observer; the supervisor's sink
+# appends JSONL evidence next to the controller log for the run.
+_TRANSPORT_ATTEMPT_SINKS: list[Callable[[dict[str, Any]], None]] = []
 
 
 class AcceptanceSupervisorError(RuntimeError):
@@ -49,7 +62,8 @@ class AcceptanceSupervisorError(RuntimeError):
 
     ``failure_kind`` and ``interrupt_kind`` carry a structured, machine-readable classification
     of the deterministic scenario failure. Callers must never parse the human-readable message
-    to recover this information.
+    to recover this information. ``transport_attempts`` carries the bounded retry evidence when
+    the failure is transport-class; it is None for non-transport failures.
     """
 
     def __init__(
@@ -58,10 +72,12 @@ class AcceptanceSupervisorError(RuntimeError):
         *,
         failure_kind: str | None = None,
         interrupt_kind: str | None = None,
+        transport_attempts: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(message)
         self.failure_kind = failure_kind
         self.interrupt_kind = interrupt_kind
+        self.transport_attempts = transport_attempts
 
 
 class FinalAuditLane(BaseModel):
@@ -112,6 +128,7 @@ class SupervisorFailureRecord(BaseModel):
     expected_risk_flag: str
     failure_kind: str
     interrupt_kind: str | None = None
+    transport_attempts: list[dict[str, Any]] | None = None
     detail: str
     progress: dict[str, Any] = Field(default_factory=dict)
     recorded_at: str
@@ -169,6 +186,7 @@ def _write_failure_record(
         expected_risk_flag=expected_risk_flag,
         failure_kind=exc.failure_kind or "acceptance_supervisor_error",
         interrupt_kind=exc.interrupt_kind,
+        transport_attempts=exc.transport_attempts,
         detail=str(exc),
         progress=progress.model_dump(mode="json") if progress is not None else {},
         recorded_at=datetime.now(UTC).isoformat(),
@@ -182,6 +200,34 @@ def _write_failure_record(
         return
 
 
+def _append_jsonl_line(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _record_transport_attempt(record: dict[str, Any]) -> None:
+    """Forward one transport attempt record to every active sink.
+
+    Sink write failures are deliberately swallowed: retry evidence must never mask the original
+    transport error or change the fail-closed outcome (same rationale as _write_failure_record).
+    """
+    for sink in list(_TRANSPORT_ATTEMPT_SINKS):
+        try:
+            sink(dict(record))
+        except OSError:
+            pass
+
+
+@contextmanager
+def _transport_attempt_sink(sink: Callable[[dict[str, Any]], None]):
+    _TRANSPORT_ATTEMPT_SINKS.append(sink)
+    try:
+        yield
+    finally:
+        _TRANSPORT_ATTEMPT_SINKS.remove(sink)
+
+
 def _api_json(
     base_url: str,
     token: str,
@@ -190,25 +236,106 @@ def _api_json(
     payload: dict[str, Any] | None = None,
     *,
     timeout: float = 15.0,
+    retries: int = _API_TRANSPORT_RETRIES,
+    backoff_seconds: tuple[float, ...] = _API_RETRY_BACKOFF_SECONDS,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> Any:
+    """Call the Converge API with bounded, idempotent-only transport recovery.
+
+    Only idempotent control-plane reads (``method == "GET"``) are ever retried, and only for
+    transport-class failures: read timeouts, connection errors, and HTTP 502/503/504. The retry
+    budget is finite (default: three retries with 1/2/4s backoff) and deterministic. POSTs (run
+    creation, risk decisions) are attempted exactly once: an ambiguous transport failure on a
+    side-effecting request must stay ambiguous and fail closed, never be automatically replayed.
+    Every failed attempt is recorded (attempt number, failure class, delay, outcome) to the
+    active transport sinks, and exhaustion raises a structured AcceptanceSupervisorError so the
+    deterministic failure record path fires instead of leaking a bare TimeoutError.
+    """
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {"Authorization": f"Bearer {token}"}
     if data is not None:
         headers["Content-Type"] = "application/json"
-    request = Request(base_url + path, data=data, headers=headers, method=method)
-    try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback URL only
-            raw = response.read().decode("utf-8")
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+    retryable = method == "GET"
+    attempts_allowed = 1 + (max(0, retries) if retryable else 0)
+    attempts: list[dict[str, Any]] = []
+    for attempt_index in range(attempts_allowed):
+        record = {
+            "attempt": attempt_index + 1,
+            "method": method,
+            "path": path,
+            "failure_class": None,
+            "delay_seconds": None,
+            "outcome": "ok" if attempt_index == 0 else "recovered",
+        }
+        request = Request(base_url + path, data=data, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback URL only
+                raw = response.read().decode("utf-8")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            record["failure_class"] = f"http_{exc.code}"
+            may_retry = retryable and exc.code in _API_RETRYABLE_HTTP_STATUS
+            if may_retry and attempt_index + 1 < attempts_allowed:
+                delay = backoff_seconds[min(attempt_index, len(backoff_seconds) - 1)]
+                record["delay_seconds"] = delay
+                record["outcome"] = "retry"
+                attempts.append(record)
+                _record_transport_attempt(record)
+                sleeper(delay)
+                continue
+            record["outcome"] = (
+                "exhausted"
+                if may_retry
+                else ("not_retried" if exc.code in _API_RETRYABLE_HTTP_STATUS else "not_retryable")
+            )
+            attempts.append(record)
+            _record_transport_attempt(record)
+            transport_class = may_retry or exc.code in _API_RETRYABLE_HTTP_STATUS
+            raise AcceptanceSupervisorError(
+                f"Converge API {method} {path} returned HTTP {exc.code}: {detail[:1000]}",
+                failure_kind="transport_exhausted" if transport_class else None,
+                transport_attempts=attempts if transport_class else None,
+            ) from exc
+        except TimeoutError as exc:
+            failure_class = "timeout"
+            transport_error = exc
+        except URLError as exc:
+            failure_class = f"url_error_{exc.reason}"
+            transport_error = exc
+        except OSError as exc:
+            failure_class = type(exc).__name__
+            transport_error = exc
+        else:
+            if attempt_index > 0:
+                attempts.append(record)
+                _record_transport_attempt(record)
+            try:
+                return json.loads(raw) if raw else None
+            except json.JSONDecodeError as parse_exc:
+                raise AcceptanceSupervisorError(
+                    f"Converge API {method} {path} returned invalid JSON: {parse_exc}",
+                    failure_kind="transport_invalid_response",
+                ) from parse_exc
+        # Transport-class failure (timeout/connection/unavailable): retry only when the call is
+        # idempotent AND budget remains; otherwise fail closed with structured evidence.
+        record["failure_class"] = failure_class
+        if retryable and attempt_index + 1 < attempts_allowed:
+            delay = backoff_seconds[min(attempt_index, len(backoff_seconds) - 1)]
+            record["delay_seconds"] = delay
+            record["outcome"] = "retry"
+            attempts.append(record)
+            _record_transport_attempt(record)
+            sleeper(delay)
+            continue
+        record["outcome"] = "exhausted" if retryable else "not_retried"
+        attempts.append(record)
+        _record_transport_attempt(record)
         raise AcceptanceSupervisorError(
-            f"Converge API {method} {path} returned HTTP {exc.code}: {detail[:1000]}"
-        ) from exc
-    except URLError as exc:
-        raise AcceptanceSupervisorError(
-            f"Converge API {method} {path} is unavailable: {exc.reason}"
-        ) from exc
-    return json.loads(raw) if raw else None
+            f"Converge API {method} {path} transport recovery exhausted after "
+            f"{len(attempts)} attempt(s): last failure {failure_class}",
+            failure_kind="transport_exhausted",
+            transport_attempts=attempts,
+        ) from transport_error
 
 
 def _reserve_loopback_port() -> int:
@@ -694,6 +821,12 @@ def supervise_external_acceptance(
     existing_project, unfinished = _project_and_unfinished_run(resolved_config, project_id)
     run_id_hint = str(unfinished["id"]) if unfinished else f"new-{project_id}"
     api = _start_api(config, run_id_hint)
+    transport_log_path = config.state_dir / "acceptance" / run_id_hint / "transport-attempts.jsonl"
+
+    def _transport_sink(record: dict[str, Any]) -> None:
+        _append_jsonl_line(transport_log_path, record)
+
+    _TRANSPORT_ATTEMPT_SINKS.append(_transport_sink)
     progress: SupervisorProgress | None = None
     observer: ScheduledRunController | None = None
     pinned: ProjectConfig | None = None
@@ -892,5 +1025,6 @@ def supervise_external_acceptance(
             )
         raise
     finally:
+        _TRANSPORT_ATTEMPT_SINKS.remove(_transport_sink)
         if api.process.poll() is None:
             api.stop()

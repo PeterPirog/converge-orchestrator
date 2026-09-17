@@ -206,6 +206,8 @@ def _postgres_backup(database_url: str, destination: Path) -> None:
     result = subprocess.run(
         [executable, "--format=custom", "--file", str(destination)],
         env=env,
+        encoding="utf-8",
+        errors="replace",
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

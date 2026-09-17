@@ -87,6 +87,8 @@ def _validate_postgres_archive(archive: Path) -> tuple[str, str]:
     try:
         result = subprocess.run(
             [pg_restore, "--list", str(archive)],
+            encoding="utf-8",
+            errors="replace",
             text=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -167,6 +169,8 @@ def _materialize_restore_script(
     try:
         result = subprocess.run(
             [pg_restore, "--exit-on-error", "--file", str(script), str(archive)],
+            encoding="utf-8",
+            errors="replace",
             text=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -223,6 +227,8 @@ def _apply_restore_script(
                 str(script),
             ],
             env=env,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

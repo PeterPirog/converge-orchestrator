@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -8,6 +10,7 @@ import pytest
 from converge_orchestrator.persistence import (
     PersistenceBackend,
     configured_database_url,
+    open_checkpointer,
     setup_postgres,
 )
 from converge_orchestrator.registry import ControlRegistry
@@ -88,3 +91,52 @@ def test_postgres_setup_requires_explicit_database_url(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="CONVERGE_DATABASE_URL"):
         setup_postgres()
+
+
+def test_checkpoint_sqlite_uses_wal_with_bounded_busy_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
+
+    checkpointer, db = open_checkpointer(tmp_path)
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+    finally:
+        db.close()
+
+
+def test_checkpoint_sqlite_readers_stay_responsive_during_writer_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A checkpoint writer must never block status readers (external acceptance V20 stall).
+
+    Before the WAL fix, langgraph.sqlite ran in rollback-journal mode: a workflow-thread write
+    transaction took the database EXCLUSIVE lock and status-poll readers blocked (or errored)
+    behind it, stalling the supervisor's 15s-timeout GET. WAL lets readers proceed on the last
+    committed snapshot while a writer holds its exclusive transaction.
+    """
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
+
+    checkpointer, db = open_checkpointer(tmp_path)
+    try:
+        path = tmp_path / "langgraph.sqlite"
+        writer = sqlite3.connect(path, timeout=0.1)
+        reader = sqlite3.connect(path, timeout=0.1)
+        try:
+            writer.execute("PRAGMA busy_timeout = 100")
+            writer.execute("BEGIN EXCLUSIVE")
+            reader.execute("PRAGMA busy_timeout = 100")
+            started = time.monotonic()
+            rows = reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            elapsed = time.monotonic() - started
+            assert rows[0] == 0
+            assert elapsed < 2.0, "checkpoint reader was blocked behind the writer"
+        finally:
+            reader.close()
+            writer.rollback()
+            writer.close()
+    finally:
+        db.close()

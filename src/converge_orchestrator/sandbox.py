@@ -525,6 +525,8 @@ class ExecutionSandbox:
                 argv,
                 cwd=cwd,
                 env=process_env,
+                encoding="utf-8",
+                errors="replace",
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -535,6 +537,8 @@ class ExecutionSandbox:
             subprocess.run(
                 [policy.engine, "rm", "-f", container_name],
                 cwd=cwd,
+                encoding="utf-8",
+                errors="replace",
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
