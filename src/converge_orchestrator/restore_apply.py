@@ -212,6 +212,8 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

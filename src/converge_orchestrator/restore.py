@@ -150,6 +150,8 @@ def _check_bundle(
         result = subprocess.run(
             [executable, "bundle", "list-heads", str(bundle)],
             cwd=project_dir,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
