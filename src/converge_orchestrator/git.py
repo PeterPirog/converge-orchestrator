@@ -25,6 +25,28 @@ def _git(repo: Path, *args: str, timeout: int = 300) -> str:
     return result.stdout.strip()
 
 
+def _git_stdout(repo: Path, *args: str, timeout: int = 300) -> str:
+    """Run a git command and return only its stdout.
+
+    Unlike `_git`, this captures stdout and stderr separately so that git's
+    diagnostic output (CRLF/EOL warnings, etc.) never contaminates the
+    semantic candidate diff used for fingerprinting.
+    """
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise GitError(f"{result.stdout}{result.stderr}".strip())
+    return result.stdout
+
+
 def _git_lines(repo: Path, *args: str, timeout: int = 300) -> list[str]:
     """Run a path-listing git command and return only its stdout lines.
 
@@ -273,8 +295,8 @@ def create_worktree(
 
 
 def diff(worktree: Path, base_branch: str) -> str:
-    committed = _git(worktree, "diff", f"origin/{base_branch}...HEAD")
-    working = _git(worktree, "diff", "HEAD")
+    committed = _git_stdout(worktree, "diff", f"origin/{base_branch}...HEAD")
+    working = _git_stdout(worktree, "diff", "HEAD")
     return f"{committed}\n{working}".strip()
 
 
