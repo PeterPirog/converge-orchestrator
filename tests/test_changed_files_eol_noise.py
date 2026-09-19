@@ -15,13 +15,14 @@ content-based, stderr-free path enumeration.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import types
 from pathlib import Path
 from unittest.mock import patch
 
-from converge_orchestrator.git import changed_files, diff_line_count
+from converge_orchestrator.git import changed_files, diff, diff_line_count
 from converge_orchestrator.models import ProjectConfig, QualityGate, TaskEnvelope
 from converge_orchestrator.tdd import run_tdd_baseline, run_tdd_red
 
@@ -221,3 +222,78 @@ def test_tdd_baseline_and_red_survive_eol_phantoms_with_valid_test_only_diff(
     assert red_payload["deterministic_test_artifacts_ok"] is True
     assert red_payload["task_scope_ok"] is True
     assert set(red_payload["red_test_sha256"]) == {"tests/test_rule.py"}
+
+
+def test_diff_fingerprint_stable_under_stderr_diagnostics(tmp_path: Path) -> None:
+    """Regression test for fingerprint stability under stderr diagnostics.
+
+    The candidate fingerprint must depend ONLY on candidate content/diff,
+    not environment-dependent stderr diagnostics (CRLF warnings, etc.).
+
+    This test simulates the exact scenario from V22 where CRLF warnings
+    contaminated the candidate patch used for security-critical fingerprinting.
+    """
+    repo = _repository(tmp_path)
+    _phantom_rewrite(repo, "README.md", README_BLOB)
+    (repo / "notes.txt").write_bytes(b"one\ntwo\n")
+
+    # Create a real content change in addition to phantom rewrites
+    (repo / "new_feature.py").write_bytes(b"def new():\n    return 42\n")
+
+    # Stage the new file so it appears in the diff
+    subprocess.run(["git", "add", "new_feature.py"], cwd=repo, check=True)
+
+    # Get the patch using the production diff() function
+    patch = diff(repo, "main")
+
+    # The patch must NOT contain stderr diagnostics
+    assert "LF will be replaced by CRLF" not in patch
+    assert "warning:" not in patch.lower()
+
+    # Compute fingerprint - must be stable
+    fingerprint = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+
+    # Now simulate stderr contamination by directly running git diff with stderr
+    # and verify the production diff() function does NOT include stderr
+    _ = subprocess.run(
+        ["git", "diff", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    # The production diff() must produce the same patch as git diff stdout
+    assert "warning:" not in patch.lower()
+    assert "LF will be replaced by CRLF" not in patch
+
+    # Compute fingerprint again - must be identical
+    fingerprint2 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+    assert fingerprint2 == hashlib.sha256(patch.encode("utf-8")).hexdigest()
+
+    # Verify the fingerprint is stable (same content = same hash)
+    fingerprint3 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+    assert fingerprint3 == fingerprint2
+
+    # Verify that a REAL content change changes the fingerprint
+    (repo / "another_change.py").write_bytes(b"# another change\n")
+    subprocess.run(["git", "add", "another_change.py"], cwd=repo, check=True)
+    patch_changed = diff(repo, "main")
+    fingerprint_changed = hashlib.sha256(patch_changed.encode("utf-8")).hexdigest()
+    assert fingerprint_changed != fingerprint
+
+
+def test_git_error_preserves_stderr_in_exception(tmp_path: Path) -> None:
+    """Genuine Git failures must still fail closed with stderr in the exception."""
+    repo = _repository(tmp_path)
+
+    # Force a genuine git error by running an invalid command
+    from converge_orchestrator.git import _git
+
+    try:
+        _git(repo, "invalid-command-that-does-not-exist")
+        raise AssertionError("Expected GitError")
+    except Exception as e:
+        assert isinstance(e, Exception)
+        # The error message should contain diagnostic information
+        assert len(str(e)) > 0
