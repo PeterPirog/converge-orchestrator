@@ -15,7 +15,7 @@ from .acceptance_supervisor import (
 )
 from .config import load_config, load_run_config_snapshot
 from .github import GitHubAdapter, GitHubError
-from .persistence import configured_control_db_path
+from .persistence import configured_control_db_path, configured_database_url
 from .runtime_service import ScheduledRunController
 
 app = typer.Typer(no_args_is_help=True)
@@ -65,6 +65,12 @@ def _acceptance_preflight(config_path: Path) -> dict[str, Any]:
         "policy_source": policy.source,
         "strict": policy.strict,
         "required_checks": [item.as_dict() for item in policy.required_checks],
+        "control_backend": {
+            "kind": "postgres" if configured_database_url() else "sqlite",
+            "db_path": str(configured_control_db_path())
+            if configured_database_url() is None
+            else None,
+        },
     }
 
 
