@@ -98,7 +98,12 @@ python -m converge_orchestrator.acceptance_cli preflight \
   --config /path/to/acceptance/V24/converge.yaml
 ```
 
-Required credential environment variables (e.g., `HAL_API_KEY`, `OPENWEBUI_API_KEY`, `CONVERGE_API_TOKEN`) must already be present in the deployment environment. Do not put secret values in documentation or repository files.
+Required provider/GitHub credentials (e.g., `HAL_API_KEY`, `OPENWEBUI_API_KEY`) must already be available
+through their approved deployment environment/credential stores. Do not put secret values in documentation or
+repository files.
+
+`CONVERGE_API_TOKEN` is generated internally by the canonical acceptance supervisor for its child FastAPI
+controller and is not an operator-provisioned acceptance secret.
 
 The target must exercise at least two independently useful mandatory requirements so convergence
 requires at least two merged task/PR/CI cycles. Do not split one trivial edit into artificial tasks
