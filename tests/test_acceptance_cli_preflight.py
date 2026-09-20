@@ -20,7 +20,9 @@ def _config() -> SimpleNamespace:
     )
 
 
-def test_acceptance_preflight_requires_authoritative_required_ci(tmp_path: Path) -> None:
+def test_acceptance_preflight_requires_authoritative_required_ci(
+    tmp_path: Path, monkeypatch
+) -> None:
     config = _config()
     policy = RemotePolicy(
         base_branch="main",
@@ -32,6 +34,11 @@ def test_acceptance_preflight_requires_authoritative_required_ci(tmp_path: Path)
     )
     adapter = Mock()
     adapter.remote_policy.return_value = policy
+    # Set explicit control DB for SQLite mode acceptance
+    explicit_db = tmp_path / "control.sqlite"
+    explicit_db.touch()
+    monkeypatch.setenv("CONVERGE_CONTROL_DB", str(explicit_db))
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
 
     with (
         patch("converge_orchestrator.acceptance_cli.load_config", return_value=config),
@@ -47,6 +54,10 @@ def test_acceptance_preflight_requires_authoritative_required_ci(tmp_path: Path)
         "policy_source": "rulesets",
         "strict": True,
         "required_checks": [{"context": "test (3.13)", "app_id": 15368}],
+        "control_backend": {
+            "kind": "sqlite",
+            "db_path": str(explicit_db.resolve()),
+        },
     }
 
 

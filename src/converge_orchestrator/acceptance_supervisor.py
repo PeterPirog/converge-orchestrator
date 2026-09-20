@@ -28,7 +28,7 @@ from .config import load_config, load_run_config_snapshot
 from .git import diff
 from .models import ProjectConfig, ReviewResult
 from .opencode import OpenCodeAdapter
-from .persistence import configured_control_db_path
+from .persistence import configured_control_db_path, configured_database_url
 from .prompts import contract_excerpt
 from .quality import effective_quality_gates
 from .runtime_service import ScheduledRunController
@@ -424,6 +424,29 @@ def _validate_acceptance_preconditions(config: ProjectConfig) -> None:
         problems.append(
             "acceptance target must expose at least one required deterministic quality gate"
         )
+
+    # External acceptance requires an explicit durable control backend identity.
+    # In SQLite mode (no CONVERGE_DATABASE_URL), CONVERGE_CONTROL_DB must be explicitly
+    # configured to an absolute, stable path. CWD-relative fallback is not a stable
+    # durable identity and can silently split control-plane identity across processes.
+    database_url = configured_database_url()
+    if database_url is None:
+        control_db_env = os.environ.get("CONVERGE_CONTROL_DB")
+        if not control_db_env or not control_db_env.strip():
+            raise AcceptanceSupervisorError(
+                "external acceptance requires explicit CONVERGE_CONTROL_DB environment variable "
+                "in SQLite mode; CWD-relative .converge/control.sqlite fallback is not a stable "
+                "durable control-plane identity",
+                failure_kind="control_db_not_explicit",
+            )
+        # Verify the configured path resolves to an absolute path
+        control_db_path = Path(control_db_env.strip()).expanduser().resolve()
+        if not control_db_path.is_absolute():
+            raise AcceptanceSupervisorError(
+                f"CONVERGE_CONTROL_DB must resolve to an absolute path; got: {control_db_env}",
+                failure_kind="control_db_not_explicit",
+            )
+
     if problems:
         raise AcceptanceSupervisorError("acceptance preflight failed: " + "; ".join(problems))
 
