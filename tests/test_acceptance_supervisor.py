@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -456,3 +457,87 @@ def test_configured_control_db_path_resolves_relative_path(
     result = configured_control_db_path()
     assert result.is_absolute()
     assert result.name == "control.sqlite"
+
+
+def test_acceptance_preconditions_reject_relative_control_db_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """External acceptance must reject relative CONVERGE_CONTROL_DB paths."""
+    cfg = _config(tmp_path)
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("CONVERGE_CONTROL_DB", "relative/control.sqlite")
+
+    with (
+        patch("converge_orchestrator.acceptance_supervisor.is_read_only", return_value=True),
+        pytest.raises(AcceptanceSupervisorError) as exc_info,
+    ):
+        _validate_acceptance_preconditions(cfg)
+
+    assert exc_info.value.failure_kind == "control_db_not_explicit"
+    assert "CONVERGE_CONTROL_DB" in str(exc_info.value)
+
+
+def test_acceptance_preconditions_relative_path_rejected_across_cwd(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Relative CONVERGE_CONTROL_DB must be rejected regardless of CWD.
+
+    This directly represents the V23 incident: same relative path from
+    different CWDs would resolve to different control registries.
+    """
+    cfg = _config(tmp_path)
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("CONVERGE_CONTROL_DB", "relative/control.sqlite")
+
+    # Create two distinct temporary working directories
+    cwd_a = tmp_path / "cwd_a"
+    cwd_b = tmp_path / "cwd_b"
+    cwd_a.mkdir()
+    cwd_b.mkdir()
+
+    original_cwd = Path.cwd()
+    try:
+        for cwd in (cwd_a, cwd_b):
+            os.chdir(cwd)
+            with patch(
+                "converge_orchestrator.acceptance_supervisor.is_read_only",
+                return_value=True,
+            ), pytest.raises(AcceptanceSupervisorError) as exc_info:
+                _validate_acceptance_preconditions(cfg)
+
+            assert exc_info.value.failure_kind == "control_db_not_explicit"
+            assert "CONVERGE_CONTROL_DB" in str(exc_info.value)
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_acceptance_preconditions_absolute_control_db_succeeds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Explicit absolute CONVERGE_CONTROL_DB should succeed."""
+    cfg = _config(tmp_path)
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
+    explicit_db = tmp_path / "explicit-control.sqlite"
+    explicit_db.touch()
+    monkeypatch.setenv("CONVERGE_CONTROL_DB", str(explicit_db))
+
+    with patch("converge_orchestrator.acceptance_supervisor.is_read_only", return_value=True):
+        _validate_acceptance_preconditions(cfg)
+
+
+def test_acceptance_preconditions_whitespace_control_db_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Whitespace-only CONVERGE_CONTROL_DB should fail."""
+    cfg = _config(tmp_path)
+    monkeypatch.delenv("CONVERGE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("CONVERGE_CONTROL_DB", "  \t\n  ")
+
+    with (
+        patch("converge_orchestrator.acceptance_supervisor.is_read_only", return_value=True),
+        pytest.raises(AcceptanceSupervisorError) as exc_info,
+    ):
+        _validate_acceptance_preconditions(cfg)
+
+    assert exc_info.value.failure_kind == "control_db_not_explicit"
+    assert "CONVERGE_CONTROL_DB" in str(exc_info.value)

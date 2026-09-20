@@ -439,13 +439,18 @@ def _validate_acceptance_preconditions(config: ProjectConfig) -> None:
                 "durable control-plane identity",
                 failure_kind="control_db_not_explicit",
             )
-        # Verify the configured path resolves to an absolute path
-        control_db_path = Path(control_db_env.strip()).expanduser().resolve()
-        if not control_db_path.is_absolute():
+        # Verify the configured path IS an absolute path BEFORE resolving.
+        # A relative path would resolve relative to CWD, which is exactly the
+        # control-plane identity split this guard prevents.
+        candidate = Path(control_db_env.strip()).expanduser()
+        if not candidate.is_absolute():
             raise AcceptanceSupervisorError(
-                f"CONVERGE_CONTROL_DB must resolve to an absolute path; got: {control_db_env}",
+                "external acceptance requires absolute CONVERGE_CONTROL_DB path; "
+                "relative paths are not a stable durable identity",
                 failure_kind="control_db_not_explicit",
             )
+        # Now safe to resolve/canonicalize (result not used further, but ensures path is valid)
+        candidate.resolve()
 
     if problems:
         raise AcceptanceSupervisorError("acceptance preflight failed: " + "; ".join(problems))
