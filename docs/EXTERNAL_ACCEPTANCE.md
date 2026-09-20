@@ -25,6 +25,19 @@ Before starting the live run:
 7. provision model-gateway and GitHub credentials through the deployment environment, never in
    requirements, prompts, evidence or repository files;
 8. configure `auto_merge: true` and the required correctness, architecture and security review lanes.
+9. **configure an explicit durable control backend identity for the acceptance run:**
+
+   **SQLite mode (no `CONVERGE_DATABASE_URL`):**
+   - `CONVERGE_CONTROL_DB` must be explicitly set to an **absolute path**
+   - relative paths and the implicit `.converge/control.sqlite` fallback are rejected
+   - the path is validated as absolute BEFORE any resolution relative to CWD
+
+   **PostgreSQL mode (`CONVERGE_DATABASE_URL` set):**
+   - `CONVERGE_DATABASE_URL` is the durable control backend
+   - `CONVERGE_CONTROL_DB` is not required
+
+   A CWD-relative SQLite path can select different databases when commands are launched from different
+   directories, so release acceptance requires explicit stable persistence identity.
 
 Before spending model/runtime budget, run the acceptance-specific preflight:
 
@@ -37,7 +50,55 @@ production GitHub policy adapter for the configured base branch. It fails closed
 be read authoritatively, the branch has no required status checks, origin/repository identity does not
 match, or GitHub authentication/transport is unavailable. `supervise` runs the same preflight
 automatically, so a target that cannot satisfy the release CI gate is rejected before the controller or
-any model session is started. The preflight output contains only non-secret policy metadata.
+any model session is started.
+
+On success, the preflight output includes a sanitized `control_backend` identity:
+
+SQLite mode:
+```json
+"control_backend": {
+  "kind": "sqlite",
+  "db_path": "/absolute/path/to/control.sqlite"
+}
+```
+
+PostgreSQL mode:
+```json
+"control_backend": {
+  "kind": "postgres",
+  "db_path": null
+}
+```
+
+PostgreSQL connection credentials are never emitted. The output contains only non-secret policy metadata.
+
+### Windows PowerShell example
+
+```powershell
+Remove-Item Env:CONVERGE_DATABASE_URL -ErrorAction SilentlyContinue
+
+$env:CONVERGE_CONTROL_DB =
+    "C:\Users\Ila\ConvergeWorkspace\acceptance\V24\control.sqlite"
+
+$env:PYTHONPATH =
+    "C:\Users\Ila\ConvergeWorkspace\converge-orchestrator\src"
+
+python -m converge_orchestrator.acceptance_cli preflight `
+  --config C:\Users\Ila\ConvergeWorkspace\acceptance\V24\converge.yaml
+```
+
+### POSIX example
+
+```bash
+unset CONVERGE_DATABASE_URL
+export CONVERGE_CONTROL_DB=/absolute/path/to/control.sqlite
+export PYTHONPATH=/path/to/converge-orchestrator/src
+
+python -m converge_orchestrator.acceptance_cli preflight \
+  --config /path/to/acceptance/V24/converge.yaml
+```
+
+Required credential environment variables (e.g., `HAL_API_KEY`, `OPENWEBUI_API_KEY`, `CONVERGE_API_TOKEN`) must already be present in the deployment environment. Do not put secret values in documentation or repository files.
 
 The target must exercise at least two independently useful mandatory requirements so convergence
 requires at least two merged task/PR/CI cycles. Do not split one trivial edit into artificial tasks
