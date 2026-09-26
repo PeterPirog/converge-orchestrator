@@ -44,6 +44,8 @@ def build_graph(checkpointer: Any = None):
         ("pause_integrate", wf.pause_before_integrate),
         ("pause_pr", wf.pause_before_pr),
         ("pause_merge", wf.pause_before_merge),
+        ("pause_reviewer_recovery", wf.pause_before_reviewer_recovery),
+        ("pause_reviewer_recovery_wait", wf.pause_before_reviewer_recovery_wait),
         ("scout", scout),
         ("plan", targeted_plan),
         ("planner_human", planner_human_gate),
@@ -57,6 +59,8 @@ def build_graph(checkpointer: Any = None):
         ("review", wf.review),
         ("repair", wf.repair),
         ("replan", wf.replan),
+        ("reviewer_recovery", wf.reviewer_recovery),
+        ("review_execution_failure", wf.review_execution_failure),
         ("human", wf.human_gate),
         ("integrate", wf.integrate),
         ("pr", wf.create_pr),
@@ -141,13 +145,40 @@ def build_graph(checkpointer: Any = None):
         wf.route_after_review,
         {
             "integrate": "pause_integrate",
+            "reviewer_recovery": "pause_reviewer_recovery",
             "repair": "pause_repair",
             "replan": "replan",
             "human": "human",
             "spec_stop": "spec_stop",
+            "review_execution_failure": "review_execution_failure",
+            "pause_before_reviewer_recovery_wait": "pause_reviewer_recovery_wait",
         },
     )
     graph.add_edge("spec_stop", END)
+    graph.add_conditional_edges(
+        "reviewer_recovery",
+        wf.route_after_review,
+        {
+            "integrate": "pause_integrate",
+            "reviewer_recovery": "pause_reviewer_recovery",
+            "replan": "replan",
+            "human": "human",
+            "spec_stop": "spec_stop",
+            "review_execution_failure": "review_execution_failure",
+            "pause_before_reviewer_recovery_wait": "pause_reviewer_recovery_wait",
+        },
+    )
+    graph.add_conditional_edges(
+        "pause_reviewer_recovery",
+        wf.route_after_pause,
+        {"continue": "reviewer_recovery", "end": END},
+    )
+    graph.add_conditional_edges(
+        "pause_reviewer_recovery_wait",
+        wf.route_after_pause,
+        {"continue": "reviewer_recovery", "end": END},
+    )
+    graph.add_edge("review_execution_failure", END)
     graph.add_conditional_edges(
         "pause_repair",
         wf.route_after_pause,

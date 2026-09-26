@@ -267,6 +267,7 @@ class ProjectConfig(BaseModel):
     auto_discover_quality: bool = True
     max_repair_attempts: int = 3
     max_replans: int = 2
+    max_review_execution_retries: int = 3
     max_iterations: int = 50
     max_diff_lines_hard: int = 1000
     review_roles: list[str] = Field(default_factory=list)
@@ -336,6 +337,7 @@ class ProjectConfig(BaseModel):
         for key in (
             "max_repair_attempts",
             "max_replans",
+            "max_review_execution_retries",
             "max_iterations",
             "max_diff_lines_hard",
             "review_roles",
@@ -546,6 +548,8 @@ class WorkflowState(TypedDict, total=False):
     review_result: dict[str, Any] | None
     repair_attempts: int
     replan_attempts: int
+    review_execution_retries: int
+    reviewer_recovery_wake_at: str | None
     commit_sha: str | None
     pr: dict[str, Any] | None
     ci: dict[str, Any] | None

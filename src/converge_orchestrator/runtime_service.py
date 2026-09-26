@@ -32,6 +32,32 @@ def _wake_datetime(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _is_machine_wait_kind(kind: str) -> bool:
+    return kind in {"ci_wait", "reviewer_recovery_wait"}
+
+
+def _get_wait_status(kind: str) -> str:
+    if kind == "ci_wait":
+        return "waiting_ci"
+    if kind == "reviewer_recovery_wait":
+        return "waiting_review"
+    raise ValueError(f"Unknown machine wait kind: {kind}")
+
+
+def _schedule_wait(self: ScheduledRunController, run_id: str, kind: str, wake_at: str) -> None:
+    wake = _wake_datetime(wake_at)
+    delay = max(0.0, (wake - datetime.now(UTC)).total_seconds())
+    callback = self._resume_ci_wait if kind == "ci_wait" else self._resume_reviewer_recovery_wait
+    self._replace_timer(run_id, delay, callback)
+
+
+def _restore_wait(self: ScheduledRunController, run_id: str, kind: str, wake_at: str) -> None:
+    if self._foreign_lease_active(self.registry.get_run(run_id)):
+        return
+    self.registry.update_run(run_id, status=_get_wait_status(kind), node=kind)
+    self._schedule_wait(run_id, kind, wake_at)
+
+
 def _is_contention_error(exc: RuntimeError) -> bool:
     message = str(exc)
     return (
@@ -92,6 +118,7 @@ class ScheduledRunController(RunController):
     def restore_durable_runs(self, project_id: str | None = None) -> None:
         """Restore all local durable work or only one explicitly selected project."""
         self._restore_ci_waits(project_id)
+        self._restore_reviewer_recovery_waits(project_id)
         self._restore_recoverable_runs(project_id)
 
     def register_project(self, project_id: str, config_path: Path) -> dict[str, Any]:
@@ -126,7 +153,10 @@ class ScheduledRunController(RunController):
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         for existing in self.registry.runs_for_project(project_id):
-            if existing["status"] == "waiting_ci" and not existing["finished_at"]:
+            if (
+                existing["status"] in {"waiting_ci", "waiting_review"}
+                and not existing["finished_at"]
+            ):
                 raise RuntimeError(f"Project already has active run {existing['id']}")
         return super().start_run(project_id, thread_id=thread_id)
 
@@ -142,6 +172,14 @@ class ScheduledRunController(RunController):
                 raise
             self._cancel_timer(run_id)
             return self.registry.get_run(run_id)
+        if interrupt_payload and interrupt_payload.get("kind") == "reviewer_recovery_wait":
+            try:
+                self._submit(run_id, Command(resume="resume"))
+            except Exception:
+                self._schedule_reviewer_recovery_wait(run_id, str(interrupt_payload["wake_at"]))
+                raise
+            self._cancel_timer(run_id)
+            return self.registry.get_run(run_id)
 
         result = super().resume(run_id)
         self._cancel_timer(run_id)
@@ -154,6 +192,10 @@ class ScheduledRunController(RunController):
         if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
             raise RuntimeError(
                 "CI wait is machine-managed; use resume only for an early poll"
+            )
+        if interrupt_payload and interrupt_payload.get("kind") == "reviewer_recovery_wait":
+            raise RuntimeError(
+                "Reviewer recovery wait is machine-managed; use resume only for an early poll"
             )
         return super().decide(run_id, decision)
 
@@ -194,6 +236,11 @@ class ScheduledRunController(RunController):
             result["status"] = "waiting_ci"
             if not worker_alive and not remote_worker_active:
                 self._schedule_ci_wait(run_id, str(interrupt_payload["wake_at"]))
+        elif interrupt_payload and interrupt_payload.get("kind") == "reviewer_recovery_wait":
+            self.registry.update_run(run_id, status="waiting_review", node="reviewer_recovery_wait")
+            result["status"] = "waiting_review"
+            if not worker_alive and not remote_worker_active:
+                self._schedule_reviewer_recovery_wait(run_id, str(interrupt_payload["wake_at"]))
         elif (
             not interrupt_payload
             and result.get("next")
@@ -235,6 +282,9 @@ class ScheduledRunController(RunController):
         if interrupt_payload and interrupt_payload.get("kind") == "ci_wait":
             self.registry.update_run(run_id, status="waiting_ci", node="ci_wait")
             self._schedule_ci_wait(run_id, str(interrupt_payload["wake_at"]))
+        elif interrupt_payload and interrupt_payload.get("kind") == "reviewer_recovery_wait":
+            self.registry.update_run(run_id, status="waiting_review", node="reviewer_recovery_wait")
+            self._schedule_reviewer_recovery_wait(run_id, str(interrupt_payload["wake_at"]))
         elif not interrupt_payload and snapshot.get("next"):
             self.registry.update_run(
                 run_id,
@@ -334,6 +384,33 @@ class ScheduledRunController(RunController):
                     str(interrupt_payload["wake_at"]),
                 )
 
+    def _restore_reviewer_recovery_waits(self, project_id: str | None = None) -> None:
+        for record in self._unfinished_records(project_id):
+            if self._foreign_lease_active(record):
+                continue
+            snapshot = self._snapshot(record)
+            interrupt_payload = snapshot.get("interrupt")
+            if interrupt_payload and interrupt_payload.get("kind") == "reviewer_recovery_wait":
+                self.registry.update_run(
+                    record["id"],
+                    status="waiting_review",
+                    node="reviewer_recovery_wait",
+                )
+                self._schedule_reviewer_recovery_wait(
+                    record["id"],
+                    str(interrupt_payload["wake_at"]),
+                )
+
+    def _schedule_wait(self, run_id: str, kind: str, wake_at: str) -> None:
+        wake = _wake_datetime(wake_at)
+        delay = max(0.0, (wake - datetime.now(UTC)).total_seconds())
+        callback = (
+            self._resume_ci_wait
+            if kind == "ci_wait"
+            else self._resume_reviewer_recovery_wait
+        )
+        self._replace_timer(run_id, delay, callback)
+
     def _restore_recoverable_runs(self, project_id: str | None = None) -> None:
         """Reconcile terminal state or resume durable machine work after restart."""
         for record in self._unfinished_records(project_id):
@@ -375,6 +452,11 @@ class ScheduledRunController(RunController):
         wake = _wake_datetime(wake_at)
         delay = max(0.0, (wake - datetime.now(UTC)).total_seconds())
         self._replace_timer(run_id, delay, self._resume_ci_wait)
+
+    def _schedule_reviewer_recovery_wait(self, run_id: str, wake_at: str) -> None:
+        wake = _wake_datetime(wake_at)
+        delay = max(0.0, (wake - datetime.now(UTC)).total_seconds())
+        self._replace_timer(run_id, delay, self._resume_reviewer_recovery_wait)
 
     def _schedule_recoverable(
         self,
@@ -450,6 +532,34 @@ class ScheduledRunController(RunController):
                 )
                 return
             self._retry_after_contention(run_id, ci_wait=True)
+
+    def _resume_reviewer_recovery_wait(self, run_id: str, generation: int) -> None:
+        if not self._take_timer_generation(run_id, generation):
+            return
+        try:
+            record = self.registry.get_run(run_id)
+        except KeyError:
+            return
+        if record["finished_at"]:
+            return
+        if self._foreign_lease_active(record):
+            return
+
+        snapshot = self._snapshot(record)
+        interrupt_payload = snapshot.get("interrupt")
+        if not interrupt_payload or interrupt_payload.get("kind") != "reviewer_recovery_wait":
+            return
+        try:
+            self._submit(run_id, Command(resume="resume"))
+        except RuntimeError as exc:
+            if not _is_contention_error(exc):
+                self.registry.update_run(
+                    run_id,
+                    status="waiting_review",
+                    error=f"automatic reviewer recovery resume failed: {exc}",
+                )
+                return
+            self._retry_after_contention(run_id, ci_wait=False)
 
     def _resume_recoverable(self, run_id: str, generation: int) -> None:
         if not self._take_timer_generation(run_id, generation):

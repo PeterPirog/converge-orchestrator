@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -42,6 +43,16 @@ from .quality import required_gates_pass, run_quality_gates, run_scope_gate
 from .review_scope import scope_review
 from .risk import classify_repository_risk
 from .spec import compile_contract, is_read_only, sha256_file, write_contract
+
+# Bounded deterministic backoff between reviewer recovery attempts.
+# Fixed small delays make retries meaningful during short provider blips
+# while the schedule stays capped inside the pinned run wall-time/model-attempt budgets.
+# Tests can patch this if needed.
+_REVIEWER_RECOVERY_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 15.0, 30.0, 60.0, 60.0, 60.0)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 def _first_json_object(text: str) -> dict[str, Any]:
@@ -401,6 +412,40 @@ def pause_before_merge(state: WorkflowState) -> WorkflowState:
     return _safe_point(state, "before_merge")
 
 
+def pause_before_reviewer_recovery(state: WorkflowState) -> WorkflowState:
+    return _safe_point(state, "before_reviewer_recovery")
+
+
+def pause_before_reviewer_recovery_wait(state: WorkflowState) -> WorkflowState:
+    """Machine wait before retrying reviewer recovery after a transport failure.
+
+    This is a machine interrupt, not HITL. The wake time is checkpointed so the
+    controller can reconstruct the timer after restart, similar to ci_wait.
+    """
+    cfg = load_config(state["config_path"])
+    signals = ControlSignals(cfg.state_dir)
+    if not signals.pause_requested(state["run_id"]):
+        return state
+    decision = interrupt(
+        {
+            "kind": "reviewer_recovery_wait",
+            "run_id": state["run_id"],
+            "task": state.get("task"),
+            "status": state.get("status"),
+            "wake_at": state.get("reviewer_recovery_wake_at"),
+            "allowed": ["resume"],
+        }
+    )
+    action = decision.get("action") if isinstance(decision, dict) else decision
+    signals.clear_pause(state["run_id"])
+    if action != "resume":
+        raise ValueError(f"Unsupported reviewer recovery wait decision: {action}")
+    return {
+        **state,
+        "status": "reviewer_recovery_wait_elapsed",
+    }
+
+
 def route_after_pause(state: WorkflowState) -> str:
     return "end" if state.get("status") == "stopped" else "continue"
 
@@ -429,6 +474,7 @@ def plan(state: WorkflowState) -> WorkflowState:
         "approved_risk_flags": [],
         "risk_report": None,
         "risk_fingerprint": None,
+        "review_execution_retries": 0,
         "status": "planned",
     }
     store = _evidence(next_state)
@@ -593,7 +639,25 @@ def review(state: WorkflowState) -> WorkflowState:
         "review.json",
         review_payload,
     )
-    return {
+
+    # Detect if review failure was due to pure transport failure
+    # Check if all failed lanes have provider_failure_class == "transport"
+    review_context = context or {}
+    review_lanes = review_context.get("review_lanes", {})
+    transport_failure = False
+    if review_result.verdict == "reject" and review_lanes:
+        # Check if all rejecting lanes failed due to transport
+        rejecting_lanes = [
+            role for role, verdict in review_result.reviewers.items()
+            if verdict == "reject"
+        ]
+        if rejecting_lanes:
+            transport_failure = all(
+                review_lanes.get(role, {}).get("provider_failure_class") == "transport"
+                for role in rejecting_lanes
+            )
+
+    next_state: dict = {
         **state,
         "risk_flags": risk_flags,
         "approved_risk_flags": approved_risk_flags,
@@ -602,6 +666,17 @@ def review(state: WorkflowState) -> WorkflowState:
         "review_result": review_payload,
         "status": "reviewed",
     }
+
+    if transport_failure:
+        # Pure transport failure - increment review execution retries
+        # and route to reviewer recovery instead of semantic repair/replan
+        next_state["review_execution_retries"] = state.get("review_execution_retries", 0) + 1
+        next_state["status"] = "review_transport_failure"
+    else:
+        # Reset review execution retries on successful review or semantic rejection
+        next_state["review_execution_retries"] = 0
+
+    return next_state
 
 
 def _integration_decision(state: WorkflowState):
@@ -623,6 +698,24 @@ def _integration_decision(state: WorkflowState):
 
 def route_after_review(state: WorkflowState) -> str:
     cfg = load_config(state["config_path"])
+
+    # Check for reviewer transport failure FIRST - before integration decision
+    # This handles cases where review_result may not be fully populated
+    if state.get("status") == "review_transport_failure":
+        retries = state.get("review_execution_retries", 0)
+        if retries <= cfg.max_review_execution_retries:
+            return "reviewer_recovery"
+        # Exhausted reviewer recovery budget - terminal machine failure
+        return "review_execution_failure"
+
+    # Machine wait for reviewer recovery backoff
+    if state.get("status") == "reviewer_recovery_wait":
+        return "pause_before_reviewer_recovery_wait"
+
+    # Reviewer execution recovery exhausted - terminal machine failure
+    if state.get("status") == "review_execution_failed":
+        return "review_execution_failure"
+
     decision = _integration_decision(state)
     if decision.kind == DecisionKind.ALLOW:
         return "integrate"
@@ -630,6 +723,7 @@ def route_after_review(state: WorkflowState) -> str:
         return "spec_stop"
     if decision.kind == DecisionKind.INTERRUPT:
         return "human"
+
     if state.get("repair_attempts", 0) < cfg.max_repair_attempts:
         return "repair"
     if state.get("replan_attempts", 0) < cfg.max_replans:
@@ -663,6 +757,152 @@ def repair(state: WorkflowState) -> WorkflowState:
         "repair_attempts": repair_attempt,
         "message": result.output,
         "status": "repaired" if result.ok else "repair_failed",
+    }
+
+
+def reviewer_recovery(state: WorkflowState) -> WorkflowState:
+    """Re-invoke reviewers after a pure transport failure.
+
+    This node is reached when review() detected a pure transport failure
+    (provider_failure_class == "transport") and the reviewer execution
+    recovery budget has not been exhausted. It re-invokes the reviewer
+    fan-out without touching the candidate worktree.
+    """
+    cfg = load_config(state["config_path"])
+    task = TaskEnvelope.model_validate(state["task"])
+    requirements = _requirements(state)
+    worktree = Path(state["worktree"])
+    patch = diff(worktree, cfg.base_branch)
+    compliance_snapshot = ComplianceSnapshot.model_validate(state.get("compliance") or {})
+
+    store = _evidence(state)
+    store.append_event(
+        state["run_id"],
+        "reviewer_recovery",
+        {"task_id": task.id, "attempt": state.get("review_execution_retries", 0)},
+    )
+
+    result = OpenCodeAdapter(cfg).invoke(
+        "reviewer",
+        reviewer_prompt(task, patch, requirements, compliance_snapshot),
+        worktree,
+    )
+    if context := getattr(result, "context", None):
+        store.write_json(
+            state["run_id"],
+            task.id,
+            f"context-reviewer-recovery-{state.get('review_execution_retries', 0):02d}.json",
+            context,
+        )
+    if result.ok:
+        review_result = ReviewResult.model_validate(_json_object(result.output))
+    else:
+        review_result = ReviewResult(
+            verdict="reject",
+            findings=[
+                {
+                    "severity": "major",
+                    "reason": result.output,
+                    "required_fix": "Reviewer execution must succeed",
+                }
+            ],
+        )
+    review_result, scoping = scope_review(
+        review=review_result,
+        target_requirement_ids=set(task.requirement_ids),
+        requirements=requirements,
+        compliance=compliance_snapshot,
+    )
+    store.write_text(state["run_id"], task.id, "diff.patch", patch)
+    review_payload = review_result.model_dump(mode="json")
+    if scoping:
+        review_payload["scoping"] = scoping
+    store.write_json(
+        state["run_id"],
+        task.id,
+        "review.json",
+        review_payload,
+    )
+
+    # Check if recovery succeeded or if we still have transport failure
+    review_context = context or {}
+    review_lanes = review_context.get("review_lanes", {})
+    transport_failure = False
+    if review_result.verdict == "reject" and review_lanes:
+        rejecting_lanes = [
+            role for role, verdict in review_result.reviewers.items()
+            if verdict == "reject"
+        ]
+        if rejecting_lanes:
+            transport_failure = all(
+                review_lanes.get(role, {}).get("provider_failure_class") == "transport"
+                for role in rejecting_lanes
+            )
+
+    next_state: dict = {
+        **state,
+        "risk_flags": state.get("risk_flags", []),
+        "approved_risk_flags": state.get("approved_risk_flags", []),
+        "risk_report": state.get("risk_report"),
+        "risk_fingerprint": state.get("risk_fingerprint"),
+        "review_result": review_payload,
+        "status": "reviewed",
+    }
+
+    if transport_failure:
+        # Still transport failure - schedule a machine wait before next recovery attempt
+        # This uses the same durable machine-wait pattern as ci_wait
+        retries = next_state.get("review_execution_retries", 0)
+        if retries < cfg.max_review_execution_retries:
+            # Set wake time for durable machine wait
+            backoff = _REVIEWER_RECOVERY_BACKOFF_SECONDS[retries]
+            wake_at = (_utcnow() + timedelta(seconds=backoff)).isoformat()
+            next_state["reviewer_recovery_wake_at"] = wake_at
+            next_state["status"] = "reviewer_recovery_wait"
+        else:
+            # Exhausted reviewer recovery budget - route to terminal failure node
+            next_state["status"] = "review_execution_failed"
+    else:
+        # Recovery succeeded or semantic rejection - reset retry counter
+        next_state["review_execution_retries"] = 0
+
+    return next_state
+
+
+def review_execution_failure(state: WorkflowState) -> WorkflowState:
+    """Terminal node for exhausted reviewer execution recovery budget.
+
+    Writes durable failure evidence and sets status=failed so the control
+    registry reflects a deterministic machine failure. Does not invoke Builder
+    or mutate the candidate/worktree.
+    """
+    cfg = load_config(state["config_path"])
+    task = state.get("task")
+    review_execution_retries = state.get("review_execution_retries", 0)
+    max_retries = cfg.max_review_execution_retries
+
+    store = _evidence(state)
+    store.append_event(
+        state["run_id"],
+        "review_execution_failed",
+        {
+            "task_id": task.get("id") if isinstance(task, dict) else "unknown",
+            "failure_kind": "review_execution_exhausted",
+            "review_execution_retries": review_execution_retries,
+            "max_review_execution_retries": max_retries,
+            "risk_fingerprint": state.get("risk_fingerprint"),
+        },
+    )
+
+    return {
+        **state,
+        "status": "failed",
+        "message": (
+            "Reviewer execution recovery exhausted after "
+            f"{state.get('review_execution_retries', 0)} "
+            f"retries (max {max_retries}). "
+            "Last provider failure class: transport."
+        ),
     }
 
 
@@ -702,6 +942,7 @@ def replan(state: WorkflowState) -> WorkflowState:
         "approved_risk_flags": [],
         "risk_report": None,
         "risk_fingerprint": None,
+        "review_execution_retries": 0,
         "status": "replanning",
     }
 
@@ -711,6 +952,9 @@ def _human_kind(state: WorkflowState) -> str:
         return "ci_failure_budget"
     if state.get("status") == "iteration_budget_exhausted":
         return "iteration_budget"
+    if state.get("status") == "review_execution_exhausted":
+        # This should never reach human_gate since route_after_review routes to END
+        return "repair_replan_budget"
     if state.get("review_result"):
         decision = _integration_decision(state)
         if decision.kind == DecisionKind.INTERRUPT:
@@ -1013,6 +1257,7 @@ def refresh_from_main(state: WorkflowState) -> WorkflowState:
         "ci": None,
         "repair_attempts": 0,
         "replan_attempts": 0,
+        "review_execution_retries": 0,
         "risk_flags": [],
         "approved_risk_flags": [],
         "risk_report": None,
@@ -1042,6 +1287,8 @@ def build_graph(checkpointer=None):
         ("pause_integrate", pause_before_integrate),
         ("pause_pr", pause_before_pr),
         ("pause_merge", pause_before_merge),
+        ("pause_reviewer_recovery", pause_before_reviewer_recovery),
+        ("pause_reviewer_recovery_wait", pause_before_reviewer_recovery_wait),
         ("plan", plan),
         ("prepare_worktree", prepare_worktree),
         ("build", build),
@@ -1049,6 +1296,8 @@ def build_graph(checkpointer=None):
         ("review", review),
         ("repair", repair),
         ("replan", replan),
+        ("reviewer_recovery", reviewer_recovery),
+        ("review_execution_failure", review_execution_failure),
         ("human", human_gate),
         ("integrate", integrate),
         ("pr", create_pr),
@@ -1089,13 +1338,39 @@ def build_graph(checkpointer=None):
         route_after_review,
         {
             "integrate": "pause_integrate",
+            "reviewer_recovery": "pause_reviewer_recovery",
             "repair": "pause_repair",
             "replan": "replan",
             "human": "human",
             "spec_stop": "spec_stop",
+            "review_execution_failure": "review_execution_failure",
+            "pause_before_reviewer_recovery_wait": "pause_reviewer_recovery_wait",
         },
     )
     graph.add_edge("spec_stop", END)
+    graph.add_conditional_edges(
+        "reviewer_recovery",
+        route_after_review,
+        {
+            "integrate": "pause_integrate",
+            "reviewer_recovery": "pause_reviewer_recovery",
+            "replan": "replan",
+            "human": "human",
+            "spec_stop": "spec_stop",
+            "pause_before_reviewer_recovery_wait": "pause_reviewer_recovery_wait",
+        },
+    )
+    graph.add_conditional_edges(
+        "pause_reviewer_recovery",
+        route_after_pause,
+        {"continue": "reviewer_recovery", "end": END},
+    )
+    graph.add_conditional_edges(
+        "pause_reviewer_recovery_wait",
+        route_after_pause,
+        {"continue": "reviewer_recovery", "end": END},
+    )
+    graph.add_edge("review_execution_failure", END)
     graph.add_conditional_edges(
         "pause_repair",
         route_after_pause,
