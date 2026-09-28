@@ -210,6 +210,109 @@ def _evidence(state: WorkflowState) -> EvidenceStore:
     return EvidenceStore(cfg.state_dir / "evidence")
 
 
+def _check_frozen_red_violation(
+    state: WorkflowState,
+    phase: str,
+) -> WorkflowState | None:
+    """Check if frozen RED files were mutated. Returns violation state or None if clean."""
+    from .models import GateResult, TaskEnvelope
+    from .tdd import requires_tdd
+
+    if not requires_tdd(TaskEnvelope.model_validate(state["task"])):
+        return None
+
+    red = state.get("tdd_red_result")
+    if not red:
+        return None
+
+    # Handle both dict and GateResult
+    red_ok = red.ok if isinstance(red, GateResult) else red.get("ok", False)
+    if not red_ok:
+        return None
+
+    red_output = red.output if isinstance(red, GateResult) else red.get("output", "{}")
+    import json
+    red_details = json.loads(red_output)
+    if not red_details.get("red_test_sha256"):
+        return None
+
+    worktree = Path(state["worktree"])
+    store = _evidence(state)
+
+    all_unchanged, details = store.verify_frozen_red(
+        run_id=state["run_id"],
+        task_id=state["task"]["id"],
+        worktree=worktree,
+    )
+
+    if all_unchanged:
+        return None
+
+    # Mutation detected - restore exact authoritative bytes
+    restored = store.restore_frozen_red(
+        run_id=state["run_id"],
+        task_id=state["task"]["id"],
+        worktree=worktree,
+    )
+
+    # Write evidence of the violation
+    store.append_event(
+        state["run_id"],
+        "frozen_red_mutation",
+        {
+            "task_id": state["task"]["id"],
+            "phase": phase,
+            "paths": [
+                {
+                    "path": path,
+                    "expected_sha256": detail.get("expected_sha256"),
+                    "observed_sha256": detail.get("observed_sha256"),
+                    "status": detail.get("status"),
+                }
+                for path, detail in details.items()
+                if detail.get("status") != "unchanged"
+            ],
+            "restored_paths": list(restored.keys()),
+            "builder_phase": "build" if phase in ("pre_build", "post_build") else "repair",
+            "repair_attempt": (
+                state.get("repair_attempts", 0)
+                if phase not in ("pre_build", "post_build")
+                else None
+            ),
+            "snapshot_identity": state.get("frozen_red_snapshot_id"),
+        }
+    )
+
+    # Mark the attempt as invalid by returning a failure status
+    return {
+        **state,
+        "status": f"frozen_red_violation_{phase}",
+        "message": (
+            f"Builder {phase} mutated frozen RED test files. "
+            f"Exact authoritative bytes restored. Attempt invalidated."
+        ),
+        "frozen_red_violation": True,
+        "frozen_red_violation_phase": phase,
+        "frozen_red_violation_details": details,
+    }
+
+
+def _protect_frozen_red_on_entry(state: WorkflowState, phase: str) -> WorkflowState:
+    """Verify frozen RED on node entry. Returns violation state or original state if clean."""
+    violation = _check_frozen_red_violation(state, phase)
+    if violation:
+        return violation
+    return state
+
+
+def _protect_frozen_red_on_exit(state: WorkflowState, phase: str) -> WorkflowState:
+    """Verify frozen RED on node exit. Returns violation state or original state if clean."""
+    violation = _check_frozen_red_violation(state, phase)
+    if violation:
+        return violation
+    return state
+
+
 def _task_id(state: WorkflowState) -> str:
     task = state.get("task")
     return str(task.get("id")) if task else "run"
@@ -732,6 +835,12 @@ def route_after_review(state: WorkflowState) -> str:
 
 
 def repair(state: WorkflowState) -> WorkflowState:
+    """Semantic repair Builder with frozen RED self-reconciliation on entry and exit."""
+    # ON ENTRY: reconcile frozen RED from durable snapshot
+    state = _protect_frozen_red_on_entry(state, "pre_repair")
+    if state.get("frozen_red_violation"):
+        return state
+
     cfg = load_config(state["config_path"])
     task = TaskEnvelope.model_validate(state["task"])
     result = OpenCodeAdapter(cfg).invoke(
@@ -752,12 +861,16 @@ def repair(state: WorkflowState) -> WorkflowState:
             f"context-repair-{repair_attempt:02d}.json",
             context,
         )
-    return {
+
+    # ON EXIT: verify frozen RED after repair Builder runs
+    state = {
         **state,
         "repair_attempts": repair_attempt,
         "message": result.output,
         "status": "repaired" if result.ok else "repair_failed",
     }
+    state = _protect_frozen_red_on_exit(state, "post_repair")
+    return state
 
 
 def reviewer_recovery(state: WorkflowState) -> WorkflowState:
