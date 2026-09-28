@@ -233,7 +233,7 @@ def test_frozen_red_process_restart_reconciles_mutation_before_quality(tmp_path:
 
     # Find the worktree and frozen RED file
     worktree_dir = tmp_path / "worktrees"
-    candidate_dirs = list(worktree_dir.glob("ARCH-001-1*"))
+    candidate_dirs = list(worktree_dir.glob("arch-001-1*"))
     assert len(candidate_dirs) == 1, (
         f"Expected exactly one candidate worktree, found {candidate_dirs}"
     )
