@@ -560,3 +560,7 @@ class WorkflowState(TypedDict, total=False):
     human_decisions: list[dict[str, Any]]
     status: str
     message: str
+    frozen_red_snapshot_id: str | None
+    frozen_red_violation: bool
+    frozen_red_violation_phase: str | None
+    frozen_red_violation_details: dict[str, Any] | None

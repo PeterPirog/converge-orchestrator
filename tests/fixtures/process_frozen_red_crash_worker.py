@@ -122,6 +122,7 @@ def _patched_opencode_invoke(self, role: str, prompt: str, worktree: Path):
             test_file = worktree / "tests" / "test_rule.py"
             if test_file.exists():
                 test_file.write_bytes(b"def test_new_rule():\n    assert True\n")
+            time.sleep(0.5)
             print("DEBUG: Crashing process (os._exit(94))", flush=True)
             os._exit(94)
 
