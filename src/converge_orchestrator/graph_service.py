@@ -15,6 +15,7 @@ from .graph import (
     route_after_tdd_human,
     route_after_tdd_red,
     scout,
+    snapshot_frozen_red,
     tdd_baseline,
     tdd_human_gate,
     tdd_red_build,
@@ -53,6 +54,7 @@ def build_graph(checkpointer: Any = None):
         ("tdd_baseline", tdd_baseline),
         ("tdd_red_build", tdd_red_build),
         ("tdd_red_gate", tdd_red_gate),
+        ("snapshot_frozen_red", snapshot_frozen_red),
         ("tdd_human", tdd_human_gate),
         ("build", build),
         ("quality", quality),
@@ -113,8 +115,9 @@ def build_graph(checkpointer: Any = None):
         {"tdd_red": "tdd_red_build", "build": "build", "end": END},
     )
     graph.add_edge("tdd_red_build", "tdd_red_gate")
+    graph.add_edge("tdd_red_gate", "snapshot_frozen_red")
     graph.add_conditional_edges(
-        "tdd_red_gate",
+        "snapshot_frozen_red",
         route_after_tdd_red,
         {
             "build": "build",
@@ -128,6 +131,8 @@ def build_graph(checkpointer: Any = None):
         wf.route_after_pause,
         {"continue": "tdd_red_build", "end": END},
     )
+    graph.add_edge("tdd_red_build", "tdd_red_gate")
+    graph.add_edge("tdd_red_gate", "snapshot_frozen_red")
     graph.add_conditional_edges(
         "tdd_human",
         route_after_tdd_human,

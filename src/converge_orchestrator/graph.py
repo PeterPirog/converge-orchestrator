@@ -17,6 +17,11 @@ from .opencode import OpenCodeAdapter
 from .prompts import builder_prompt, contract_excerpt, tdd_red_prompt
 from .quality import run_quality_gates, run_scope_gate
 from .tdd import requires_tdd, run_tdd_baseline, run_tdd_green, run_tdd_red
+from .workflow import (
+    _check_frozen_red_violation,
+    _protect_frozen_red_on_entry,
+    _protect_frozen_red_on_exit,
+)
 
 
 class RepoScoutPayload(BaseModel):
@@ -367,11 +372,193 @@ def route_after_tdd_red(state: WorkflowState) -> str:
     return "human"
 
 
+def _frozen_red_snapshot_identity(state: WorkflowState) -> str:
+    """Create a stable identity for the frozen RED snapshot for this task."""
+    task = state.get("task")
+    if not task:
+        return "unknown"
+    task_id = task.get("id", "unknown")
+    red = state.get("tdd_red_result")
+    if not red:
+        return f"{task_id}-no-red"
+    red_details = json.loads(red.get("output", "{}"))
+    # Use the hash of the frozen test files as part of the identity
+    hashes = red_details.get("red_test_sha256", {})
+    hash_str = "".join(sorted(hashes.values())) if hashes else "no-hashes"
+    import hashlib
+    identity_hash = hashlib.sha256(hash_str.encode()).hexdigest()[:16]
+    return f"{task_id}-{identity_hash}"
+
+
+def snapshot_frozen_red(state: WorkflowState) -> WorkflowState:
+    """Snapshot exact bytes of verified frozen RED test files to durable storage.
+
+    This runs immediately after tdd_red_gate verifies the RED test.
+    The snapshot is stored outside the worktree and survives process death.
+    """
+    if not requires_tdd(TaskEnvelope.model_validate(state["task"])):
+        return state
+
+    red = _gate_from_state(state, "tdd_red_result")
+    if not red:
+        return state
+
+    # Handle both dict and GateResult
+    red_ok = red.ok if isinstance(red, GateResult) else red.get("ok", False)
+    if not red_ok:
+        return state
+
+    red_output = red.output if isinstance(red, GateResult) else red.get("output", "{}")
+    red_details = json.loads(red_output)
+    red_test_hashes = red_details.get("red_test_sha256", {})
+    if not red_test_hashes:
+        return state
+
+    worktree = Path(state["worktree"])
+    store = wf._evidence(state)
+
+    try:
+        store.snapshot_frozen_red(
+            run_id=state["run_id"],
+            task_id=state["task"]["id"],
+            worktree=worktree,
+            red_test_hashes=red_test_hashes,
+        )
+    except ValueError as exc:
+        # Hash mismatch at snapshot time - this should not happen if tdd_red_gate passed
+        return {
+            **state,
+            "status": "frozen_red_snapshot_failed",
+            "message": f"Failed to snapshot frozen RED: {exc}",
+        }
+
+    return {
+        **state,
+        "frozen_red_snapshot_id": _frozen_red_snapshot_identity(state),
+        "status": "frozen_red_snapshotted",
+    }
+
+
+def guard_frozen_red_before_build(state: WorkflowState) -> WorkflowState:
+    """Verify frozen RED files are intact before Builder runs."""
+    violation = _check_frozen_red_violation(state, "pre_build")
+    if violation:
+        return violation
+    return state
+
+
+def guard_frozen_red_after_build(state: WorkflowState) -> WorkflowState:
+    """Verify frozen RED files are intact after Builder runs."""
+    violation = _check_frozen_red_violation(state, "post_build")
+    if violation:
+        return violation
+    return state
+
+
+def guard_frozen_red_before_repair(state: WorkflowState) -> WorkflowState:
+    """Verify frozen RED files are intact before repair Builder runs."""
+    violation = _check_frozen_red_violation(state, "pre_repair")
+    if violation:
+        return violation
+    return state
+
+
+def guard_frozen_red_after_repair(state: WorkflowState) -> WorkflowState:
+    """Verify frozen RED files are intact after repair Builder runs."""
+    violation = _check_frozen_red_violation(state, "post_repair")
+    if violation:
+        return violation
+    return state
+
+
+def reconcile_frozen_red(state: WorkflowState) -> WorkflowState:
+    """Reconcile frozen RED files from durable snapshot after restart.
+
+    This runs during recovery to ensure any in-flight mutations are
+    detected and reverted before continuing.
+    """
+    if not requires_tdd(TaskEnvelope.model_validate(state["task"])):
+        return state
+
+    red = _gate_from_state(state, "tdd_red_result")
+    if not red:
+        return state
+
+    # Handle both dict and GateResult
+    red_ok = red.ok if isinstance(red, GateResult) else red.get("ok", False)
+    if not red_ok:
+        return state
+
+    red_output = red.output if isinstance(red, GateResult) else red.get("output", "{}")
+    red_details = json.loads(red_output)
+    if not red_details.get("red_test_sha256"):
+        return state
+
+    worktree = Path(state["worktree"])
+    store = wf._evidence(state)
+
+    all_unchanged, details = store.verify_frozen_red(
+        run_id=state["run_id"],
+        task_id=state["task"]["id"],
+        worktree=worktree,
+    )
+
+    if all_unchanged:
+        return state
+
+    # Mutation detected during recovery - restore and mark
+    restored = store.restore_frozen_red(
+        run_id=state["run_id"],
+        task_id=state["task"]["id"],
+        worktree=worktree,
+    )
+
+    store.append_event(
+        state["run_id"],
+        "frozen_red_mutation",
+        {
+            "task_id": state["task"]["id"],
+            "phase": "recovery_reconcile",
+            "paths": [
+                {
+                    "path": path,
+                    "expected_sha256": detail.get("expected_sha256"),
+                    "observed_sha256": detail.get("observed_sha256"),
+                    "status": detail.get("status"),
+                }
+                for path, detail in details.items()
+                if detail.get("status") != "unchanged"
+            ],
+            "restored_paths": list(restored.keys()),
+            "builder_phase": "recovery",
+            "snapshot_identity": _frozen_red_snapshot_identity(state),
+        }
+    )
+
+    return {
+        **state,
+        "status": "frozen_red_reconciled",
+        "message": (
+            "Frozen RED mutation detected during recovery reconciliation. "
+            "Exact authoritative bytes restored."
+        ),
+        "frozen_red_violation": True,
+        "frozen_red_violation_phase": "recovery_reconcile",
+        "frozen_red_violation_details": details,
+    }
+
+
 def pause_before_tdd_red_repair(state: WorkflowState) -> WorkflowState:
     return wf._safe_point(state, "before_tdd_red_repair")
 
 
 def build(state: WorkflowState) -> WorkflowState:
+    """Main implementation Builder with frozen RED self-reconciliation on entry and exit."""
+    # ON ENTRY: reconcile frozen RED from durable snapshot
+    state = _protect_frozen_red_on_entry(state, "pre_build")
+    if state.get("frozen_red_violation"):
+        return state
+
     cfg = load_config(state["config_path"])
     task = TaskEnvelope.model_validate(state["task"])
     result = OpenCodeAdapter(cfg).invoke(
@@ -383,11 +570,15 @@ def build(state: WorkflowState) -> WorkflowState:
         ),
         Path(state["worktree"]),
     )
-    return {
+
+    # ON EXIT: verify frozen RED after Builder runs
+    state = {
         **state,
         "message": result.output,
         "status": "built" if result.ok else "builder_failed",
     }
+    state = _protect_frozen_red_on_exit(state, "post_build")
+    return state
 
 
 def tdd_human_gate(state: WorkflowState) -> WorkflowState:
@@ -466,6 +657,12 @@ def build_graph(checkpointer: Any = None):
         ("tdd_baseline", tdd_baseline),
         ("tdd_red_build", tdd_red_build),
         ("tdd_red_gate", tdd_red_gate),
+        ("snapshot_frozen_red", snapshot_frozen_red),
+        ("guard_frozen_red_before_build", guard_frozen_red_before_build),
+        ("guard_frozen_red_after_build", guard_frozen_red_after_build),
+        ("guard_frozen_red_before_repair", guard_frozen_red_before_repair),
+        ("guard_frozen_red_after_repair", guard_frozen_red_after_repair),
+        ("reconcile_frozen_red", reconcile_frozen_red),
         ("tdd_human", tdd_human_gate),
         ("build", build),
         ("quality", quality),
@@ -508,11 +705,21 @@ def build_graph(checkpointer: Any = None):
         {"tdd_red": "tdd_red_build", "build": "build", "end": END},
     )
     graph.add_edge("tdd_red_build", "tdd_red_gate")
+    graph.add_edge("tdd_red_gate", "snapshot_frozen_red")
+    graph.add_edge("snapshot_frozen_red", "guard_frozen_red_before_build")
+    graph.add_edge("guard_frozen_red_before_build", "build")
+    graph.add_edge("build", "guard_frozen_red_after_build")
+    graph.add_edge("guard_frozen_red_after_build", "guard_quality")
+    graph.add_conditional_edges(
+        "guard_frozen_red_after_build",
+        lambda s: "end" if s.get("frozen_red_violation") else "continue",
+        {"continue": "guard_quality", "end": END},
+    )
     graph.add_conditional_edges(
         "tdd_red_gate",
         route_after_tdd_red,
         {
-            "build": "build",
+            "build": "snapshot_frozen_red",
             "repair": "pause_tdd_red_repair",
             "replan": "replan",
             "human": "tdd_human",
@@ -521,14 +728,24 @@ def build_graph(checkpointer: Any = None):
     graph.add_conditional_edges(
         "pause_tdd_red_repair",
         wf.route_after_pause,
-        {"continue": "tdd_red_build", "end": END},
+        {"continue": "guard_frozen_red_before_repair", "end": END},
+    )
+    graph.add_edge("guard_frozen_red_before_repair", "tdd_red_build")
+    graph.add_edge("tdd_red_build", "tdd_red_gate")
+    graph.add_edge("tdd_red_gate", "snapshot_frozen_red")
+    graph.add_edge("snapshot_frozen_red", "guard_frozen_red_after_repair")
+    graph.add_edge("guard_frozen_red_after_repair", "guard_quality")
+    graph.add_conditional_edges(
+        "guard_frozen_red_after_repair",
+        lambda s: "end" if s.get("frozen_red_violation") else "continue",
+        {"continue": "guard_quality", "end": END},
     )
     graph.add_conditional_edges(
         "tdd_human",
         route_after_tdd_human,
         {"replan": "replan", "end": END},
     )
-    graph.add_edge("build", "guard_quality")
+    graph.add_edge("guard_quality", "quality")
     graph.add_conditional_edges(
         "guard_quality",
         wf.route_after_guard,
