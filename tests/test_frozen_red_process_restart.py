@@ -297,7 +297,7 @@ def test_frozen_red_process_restart_reconciles_mutation_before_quality(tmp_path:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=30,
+        timeout=90,
     )
     assert recovered.returncode == 0, f"Recovery failed: {recovered.stdout}"
 

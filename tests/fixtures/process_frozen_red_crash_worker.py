@@ -265,18 +265,31 @@ def recover(registry_path: Path) -> int:
             controller = ScheduledRunController(registry_path)
             deadline = time.monotonic() + 60
             last_record: dict[str, Any] | None = None
+            last_signature: tuple[Any, ...] | None = None
+            last_heartbeat = 0.0
             while time.monotonic() < deadline:
                 records = controller.registry.runs_for_project("frozen-red-chaos")
                 if not records:
                     time.sleep(0.05)
                     continue
                 last_record = records[0]
-                print(
-                    f"RECOVER WORKER: status={last_record['status']}, "
-                    f"node={last_record.get('node')}, "
-                    f"finished={last_record['finished_at']}",
-                    flush=True,
+                signature = (
+                    last_record["status"],
+                    last_record.get("node"),
+                    last_record.get("error"),
+                    last_record["finished_at"],
                 )
+                now = time.monotonic()
+                if signature != last_signature or now - last_heartbeat >= 2.0:
+                    print(
+                        f"RECOVER WORKER: status={last_record['status']}, "
+                        f"node={last_record.get('node')}, "
+                        f"error={last_record.get('error')}, "
+                        f"finished={last_record['finished_at']}",
+                        flush=True,
+                    )
+                    last_signature = signature
+                    last_heartbeat = now
                 if last_record["finished_at"]:
                     if last_record["status"] not in ("completed", "pushed"):
                         raise RuntimeError(f"recovered run failed: {last_record}")
@@ -290,6 +303,7 @@ def recover(registry_path: Path) -> int:
             timer = controller._timers.get(last_record["id"] if last_record else "")
             diagnostics = {
                 "record": last_record,
+                "record_error": last_record.get("error") if last_record else None,
                 "snapshot": snapshot,
                 "timer_present": timer is not None,
                 "timer_alive": bool(timer and timer.is_alive()),
