@@ -425,7 +425,11 @@ class RunController:
         try:
             graph, db, graph_config = self._open_graph(record)
             try:
-                graph.invoke(input_value, config=graph_config)
+                graph.invoke(
+                    input_value,
+                    config=graph_config,
+                    durability="sync",
+                )
                 snapshot = self._snapshot_from_graph(graph, graph_config)
             finally:
                 db.close()
