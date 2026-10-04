@@ -81,6 +81,44 @@ def _json_object(text: str) -> dict:
     return payload
 
 
+def _review_result_output(text: str) -> ReviewResult:
+    """Return the review lane's ReviewResult answer from mixed narrative output.
+
+    Earlier complete JSON objects can be narrative artifacts. Validate every object and
+    select the last structurally valid result without synthesizing missing review fields.
+    """
+
+    stripped = text.strip()
+    try:
+        return ReviewResult.model_validate(json.loads(stripped))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    decoder = json.JSONDecoder()
+    candidates: list[dict] = []
+    index = 0
+    while index < len(stripped):
+        brace = stripped.find("{", index)
+        if brace == -1:
+            break
+        try:
+            parsed, end = decoder.raw_decode(stripped, brace)
+        except json.JSONDecodeError:
+            index = brace + 1
+            continue
+        index = max(end, brace + 1)
+        if isinstance(parsed, dict):
+            candidates.append(parsed)
+    for candidate in reversed(candidates):
+        try:
+            return ReviewResult.model_validate(candidate)
+        except (ValueError, TypeError):
+            continue
+    if candidates:
+        # Preserve the leading candidate's exact validation error for review evidence.
+        return ReviewResult.model_validate(candidates[0])
+    raise ValueError("reviewer did not return a JSON object") from None
+
+
 def _failed_review(role: str, reason: str) -> ReviewResult:
     return ReviewResult(
         verdict="reject",
@@ -104,7 +142,7 @@ def _normalize_review(role: str, result: AgentResult) -> ReviewResult:
             f"{role} execution failed with exit code {result.returncode}: {detail}",
         )
     try:
-        parsed = ReviewResult.model_validate(_json_object(result.output))
+        parsed = _review_result_output(result.output)
     except (ValueError, json.JSONDecodeError) as exc:
         return _failed_review(role, f"{role} returned invalid review JSON: {exc}")
 
