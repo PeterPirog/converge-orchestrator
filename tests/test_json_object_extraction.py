@@ -20,7 +20,7 @@ from converge_orchestrator.acceptance_supervisor import (
     AcceptanceSupervisorError,
     _parse_review,
 )
-from converge_orchestrator.models import TaskEnvelope
+from converge_orchestrator.models import AgentResult, ReviewResult, TaskEnvelope
 
 ENVELOPE = json.dumps(
     {
@@ -208,3 +208,139 @@ def test_decoys_only_preserve_first_candidate_validation_error() -> None:
 def test_no_json_raises_agent_error() -> None:
     with pytest.raises(ValueError, match="Agent did not return a JSON object"):
         workflow._task_envelope_output("Plain narrative answer without any JSON payload.")
+
+
+# --- Reviewer ReviewResult reply selection (V26 regression) ----------------------
+#
+# V26 captured fanout (isolated diagnostic ``v26-review-parser-final-capture``): the
+# security reviewer quoted the OpenCode permission rules as complete JSON objects in its
+# semantic narrative before delivering the final valid ReviewResult. The first-JSON
+# heuristic grabbed the permission-rule object, ``ReviewResult.model_validate`` failed
+# on the missing ``verdict``, and the lane was falsely rejected as a synthetic
+# "returned invalid review JSON" failure even though a structurally valid ReviewResult
+# existed later in the SAME AgentResult.output.
+
+PERMISSION_RULES = [
+    {"permission": "*", "action": "allow", "pattern": "*"},
+    {"permission": "*", "action": "deny", "pattern": "*"},
+    {"permission": "bash", "pattern": "*", "action": "deny"},
+]
+
+REVIEW_BODY = json.dumps(
+    {
+        "verdict": "reject",
+        "findings": [
+            {
+                "severity": "blocker",
+                "requirement_id": "REQ-F92FFC55BA",
+                "file": "shared_tools/fake_terminal.py",
+                "line": 11,
+                "reason": "Target deliverable is absent: no public simulate_command() exists.",
+                "required_fix": "Implement the additive public simulate_command.",
+            }
+        ],
+        "confidence": 0.97,
+    },
+    indent=2,
+)
+
+FALSE_REJECT_OUTPUT = "\n".join(
+    [
+        "Let me examine the diff.",
+        "The permission rules look odd:",
+        json.dumps(PERMISSION_RULES[0]),
+        json.dumps(PERMISSION_RULES[1]),
+        json.dumps(PERMISSION_RULES[2]),
+        "Continuing the review...",
+        "```json",
+        REVIEW_BODY,
+        "```",
+    ]
+)
+
+
+def test_permission_rule_decoys_before_valid_review_return_the_real_review() -> None:
+    review = opencode._review_result_output(FALSE_REJECT_OUTPUT)
+    assert review.verdict == "reject"
+    assert len(review.findings) == 1
+    assert review.findings[0].severity == "blocker"
+    assert review.findings[0].file == "shared_tools/fake_terminal.py"
+    assert review.confidence == 0.97
+
+
+def test_finding_object_first_then_valid_review_selects_the_review() -> None:
+    text = "\n".join(
+        [
+            "Assessment notes.",
+            json.dumps(
+                {
+                    "severity": "major",
+                    "reason": "Missing edge-case coverage.",
+                    "required_fix": "Add tests.",
+                }
+            ),
+            "```json",
+            REVIEW_BODY,
+            "```",
+        ]
+    )
+    review = opencode._review_result_output(text)
+    assert review.verdict == "reject"
+    assert review.findings[0].reason.startswith("Target deliverable")
+
+
+def test_two_valid_reviews_select_the_last_one() -> None:
+    earlier = json.dumps({"verdict": "pass", "findings": [], "confidence": 0.5}, indent=2)
+    review = opencode._review_result_output("\n\n".join([earlier, REVIEW_BODY]))
+    assert review.verdict == "reject"
+
+
+def test_only_permission_rules_fail_closed() -> None:
+    text = "\n".join(json.dumps(rule) for rule in PERMISSION_RULES)
+    with pytest.raises(ValidationError, match="Field required"):
+        opencode._review_result_output(text)
+
+
+def test_only_finding_object_without_verdict_fails_closed() -> None:
+    with pytest.raises(ValidationError, match="Field required"):
+        opencode._review_result_output(
+            json.dumps(
+                {
+                    "severity": "major",
+                    "reason": "x",
+                    "required_fix": "y",
+                }
+            )
+        )
+
+
+def test_malformed_prose_without_valid_json_fails_closed() -> None:
+    with pytest.raises(ValueError, match="reviewer did not return a JSON object"):
+        opencode._review_result_output("Plain narrative answer without any JSON payload.")
+
+
+def test_malformed_brace_prose_without_valid_json_fails_closed() -> None:
+    text = 'I checked the rules {"command", "stdout"} and found no JSON verdict.'
+    with pytest.raises(ValueError, match="reviewer did not return a JSON object"):
+        opencode._review_result_output(text)
+
+
+def test_pure_reviewresult_json_unchanged() -> None:
+    review = opencode._review_result_output(REVIEW_BODY)
+    assert review == ReviewResult.model_validate_json(REVIEW_BODY)
+
+
+def test_permission_decoys_preserve_first_candidate_validation_error() -> None:
+    text = "\n\n".join([json.dumps(PERMISSION_RULES[0]), "{}"])
+    with pytest.raises(ValidationError, match="Field required"):
+        opencode._review_result_output(text)
+
+
+def test_normalize_review_accepts_review_quoted_after_permission_rules() -> None:
+    result = AgentResult(role="security_reviewer", ok=True, output=FALSE_REJECT_OUTPUT)
+    review = opencode._normalize_review("security_reviewer", result)
+    assert review.verdict == "reject"
+    assert review.reviewers == {"security_reviewer": "reject"}
+    assert len(review.findings) == 1
+    assert "Target deliverable" in review.findings[0].reason
+    assert "returned invalid review JSON" not in review.findings[0].reason
