@@ -185,7 +185,7 @@ def test_real_executor_process_death_retries_same_prompt_and_model(tmp_path: Pat
                 "    if ledger.exists()",
                 "    else []",
                 ")",
-                "record = {'argv': sys.argv[1:], 'prompt': sys.argv[-1]}",
+                "record = {'argv': sys.argv[1:], 'prompt': sys.stdin.read()}",
                 "with ledger.open('a', encoding='utf-8') as fh:",
                 "    fh.write(json.dumps(record, sort_keys=True) + '\\n')",
                 "if not existing:",

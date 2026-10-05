@@ -355,6 +355,7 @@ class ExecutionSandbox:
         cwd: Path,
         timeout: int = 1800,
         shell: bool = False,
+        input: str | None = None,
         env: dict[str, str] | None = None,
         scope: SandboxScope = "quality",
         writable_cwd: bool = True,
@@ -375,6 +376,7 @@ class ExecutionSandbox:
                     cwd=cwd,
                     timeout=timeout,
                     shell=shell,
+                    input=input,
                     env=_host_agent_environment(self.config, env, agent_role),
                     inherit_env=False,
                 )
@@ -383,6 +385,7 @@ class ExecutionSandbox:
                 cwd=cwd,
                 timeout=timeout,
                 shell=shell,
+                input=input,
                 env=env,
             )
         self._validate_network_policy()
@@ -395,6 +398,7 @@ class ExecutionSandbox:
             cwd=cwd,
             timeout=timeout,
             shell=shell,
+            input=input,
             env=env,
             scope=scope,
             writable_cwd=writable_cwd,
@@ -412,6 +416,7 @@ class ExecutionSandbox:
         cwd: Path,
         timeout: int,
         shell: bool,
+        input: str | None,
         env: dict[str, str] | None,
         scope: SandboxScope,
         writable_cwd: bool,
@@ -461,6 +466,8 @@ class ExecutionSandbox:
             "--workdir",
             container_cwd,
         ]
+        if input is not None:
+            argv.append("--interactive")
         if policy.read_only_root:
             argv.append("--read-only")
         if policy.memory:
@@ -528,6 +535,7 @@ class ExecutionSandbox:
                 encoding="utf-8",
                 errors="replace",
                 text=True,
+                input=input,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 timeout=timeout,

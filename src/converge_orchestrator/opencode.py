@@ -396,11 +396,11 @@ class OpenCodeAdapter:
         # continuity comes from LangGraph state and explicit evidence, not hidden model history.
         # The --dir value is a declared path argument: ExecutionSandbox translates it into
         # the container-visible cwd bind destination so OpenCode operates inside the sandbox
-        # workdir instead of receiving a Windows host path in a Linux container. The prompt
-        # itself is never path-rewritten.
+        # workdir instead of receiving a Windows host path in a Linux container. The prompt is
+        # streamed over stdin so large review payloads never exceed the Windows process argv
+        # limit, and is never path-rewritten.
         cmd += ["--dir", str(cwd)]
         path_arguments = (len(cmd) - 1,)
-        cmd.append(rendered_prompt)
         profile_overrides = {role: model_profile} if model_profile else None
         runtime_config = json.dumps(
             runtime_opencode_config(
@@ -416,6 +416,7 @@ class OpenCodeAdapter:
                 cmd,
                 cwd=cwd,
                 timeout=attempt_timeout,
+                input=rendered_prompt,
                 env={
                     # Stable OpenCode loads inline config after project config and `.opencode`.
                     # This keeps orchestrator safety policy authoritative even for a target

@@ -52,6 +52,7 @@ def run_configured(
     timeout: int = 1800,
     *,
     shell: bool = False,
+    input: str | None = None,
     env: dict[str, str] | None = None,
     inherit_env: bool = True,
 ) -> subprocess.CompletedProcess[str]:
@@ -70,6 +71,7 @@ def run_configured(
         encoding="utf-8",
         errors="replace",
         text=True,
+        input=input,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
