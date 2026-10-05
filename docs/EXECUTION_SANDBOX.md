@@ -167,6 +167,9 @@ Container invocation wymusza m.in.:
 --tmpfs /tmp:rw,nosuid,nodev,...
 ```
 
+Gdy wywołanie przekazuje dane przez standardowe wejście, Converge dodaje `--interactive` bez TTY,
+aby przesłać stdin do procesu w kontenerze i zamknąć strumień po wysłaniu danych.
+
 Na POSIX `user: host` uruchamia proces z UID/GID operatora. `user: image` pozostawia usera z obrazu i
 powinien być używany tylko wtedy, gdy permissions bind mountów są świadomie przygotowane dla tego
 użytkownika.

@@ -117,6 +117,7 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     assert "--cap-drop=ALL" in argv
     assert "no-new-privileges:true" in argv
     assert "--read-only" in argv
+    assert "--interactive" not in argv
     assert argv[argv.index("--entrypoint") + 1] == ""
     assert argv[argv.index("--network") + 1] == "converge-ai"
     assert _PINNED_TEST_IMAGE in argv
@@ -126,6 +127,34 @@ def test_container_agent_uses_hardened_runtime_and_allowlisted_env(
     assert "OPENWEBUI_API_KEY" in passed
     assert "PROJECT_TOKEN" in passed
     assert "HOST_ONLY_VALUE" not in passed
+
+
+def test_container_streams_large_input_without_putting_it_in_docker_argv(
+    tmp_path: Path,
+) -> None:
+    cfg = _container_config(tmp_path)
+    prompt = "x" * 40_000
+    completed = types.SimpleNamespace(returncode=0, stdout="ok")
+
+    with (
+        patch(
+            "converge_orchestrator.sandbox.run_configured",
+            return_value=_internal_network_result(),
+        ),
+        patch("converge_orchestrator.sandbox.subprocess.run", return_value=completed) as run,
+    ):
+        ExecutionSandbox(cfg).run(
+            ["opencode", "run"],
+            cwd=cfg.repo_path,
+            scope="agent",
+            writable_cwd=False,
+            input=prompt,
+        )
+
+    argv = run.call_args.args[0]
+    assert "--interactive" in argv
+    assert prompt not in argv
+    assert run.call_args.kwargs["input"] == prompt
 
 
 def test_builder_worktree_and_git_pointer_have_distinct_permissions(

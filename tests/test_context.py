@@ -128,6 +128,22 @@ def test_opencode_invocation_is_fresh_and_writes_context_ledger(tmp_path: Path) 
     assert records[0]["estimated_output_tokens"] == 1
 
 
+def test_opencode_sends_large_prompt_over_stdin_not_process_argv(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, context_tokens=200_000)
+    adapter = OpenCodeAdapter(cfg)
+    prompt = "review:" + ("x" * 40_000)
+    fake_result = type("Result", (), {"returncode": 0, "stdout": "ok"})()
+
+    target = "converge_orchestrator.opencode.ExecutionSandbox.run"
+    with patch(target, return_value=fake_result) as runner:
+        result = adapter.invoke("planner", prompt, cfg.repo_path)
+
+    assert result.ok
+    command = runner.call_args.args[0]
+    assert prompt not in command
+    assert runner.call_args.kwargs["input"] == prompt
+
+
 def test_core_budget_failure_does_not_launch_opencode(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     adapter = OpenCodeAdapter(cfg)
