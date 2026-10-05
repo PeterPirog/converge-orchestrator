@@ -16,7 +16,13 @@ from converge_orchestrator.graph import (
     reconcile_frozen_red,
     snapshot_frozen_red,
 )
-from converge_orchestrator.models import GateResult, ProjectConfig, QualityGate, TaskEnvelope
+from converge_orchestrator.models import (
+    AgentResult,
+    GateResult,
+    ProjectConfig,
+    QualityGate,
+    TaskEnvelope,
+)
 from converge_orchestrator.tdd import run_tdd_baseline, run_tdd_red
 
 
@@ -651,6 +657,57 @@ class TestFrozenRedCanonicalGraph:
 
 class TestFrozenRedRepairMutation:
     """Test that repair Builder mutation of frozen RED is detected and blocked."""
+
+    def test_clean_repair_entry_clears_prior_violation(self, tmp_path: Path) -> None:
+        """A restored violation must not skip every later bounded repair attempt."""
+        from converge_orchestrator.workflow import _protect_frozen_red_on_entry
+
+        cfg, task, red, red_details, _test_file = _setup_red_test(tmp_path)
+
+        with tempfile.TemporaryDirectory() as evidence_root:
+            store = EvidenceStore(Path(evidence_root) / "evidence")
+            store.snapshot_frozen_red(
+                "test-run",
+                task.id,
+                tmp_path,
+                red_details["red_test_sha256"],
+            )
+            config_path = _make_config_file(tmp_path, Path(evidence_root))
+            state = _make_state(
+                tmp_path,
+                Path(evidence_root),
+                "test-run",
+                task,
+                red,
+                config_path,
+            )
+            state.update(
+                {
+                    "frozen_red_violation": True,
+                    "frozen_red_violation_phase": "post_build",
+                    "frozen_red_violation_details": {"tests/test_rule.py": {}},
+                }
+            )
+
+            result = _protect_frozen_red_on_entry(state, "pre_repair")
+
+            with (
+                patch(
+                    "converge_orchestrator.workflow.OpenCodeAdapter.invoke",
+                    return_value=AgentResult(role="builder", ok=True, output="repaired"),
+                ) as invoke,
+                patch("converge_orchestrator.workflow._requirements", return_value=[]),
+            ):
+                from converge_orchestrator.workflow import repair
+
+                repaired = repair(state)
+
+        assert result["frozen_red_violation"] is False
+        assert result["frozen_red_violation_phase"] is None
+        assert result["frozen_red_violation_details"] is None
+        invoke.assert_called_once()
+        assert repaired["repair_attempts"] == 1
+        assert repaired["status"] == "repaired"
 
     def test_repair_mutation_detected_and_blocked(self, tmp_path: Path) -> None:
         """Test repair Builder mutation of frozen RED is caught."""

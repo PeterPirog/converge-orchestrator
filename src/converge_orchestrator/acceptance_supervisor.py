@@ -778,6 +778,13 @@ def _wait_for_risk_interrupt(
                 )
             return interrupt
         if status.get("finished_at"):
+            terminal_status = str(status.get("status") or "unknown")
+            if terminal_status != "converged":
+                raise AcceptanceSupervisorError(
+                    "acceptance run terminated before the expected risk_policy interrupt: "
+                    f"status={terminal_status}",
+                    failure_kind="no_convergence",
+                )
             raise AcceptanceSupervisorError(
                 "run converged without the deliberately injected exceptional risk_policy HITL",
                 failure_kind="missing_risk_interrupt",
