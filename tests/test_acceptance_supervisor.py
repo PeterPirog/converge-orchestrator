@@ -259,6 +259,29 @@ def test_risk_interrupt_structures_unexpected_human_interrupt() -> None:
     assert exc_info.value.interrupt_kind == "planner_failure_budget"
 
 
+def test_risk_wait_preserves_nonconverged_terminal_status() -> None:
+    api = SimpleNamespace(base_url="http://127.0.0.1:1", token="token")
+    response = {
+        "interrupt": None,
+        "finished_at": "2026-10-05T08:26:53Z",
+        "status": "budget_exhausted",
+    }
+    with (
+        patch("converge_orchestrator.acceptance_supervisor._api_json", return_value=response),
+        pytest.raises(AcceptanceSupervisorError) as exc_info,
+    ):
+        _wait_for_risk_interrupt(
+            api,
+            "run-1",
+            "forbidden_public_api_change",
+            deadline=10**12,
+            poll_seconds=0.01,
+        )
+
+    assert exc_info.value.failure_kind == "no_convergence"
+    assert "status=budget_exhausted" in str(exc_info.value)
+
+
 def test_supervise_writes_failure_record_on_unexpected_human_interrupt(
     tmp_path: Path,
 ) -> None:

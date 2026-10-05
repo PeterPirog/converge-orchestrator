@@ -302,6 +302,13 @@ def _protect_frozen_red_on_entry(state: WorkflowState, phase: str) -> WorkflowSt
     violation = _check_frozen_red_violation(state, phase)
     if violation:
         return violation
+    if state.get("frozen_red_violation"):
+        return {
+            **state,
+            "frozen_red_violation": False,
+            "frozen_red_violation_phase": None,
+            "frozen_red_violation_details": None,
+        }
     return state
 
 
