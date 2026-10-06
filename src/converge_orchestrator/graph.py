@@ -16,7 +16,13 @@ from .models import GateResult, Requirement, TaskEnvelope, WorkflowState
 from .opencode import OpenCodeAdapter
 from .prompts import builder_prompt, contract_excerpt, tdd_red_prompt
 from .quality import run_quality_gates, run_scope_gate
-from .tdd import requires_tdd, run_tdd_baseline, run_tdd_green, run_tdd_red
+from .tdd import (
+    invalid_tdd_gate_reference,
+    requires_tdd,
+    run_tdd_baseline,
+    run_tdd_green,
+    run_tdd_red,
+)
 from .workflow import (
     _check_frozen_red_violation,
     _protect_frozen_red_on_entry,
@@ -262,6 +268,9 @@ def plan(state: WorkflowState) -> WorkflowState:
     unknown_ids = set(task.requirement_ids) - known_ids
     if unknown_ids:
         raise ValueError(f"Planner returned unknown requirement IDs: {sorted(unknown_ids)}")
+    tdd_gate_error = invalid_tdd_gate_reference(cfg, cfg.repo_path, task)
+    if tdd_gate_error is not None:
+        raise ValueError(f"Planner returned an invalid Task Envelope: {tdd_gate_error}")
     next_state: WorkflowState = {
         **state,
         "task": task.model_dump(mode="json"),
@@ -297,13 +306,25 @@ def tdd_baseline(state: WorkflowState) -> WorkflowState:
     payload = evidence.model_dump(mode="json")
     store = wf._evidence(state)
     store.write_json(state["run_id"], task.id, "tdd-baseline.json", payload)
-    return {
+    next_state: WorkflowState = {
         **state,
         "tdd_baseline_result": payload,
         "tdd_red_result": None,
         "tdd_red_attempts": 0,
         "status": "tdd_baseline_ready" if evidence.ok else "tdd_baseline_unavailable",
     }
+    if not evidence.ok:
+        store.append_event(
+            state["run_id"],
+            "tdd_baseline_failure",
+            {"task_id": task.id, "reason": str(evidence.output)[:2000]},
+        )
+        next_state = wf.record_tdd_evidence_feedback(
+            next_state,
+            task,
+            evidence.output,
+        )
+    return next_state
 
 
 def route_after_tdd_baseline(state: WorkflowState) -> str:
@@ -311,7 +332,7 @@ def route_after_tdd_baseline(state: WorkflowState) -> str:
     if evidence is not None and evidence.ok:
         return "continue"
     cfg = load_config(state["config_path"])
-    if state.get("replan_attempts", 0) < cfg.max_replans:
+    if state.get("tdd_replan_attempts", 0) < cfg.max_replans:
         return "replan"
     return "human"
 
@@ -353,11 +374,14 @@ def tdd_red_gate(state: WorkflowState) -> WorkflowState:
         "tdd_red",
         {"task_id": task.id, "ok": evidence.ok, "attempt": state.get("tdd_red_attempts", 0)},
     )
-    return {
+    next_state: WorkflowState = {
         **state,
         "tdd_red_result": payload,
         "status": "tdd_red_verified" if evidence.ok else "tdd_red_failed",
     }
+    if not evidence.ok:
+        next_state = wf.record_tdd_evidence_feedback(next_state, task, evidence.output)
+    return next_state
 
 
 def route_after_tdd_red(state: WorkflowState) -> str:
@@ -367,7 +391,7 @@ def route_after_tdd_red(state: WorkflowState) -> str:
     cfg = load_config(state["config_path"])
     if state.get("tdd_red_attempts", 0) < cfg.max_repair_attempts:
         return "repair"
-    if state.get("replan_attempts", 0) < cfg.max_replans:
+    if state.get("tdd_replan_attempts", 0) < cfg.max_replans:
         return "replan"
     return "human"
 
@@ -603,6 +627,7 @@ def tdd_human_gate(state: WorkflowState) -> WorkflowState:
             **state,
             "human_decisions": human_decisions,
             "replan_attempts": 0,
+            "tdd_replan_attempts": 0,
             "status": "tdd_human_replan",
         }
     if action == "stop":

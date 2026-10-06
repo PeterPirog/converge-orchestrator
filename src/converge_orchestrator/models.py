@@ -548,6 +548,7 @@ class WorkflowState(TypedDict, total=False):
     review_result: dict[str, Any] | None
     repair_attempts: int
     replan_attempts: int
+    tdd_replan_attempts: int
     review_execution_retries: int
     reviewer_recovery_wake_at: str | None
     commit_sha: str | None

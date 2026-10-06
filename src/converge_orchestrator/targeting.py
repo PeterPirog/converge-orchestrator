@@ -20,6 +20,7 @@ from .models import (
 )
 from .opencode import OpenCodeAdapter
 from .prompts import planner_prompt
+from .tdd import invalid_tdd_gate_reference
 from .verification import (
     load_baseline_verification_cache,
     run_requirement_verifiers,
@@ -414,6 +415,17 @@ def _invoke_target_planner(
             error=f"Planner returned an invalid Task Envelope: {allowed_paths_error}",
             output_tail=result.output,
         )
+    tdd_gate_error = invalid_tdd_gate_reference(cfg, cfg.repo_path, task)
+    if tdd_gate_error is not None:
+        return _planner_failure(
+            state,
+            baseline=baseline,
+            target=target,
+            attempt=attempt,
+            kind="contract",
+            error=f"Planner returned an invalid Task Envelope: {tdd_gate_error}",
+            output_tail=result.output,
+        )
 
     success_baseline = dict(baseline)
     success_baseline["planner_control"] = {
@@ -576,6 +588,7 @@ def planner_human_gate(state: WorkflowState) -> WorkflowState:
             "human_decisions": human_decisions,
             "baseline": baseline,
             "replan_attempts": 0,
+            "tdd_replan_attempts": 0,
             "status": "planner_human_retry",
         }
     if action == "stop":
