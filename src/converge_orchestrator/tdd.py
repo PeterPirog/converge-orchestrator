@@ -19,6 +19,29 @@ def requires_tdd(task: TaskEnvelope) -> bool:
     return task.tdd.mode == "required"
 
 
+def invalid_tdd_gate_reference(
+    config: ProjectConfig,
+    cwd: Path,
+    task: TaskEnvelope,
+) -> str | None:
+    """Deterministically verify a Planner-declared TDD gate reference resolves.
+
+    Uses the exact same authoritative gate-resolution semantics as production TDD
+    execution (:func:`_resolve_test_gate`): an explicit ``tdd.test_gate`` must match a
+    configured or discovered gate by exact name. No gate is executed here and no
+    heuristic matching is applied. Returns ``None`` when the reference is resolvable,
+    or when no explicit gate is requested (the orchestrator then selects a test gate
+    at baseline time exactly as before).
+    """
+    if not requires_tdd(task) or not task.tdd.test_gate:
+        return None
+    try:
+        _resolve_test_gate(config, cwd, task)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _resolve_test_gate(
     config: ProjectConfig,
     cwd: Path,

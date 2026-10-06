@@ -420,6 +420,7 @@ def bootstrap(state: WorkflowState) -> WorkflowState:
         "iteration": state.get("iteration", 0),
         "repair_attempts": 0,
         "replan_attempts": 0,
+        "tdd_replan_attempts": 0,
         "risk_flags": [],
         "approved_risk_flags": [],
         "risk_report": None,
@@ -1038,13 +1039,53 @@ def _discard_current_workspace(state: WorkflowState) -> None:
         cleanup_worktree(cfg.repo_path, Path(worktree), branch)
 
 
+def record_tdd_evidence_feedback(
+    state: WorkflowState,
+    task: TaskEnvelope,
+    evidence_output: str,
+) -> WorkflowState:
+    """Expose an exact TDD-evidence rejection to the next Planner invocation.
+
+    Writes the deterministic failure into the existing planner-control feedback
+    channel so a bounded autonomous replan corrects only the rejected TDD contract
+    instead of redesigning unrelated scope.
+    """
+    baseline = dict(state.get("baseline") or {})
+    control = dict(baseline.get("planner_control") or {})
+    target_id = task.requirement_ids[0] if task.requirement_ids else None
+    control.update(
+        {
+            "target_requirement_id": target_id,
+            "last_error": (
+                "TDD evidence gate rejected the plan contract: "
+                f"{str(evidence_output)[:1200]}"
+            ),
+            "last_failure_kind": "tdd_evidence",
+        }
+    )
+    baseline["planner_control"] = control
+    return {**state, "baseline": baseline}
+
+
 def replan(state: WorkflowState) -> WorkflowState:
     _discard_current_workspace(state)
     store = _evidence(state)
+    tdd_evidence_failure = state.get("status") in {
+        "tdd_baseline_unavailable",
+        "tdd_red_failed",
+    }
+    next_tdd_replan_attempts = state.get("tdd_replan_attempts", 0) + (
+        1 if tdd_evidence_failure else 0
+    )
     store.append_event(
         state["run_id"],
         "replan",
-        {"task_id": _task_id(state), "attempt": state.get("replan_attempts", 0) + 1},
+        {
+            "task_id": _task_id(state),
+            "attempt": state.get("replan_attempts", 0) + 1,
+            "tdd_replan_attempts": next_tdd_replan_attempts,
+            "failure_class": "tdd_evidence" if tdd_evidence_failure else "other",
+        },
     )
     return {
         **state,
@@ -1057,7 +1098,9 @@ def replan(state: WorkflowState) -> WorkflowState:
         "pr": None,
         "ci": None,
         "repair_attempts": 0,
-        "replan_attempts": state.get("replan_attempts", 0) + 1,
+        "replan_attempts": state.get("replan_attempts", 0)
+        + (0 if tdd_evidence_failure else 1),
+        "tdd_replan_attempts": next_tdd_replan_attempts,
         "risk_flags": [],
         "approved_risk_flags": [],
         "risk_report": None,
@@ -1137,6 +1180,7 @@ def human_gate(state: WorkflowState) -> WorkflowState:
             "human_decisions": human_decisions,
             "repair_attempts": 0,
             "replan_attempts": 0,
+            "tdd_replan_attempts": 0,
             "status": (
                 "human_retry_ci"
                 if kind == "ci_failure_budget"
@@ -1165,6 +1209,7 @@ def human_gate(state: WorkflowState) -> WorkflowState:
             "ci": None,
             "repair_attempts": 0,
             "replan_attempts": 0,
+            "tdd_replan_attempts": 0,
             "risk_flags": task.risk_flags,
             "approved_risk_flags": [],
             "risk_report": None,
@@ -1377,6 +1422,7 @@ def refresh_from_main(state: WorkflowState) -> WorkflowState:
         "ci": None,
         "repair_attempts": 0,
         "replan_attempts": 0,
+        "tdd_replan_attempts": 0,
         "review_execution_retries": 0,
         "risk_flags": [],
         "approved_risk_flags": [],

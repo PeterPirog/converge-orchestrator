@@ -515,6 +515,13 @@ workflow:
 
 Budżety autonomii są skończone. Nie konfiguruj nieskończonych retry/replan loops.
 
+`max_replans` jest górną granicą licznika replanów **dla każdej klasy awarii osobno**:
+CI/review/planner-contract (`replan_attempts`) oraz dowody TDD (`tdd_replan_attempts`,
+używany gdy `tdd_baseline`/`tdd_red` odrzucą kontrakt lub dowód RED). Klasy nie konsumują
+swoich budżetów nawzajem; każdy licznik jest trwały w checkpointach i resetowany tylko
+na granicach cyklu życia (bootstrap, merge/refresh, decyzja człowieka). Wyczerpanie
+dowolnego licznika pozostaje fail-closed (HITL/stop).
+
 `context_input_fraction` i `context_output_reserve_tokens` tworzą fail-closed input budget. Authoritative
 requirements/task/review diff nie są automatycznie obcinane; tylko jawnie advisory Scout/working
 memory może być kompaktowane.
