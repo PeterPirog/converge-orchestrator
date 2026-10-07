@@ -27,7 +27,7 @@ from .acceptance import (
 from .config import load_config, load_run_config_snapshot
 from .git import diff
 from .models import ProjectConfig, ReviewResult
-from .opencode import OpenCodeAdapter
+from .opencode import OpenCodeAdapter, _review_result_output
 from .persistence import configured_control_db_path, configured_database_url
 from .prompts import contract_excerpt
 from .quality import effective_quality_gates
@@ -50,6 +50,9 @@ _API_START_TIMEOUT_SECONDS = 30.0
 _API_TRANSPORT_RETRIES = 3
 _API_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0)
 _API_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
+# Bounded forensic excerpt of a final-audit lane's model output persisted in the failure
+# record when robust ReviewResult selection still finds no valid answer (V30 evidence gap).
+_FINAL_AUDIT_OUTPUT_TAIL_CHARS = 2000
 
 # Active transport-attempt observers (installed by supervise_external_acceptance and by tests).
 # Every retry/recovery/exhaustion record is forwarded to each observer; the supervisor's sink
@@ -561,39 +564,29 @@ def _candidate_fingerprint(
     return actual
 
 
-def _first_json_object(text: str, role: str) -> dict[str, Any]:
-    """Return the first complete JSON object embedded anywhere in ``text``.
+def _parse_review(role: str, output: str) -> ReviewResult:
+    """Select the final-audit verdict with the exact production review-lane semantics.
 
-    Prose can contain unrelated brace groups (for example Python set literals such as
-    ``{"a", "b"}``); a brace span from the first ``{`` to the last ``}`` then fails even though
-    the output contains a perfectly valid JSON verdict. Scan every brace position instead and
-    accept the first position that parses as a complete JSON object.
+    Uses the same authoritative candidate-selection parser as the workflow review lanes
+    (last structurally valid ``ReviewResult``; narrative or schema-invalid JSON artifacts
+    can never mask a later valid verdict) so both parsing paths cannot drift. When no
+    valid candidate exists the lane fails closed and the failure record carries a bounded
+    forensic excerpt of the model output.
     """
 
-    decoder = json.JSONDecoder()
-    for start in (index for index, char in enumerate(text) if char == "{"):
-        try:
-            payload, _end = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
-            continue
-        return payload
-    raise AcceptanceSupervisorError(
-        f"{role} final audit did not return JSON",
-        failure_kind="final_audit_invalid_json",
-    ) from None
+    def tail() -> str:
+        return f"output tail: {output[-_FINAL_AUDIT_OUTPUT_TAIL_CHARS:]}"
 
-
-def _parse_review(role: str, output: str) -> ReviewResult:
-    stripped = output.strip()
     try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError:
-        payload = _first_json_object(stripped, role)
-    try:
-        return ReviewResult.model_validate(payload)
+        return _review_result_output(output)
     except ValidationError as exc:
         raise AcceptanceSupervisorError(
-            f"{role} final audit returned invalid review JSON: {exc}",
+            f"{role} final audit returned invalid review JSON: {exc}; {tail()}",
+            failure_kind="final_audit_invalid_json",
+        ) from exc
+    except ValueError as exc:
+        raise AcceptanceSupervisorError(
+            f"{role} final audit did not return JSON; {tail()}",
             failure_kind="final_audit_invalid_json",
         ) from exc
 
@@ -646,7 +639,10 @@ def _run_final_audit(
                 findings=[
                     {
                         "severity": "major",
-                        "reason": f"{role} final audit execution failed: {result.output[-2000:]}",
+                        "reason": (
+                            f"{role} final audit execution failed: "
+                            f"{result.output[-_FINAL_AUDIT_OUTPUT_TAIL_CHARS:]}"
+                        ),
                         "required_fix": "final independent audit must complete successfully",
                     }
                 ],
