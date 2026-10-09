@@ -1067,6 +1067,37 @@ def record_tdd_evidence_feedback(
     return {**state, "baseline": baseline}
 
 
+def record_no_change_feedback(state: WorkflowState, task: TaskEnvelope) -> WorkflowState:
+    """Expose an exact zero-diff outcome to the next Planner invocation.
+
+    Writes the deterministic failure into the existing planner-control feedback channel so
+    the bounded autonomous replan corrects the task selection instead of redesigning
+    unrelated scope. Compliance semantics are untouched: local gates and review alone never
+    promote a requirement to PASS.
+    """
+    baseline = dict(state.get("baseline") or {})
+    control = dict(baseline.get("planner_control") or {})
+    requirements = ", ".join(task.requirement_ids)
+    control.update(
+        {
+            "target_requirement_id": (
+                task.requirement_ids[0] if task.requirement_ids else None
+            ),
+            "last_error": (
+                f"task {task.id} produced no mergeable diff for {requirements}; the "
+                "targeted requirement remains non-PASS and verify-only/no-op work cannot "
+                "satisfy the durable remote-verification contract; if the required behavior "
+                "already exists, produce the smallest meaningful repository change that "
+                "creates durable evidence, normally a focused regression/contract test; "
+                "cosmetic, whitespace-only, metadata-only or unrelated changes are forbidden"
+            ),
+            "last_failure_kind": "no_changes",
+        }
+    )
+    baseline["planner_control"] = control
+    return {**state, "baseline": baseline}
+
+
 def replan(state: WorkflowState) -> WorkflowState:
     _discard_current_workspace(state)
     store = _evidence(state)
@@ -1268,15 +1299,21 @@ def integrate(state: WorkflowState) -> WorkflowState:
         "status": "pushed" if commit else "no_changes",
         "message": commit or "No changes produced",
     }
+    if not commit:
+        next_state = record_no_change_feedback(next_state, task)
     _write_compliance(next_state, compliance)
     return next_state
 
 
 def route_after_integrate(state: WorkflowState) -> str:
     cfg = load_config(state["config_path"])
-    if state.get("status") == "spec_changed" or not state.get("commit_sha"):
+    if state.get("status") == "spec_changed":
         return "end"
-    return "pr" if cfg.github_repo else "end"
+    if state.get("commit_sha"):
+        return "pr" if cfg.github_repo else "end"
+    if state.get("replan_attempts", 0) < cfg.max_replans:
+        return "replan"
+    return "end"
 
 
 def _pull_request_body(state: WorkflowState) -> str:
@@ -1563,7 +1600,7 @@ def build_graph(checkpointer=None):
     graph.add_conditional_edges(
         "integrate",
         route_after_integrate,
-        {"pr": "pause_pr", "end": END},
+        {"pr": "pause_pr", "replan": "replan", "end": END},
     )
     graph.add_conditional_edges(
         "pause_pr",

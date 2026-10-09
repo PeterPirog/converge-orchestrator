@@ -815,7 +815,7 @@ def build_graph(checkpointer: Any = None):
     graph.add_conditional_edges(
         "integrate",
         wf.route_after_integrate,
-        {"pr": "pause_pr", "end": END},
+        {"pr": "pause_pr", "replan": "replan", "end": END},
     )
     graph.add_conditional_edges(
         "pause_pr",
