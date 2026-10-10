@@ -1,16 +1,18 @@
 # Architecture
 
-Converge moves an existing Git repository toward an immutable architecture specification through
-bounded, auditable iterations. LangGraph owns control flow and durable checkpoints; stable OpenCode is
-the repository-aware coding runtime; deterministic tools and GitHub CI provide evidence. An LLM never
-acts as the policy engine.
+Converge moves an existing Git repository toward the project's immutable Markdown Source of Truth —
+the reviewed requirements/architecture specification — through bounded, auditable iterations. LangGraph
+owns control flow and durable checkpoints; stable OpenCode is the repository-aware coding runtime;
+deterministic tools and GitHub CI provide evidence. An LLM never acts as the policy engine.
 
 See [CONVERGENCE_AUDIT.md](CONVERGENCE_AUDIT.md) for the living gap analysis against the reference
 autonomous-agent design.
 
 ## Trust hierarchy
 
-1. **Architecture Markdown** — immutable source of truth, outside the target repository.
+1. **Immutable Markdown Source of Truth** — the reviewed requirements/architecture specification
+   (by convention a single file such as `architecture.md`), immutable and kept outside the target
+   repository.
 2. **Policy, requirement verifiers and quality gates** — deterministic rules; an LLM cannot waive a
    required failure.
 3. **Current Git state and CI evidence** — re-read from tools instead of long chat history.

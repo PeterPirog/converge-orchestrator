@@ -10,6 +10,21 @@ only Source of Truth; LangGraph owns durable workflow state; OpenCode agents rem
 bounded; the Builder is the sole worktree writer; deterministic quality/risk/integration policy cannot
 be waived by an LLM; GitHub PR/CI remains the integration gate; and HITL is exceptional.
 
+## Status — Revision 1.0 completed this gate
+
+Revision 1.0 successfully completed this procedure in the canonical external acceptance run:
+
+- run `5805a7a3e43640eda3147002de66c62d`;
+- deterministic acceptance report: `ready=true`;
+- 12 merged autonomous task/PR/CI cycles;
+- exactly one predeclared exceptional `risk_policy` HITL approval;
+- real controller restart with automatic same-run recovery;
+- no manual code edit;
+- final independent audits PASS: requirements, architecture, compatibility, security, evidence.
+
+Everything below remains the canonical reusable procedure for future acceptance runs (Revision 2.0 and
+beyond). It no longer describes a pending Revision 1.0 blocker.
+
 ## Preconditions
 
 Before starting the live run:
@@ -78,24 +93,24 @@ PostgreSQL connection credentials are never emitted. The output contains only no
 Remove-Item Env:CONVERGE_DATABASE_URL -ErrorAction SilentlyContinue
 
 $env:CONVERGE_CONTROL_DB =
-    "C:\Users\Ila\ConvergeWorkspace\acceptance\V24\control.sqlite"
+    "C:\absolute\path\to\acceptance\<generation>\control.sqlite"
 
 $env:PYTHONPATH =
-    "C:\Users\Ila\ConvergeWorkspace\converge-orchestrator\src"
+    "C:\absolute\path\to\converge-orchestrator\src"
 
 python -m converge_orchestrator.acceptance_cli preflight `
-  --config C:\Users\Ila\ConvergeWorkspace\acceptance\V24\converge.yaml
+  --config C:\absolute\path\to\acceptance\<generation>\converge.yaml
 ```
 
 ### POSIX example
 
 ```bash
 unset CONVERGE_DATABASE_URL
-export CONVERGE_CONTROL_DB=/absolute/path/to/control.sqlite
-export PYTHONPATH=/path/to/converge-orchestrator/src
+export CONVERGE_CONTROL_DB=/absolute/path/to/acceptance/<generation>/control.sqlite
+export PYTHONPATH=/absolute/path/to/converge-orchestrator/src
 
 python -m converge_orchestrator.acceptance_cli preflight \
-  --config /path/to/acceptance/V24/converge.yaml
+  --config /absolute/path/to/acceptance/<generation>/converge.yaml
 ```
 
 Required provider/GitHub credentials (e.g., `HAL_API_KEY`, `OPENWEBUI_API_KEY`) must already be available

@@ -7,8 +7,9 @@
 > independent audits PASS. See [Revision 1.0 release record](docs/REVISION_1_0.md).
 
 **Converge** is a requirements-driven autonomous software engineering orchestrator built around
-**LangGraph** and **OpenCode**. It repeatedly performs bounded code changes while treating a separate
-architecture Markdown file as an immutable source of truth.
+**LangGraph** and **OpenCode**. It repeatedly performs bounded code changes while treating the project's
+immutable Markdown Source of Truth — the reviewed requirements/architecture specification — as the
+single authoritative intent.
 
 The central idea is controlled convergence: nondeterministic coding agents are surrounded by schema
 validation, Git worktrees, deterministic quality gates, requirement-specific verification,
@@ -38,7 +39,7 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 
 ## Current capabilities
 
-- read-only SHA-256-pinned architecture specification;
+- read-only, SHA-256-pinned immutable Markdown Source of Truth;
 - structured `contract.json` with stable requirement IDs and source anchors;
 - LangGraph workflow with durable checkpoints, cooperative pause points and HITL interrupts;
 - autonomous multi-task loop after merge: refresh main, evaluate convergence, plan next bounded task;
@@ -92,7 +93,8 @@ MCP, quality policy and workflow budgets all live in that file. Secrets stay in 
 - current stable OpenCode available as `opencode` or a reachable OpenCode server;
 - GitHub CLI (`gh`) when GitHub PR/CI integration is enabled;
 - an existing local clone with `origin`;
-- a separate Markdown architecture/specification file;
+- a separate immutable Markdown Source of Truth file (by convention `architecture.md`) containing the
+  project's requirements/architecture specification;
 - optional OpenWebUI/OpenAI-compatible gateway and API key for model routing;
 - for PostgreSQL persistence/backup/restore: the optional `postgres` package extra and compatible
   `pg_dump`, `pg_restore` and `psql` client tools.
