@@ -223,22 +223,28 @@ does not migrate workspaces, rewrite registry bindings or become a workflow-stat
 
 ## Current next priorities
 
-Repository evidence moves the priority away from completed checkpoint/flake/PostgreSQL persistence,
-metrics, workload-placement, deployment backup/restore, bounded Node barrel resolution, durable run
-budgets and digest-pinned sandbox work. The smallest remaining high-value areas are, in order:
+Revision 1.0 completed the external repository acceptance gate (canonical V34, `ready=true`), so the
+priority list no longer contains it. Completed in Revision 1.0 and no longer open priorities:
+checkpoint/flake/PostgreSQL persistence, metrics, workload-placement, deployment backup/restore,
+bounded Node barrel resolution, durable run budgets, digest-pinned sandbox enforcement and the
+external repository acceptance gate.
 
-1. **External repository acceptance** — use a deterministic acceptance verifier and a separate
-   supervisor to prove a representative repository outside Converge reaches convergence through at
-   least two meaningful autonomous PR/CI cycles, including one real controller restart and one
-   deliberately exceptional `risk_policy` HITL decision, with no manual code edits. The final result
-   must independently PASS requirements, architecture, compatibility, security and evidence checks.
-2. **Cross-run economics and forecasting** — per-reservation provider usage/cost and durable
+The smallest remaining high-value areas are, in order:
+
+1. **Revision 2.0 Source of Truth definition** — author, review and freeze a materially improved
+   immutable Markdown Source of Truth for the Converge repository itself, resolving material product,
+   compatibility, migration, security, recovery and scope decisions explicitly before any autonomous
+   implementation begins.
+2. **Autonomous self-development toward Revision 2.0** — run Revision 1.0 Converge against this
+   repository under the frozen Revision 2.0 Source of Truth, preserving the same fail-closed evidence,
+   protected GitHub integration and external acceptance semantics.
+3. **Cross-run economics and forecasting** — per-reservation provider usage/cost and durable
    run/role/model aggregation are implemented. Add project/fleet trends only as observational evidence;
    they must not weaken the existing fail-closed conservative resource envelope.
-3. **Broader language compatibility** — add only high-confidence parser-backed Node/Go/Rust rules where
+4. **Broader language compatibility** — add only high-confidence parser-backed Node/Go/Rust rules where
    the declared support scope requires them. Uncertain semantics must remain conservative rather than
    guessed.
-4. **Deployment portability follow-up** — deliberately shared/external artifact storage only where
+5. **Deployment portability follow-up** — deliberately shared/external artifact storage only where
    independent multi-node workers require it.
 
 Optional issue synchronization, richer dashboards and broader UX must not displace these core items.
@@ -247,18 +253,17 @@ sets and revalidate integration against the current main branch.
 
 ## Real-repository readiness assessment
 
-The orchestration core is capable of a controlled Python pilot driven by frozen Markdown requirements:
-it can derive bounded work, execute one-writer changes, prove quality, independently review, create PRs,
-wait for authoritative CI, enforce finite resource/sandbox boundaries and recover from
-controller/executor failure. That is a meaningful operational milestone, but it is not yet the release
+Historical pre-release assessment (before the Revision 1.0 gate): the orchestration core was capable of
+a controlled Python pilot driven by frozen Markdown requirements — bounded work, one-writer changes,
+proven quality, independent review, authoritative CI, finite resource/sandbox boundaries and recovery
+from controller/executor failure — but that capability alone was explicitly not accepted as the release
 criterion for unattended general-purpose repository development.
 
-For the currently declared **Python + conservative Node** scope, internal release criteria covering
-compatibility boundaries, durable resource budgets and digest-pinned production sandbox enforcement are
-implemented and exercised in CI. The primary remaining proof is the representative external-repository
-acceptance run maintained in `ROADMAP.md` and `EXTERNAL_ACCEPTANCE.md`. The release must remain
-"controlled pilot" until that run passes; no percentage estimate or internal unit-test count should
-substitute for that evidence.
+Current Revision 1.0 state: the release criterion was satisfied by the canonical V34 external
+acceptance run (`5805a7a3e43640eda3147002de66c62d`, `ready=true`) for the declared **Python +
+conservative Node** scope. The result must not be generalized beyond the language, compatibility and
+deployment boundaries that Revision 1.0 actually protects; extending them is Revision 2.0 scope, not an
+implied property of this release.
 
 ## Target operational criterion
 

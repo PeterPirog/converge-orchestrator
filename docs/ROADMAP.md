@@ -33,7 +33,59 @@ behavior must be explicit in that Source of Truth before autonomous implementati
 Revision 1.0 remains the reference release baseline and provenance anchor while Revision 2.0 is being
 specified and developed.
 
-## v0.1 — executable local core — complete
+## Revision 1.0 real-repository readiness gate — satisfied
+
+The Revision 1.0 release gate required that a representative real-repository acceptance run prove all
+of the following executable criteria before the first general-purpose release could be declared ready:
+
+1. the claimed autonomous language compatibility scope is explicitly documented and its mandatory
+   deterministic compatibility gates are complete; unsupported semantics must fail conservative or be
+   delegated to independent review rather than silently guessed;
+2. run wall-time and model-use budgets are pinned per durable run, reserved before provider execution,
+   survive retries/restarts without counter reset and fail closed with no model/HITL override;
+3. a production sandbox image/deployment profile is digest-pinned and exercised in CI;
+4. at least one representative **external target repository** passes an acceptance run from frozen
+   Markdown requirements through multiple autonomous task/PR/CI cycles to convergence, including one
+   controller/process restart, with no manual code edits and HITL only for a deliberately injected
+   exceptional condition;
+5. the resulting repository is independently checked for requirements compliance, architecture drift,
+   compatibility and security, and the evidence bundle can reconstruct why every integrated change was
+   accepted.
+
+Criteria 1-5 were satisfied by the canonical V34 external acceptance run for the declared Revision 1.0
+scope. The result must not be generalized beyond the language and compatibility boundaries that
+Revision 1.0 actually protects.
+
+The pre-release assessment also classified Converge as suitable for a **controlled Python repository
+pilot** when the requirements have first been normalized and frozen as the authoritative Markdown Source
+of Truth and the target repository has meaningful deterministic tests/quality gates. That pilot
+classification remains accurate after the release; it is not a claim that an arbitrary repository can be
+left unattended indefinitely.
+
+PDF, DOCX and other authoring formats may be used to prepare requirements, but they must not silently
+become parallel workflow authorities. They should be normalized into the reviewed immutable Markdown
+requirements artifact before orchestration starts, preserving the architecture's single Source of Truth.
+
+## Current next priorities (post-1.0)
+
+1. **Author and freeze the Revision 2.0 Source of Truth** — reconstruct the intended target system,
+   resolve material product and architecture decisions, define explicit non-goals and verification
+   semantics, and freeze the improved specification before autonomous self-development starts.
+2. **Self-development run for Revision 2.0** — use Revision 1.0 Converge against this repository under
+   the frozen Revision 2.0 Source of Truth, preserving the same fail-closed evidence and protected
+   GitHub integration model.
+3. **Cross-run economics and forecasting** — add low-cardinality project/fleet trends or price
+   forecasting only where operational value is demonstrated.
+4. **Broader language adapters and deployment portability** — extend parser-backed compatibility and
+   shared/external artifact support only where the Revision 2.0 contract explicitly requires them.
+
+## Historical pre-1.0 milestones (v0.1 – v0.5)
+
+The sections below are historical pre-1.0 development milestones, preserved for provenance. They are
+not the current product version: the current release is Revision 1.0 (see the sections above), and
+future work is tracked by the Revision 2.0 section and the current priorities list.
+
+### v0.1 — executable local core — complete
 
 - immutable requirement hash guard and traceable Markdown contract extraction;
 - LangGraph workflow with durable SQLite checkpoints by default;
@@ -42,7 +94,7 @@ specified and developed.
 - deterministic quality gates, bounded repair/replan and HITL;
 - deterministic commit/push integration path.
 
-## v0.2 — GitHub gate and evidence layer — substantially complete
+### v0.2 — GitHub gate and evidence layer — substantially complete
 
 Implemented:
 
@@ -73,7 +125,7 @@ Remaining hardening:
 
 - optional issue/backlog synchronization.
 
-## v0.3 — compliance, stack portability and safety — substantially complete
+### v0.3 — compliance, stack portability and safety — substantially complete
 
 Implemented:
 
@@ -115,7 +167,7 @@ Remaining:
 - stale-resource chaos extensions only where a newly discovered failure boundary lacks an equivalent
   deterministic recovery proof.
 
-## v0.4 — reusable configuration and service/control plane — substantially complete
+### v0.4 — reusable configuration and service/control plane — substantially complete
 
 Implemented:
 
@@ -177,52 +229,10 @@ Implemented:
   network and read-only agent workspace;
 - detailed PyCharm/OpenWebUI/OpenCode onboarding, persistence, sandbox and model-routing documentation.
 
-Next priorities, in order:
+### v0.5 — production autonomous operation
 
-1. **Author and freeze the Revision 2.0 Source of Truth** — reconstruct the intended target system,
-   resolve material product and architecture decisions, define explicit non-goals and verification
-   semantics, and freeze the improved specification before autonomous self-development starts.
-2. **Self-development run for Revision 2.0** — use Revision 1.0 Converge against this repository under
-   the frozen Revision 2.0 Source of Truth, preserving the same fail-closed evidence and protected
-   GitHub integration model.
-3. **Cross-run economics and forecasting** — add low-cardinality project/fleet trends or price
-   forecasting only where operational value is demonstrated.
-4. **Broader language adapters and deployment portability** — extend parser-backed compatibility and
-   shared/external artifact support only where the Revision 2.0 contract explicitly requires them.
-
-## First real-repository readiness gate
-
-Converge is already suitable for a **controlled Python repository pilot** when the requirements have
-first been normalized and frozen as the authoritative Markdown Source of Truth and the target repository
-has meaningful deterministic tests/quality gates. This is a pilot classification, not a claim that an
-arbitrary repository can be left unattended indefinitely.
-
-The first general-purpose release for document-driven autonomous repository development should not be
-declared ready until all of these executable criteria are met:
-
-1. the claimed autonomous language compatibility scope is explicitly documented and its mandatory
-   deterministic compatibility gates are complete; unsupported semantics must fail conservative or be
-   delegated to independent review rather than silently guessed;
-2. run wall-time and model-use budgets are pinned per durable run, reserved before provider execution,
-   survive retries/restarts without counter reset and fail closed with no model/HITL override;
-3. a production sandbox image/deployment profile is digest-pinned and exercised in CI;
-4. at least one representative **external target repository** passes an acceptance run from frozen
-   Markdown requirements through multiple autonomous task/PR/CI cycles to convergence, including one
-   controller/process restart, with no manual code edits and HITL only for a deliberately injected
-   exceptional condition;
-5. the resulting repository is independently checked for requirements compliance, architecture drift,
-   compatibility and security, and the evidence bundle can reconstruct why every integrated change was
-   accepted.
-
-Criteria 1-5 were satisfied by the canonical V34 external acceptance run for the declared Revision 1.0
-scope. The result must not be generalized beyond the language and compatibility boundaries that
-Revision 1.0 actually protects.
-
-PDF, DOCX and other authoring formats may be used to prepare requirements, but they must not silently
-become parallel workflow authorities. They should be normalized into the reviewed immutable Markdown
-requirements artifact before orchestration starts, preserving the architecture's single Source of Truth.
-
-## v0.5 — production autonomous operation
+Pre-1.0 historical milestone. The items marked implemented below were completed before the Revision
+1.0 freeze; the remaining optional items are Revision 2.0 candidates, not an open Revision 1.0 plan:
 
 Planned / partially implemented:
 
