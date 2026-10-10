@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "converge-orchestrator"
-version = "0.3.0"
+version = "1.0.0"
 description = "Requirements-driven autonomous software convergence orchestrator with LangGraph and OpenCode."
 readme = "README.md"
 requires-python = ">=3.11"
