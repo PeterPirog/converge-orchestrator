@@ -49,7 +49,7 @@ workflow:
   max_parallel_reviews: 3
 ```
 
-Dla referencyjnego OpenWebUI katalogu `security` używa `gpt-oss:120b`. Jeżeli lokalny sprzęt nie może
+Dla aktualnego referencyjnego katalogu `security` używa `deepseek-v4.1-flash:cloud`. Jeżeli lokalny sprzęt nie może
 obsłużyć kilku ciężkich modeli jednocześnie, zachowaj wszystkie lane'y i zmniejsz
 `max_parallel_reviews` do `1` lub `2`.
 

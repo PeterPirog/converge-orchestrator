@@ -430,55 +430,62 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
     assert raw["project"]["repo_path"]
     assert raw["opencode"]["binary"] == "opencode"
     assert raw["models"]["gateway"]["kind"] == "openwebui"
-    assert raw["models"]["mode"] == "local"
+    assert raw["models"]["mode"] == "cloud"
 
     profile_sets = raw["models"]["profile_sets"]
-    assert set(profile_sets) == {"cloud", "local"}
+    assert set(profile_sets) == {"cloud"}
 
     cloud = profile_sets["cloud"]
-    assert cloud["scout"]["model"] == "deepseek-v4-flash:cloud"
-    assert cloud["scout"]["context_tokens"] == 1048576
-    assert cloud["planner"]["model"] == "deepseek-v4-pro:cloud"
-    assert cloud["planner"]["context_tokens"] == 1048576
-    assert cloud["builder"]["model"] == "kimi-k2.7-code:cloud"
-    assert cloud["builder"]["context_tokens"] == 262144
-    assert cloud["builder_fallback"]["model"] == "qwen3-coder-next:cloud"
-    assert cloud["builder_fallback"]["context_tokens"] == 262144
-    assert cloud["reviewer"]["model"] == "glm-5.3-flash:cloud"
-    assert cloud["reviewer"]["context_tokens"] == 1048576
-    assert cloud["security"]["model"] == "gpt-oss:120b"
-    assert cloud["security"]["context_tokens"] == 131072
+    expected_profiles = {
+        "scout": "deepseek-v4.1-flash:cloud",
+        "planner": "deepseek-v4.1-flash:cloud",
+        "builder": "kimi-k2.7-code:cloud",
+        "builder_fallback": "glm-5.3-flash:cloud",
+        "reviewer": "glm-5.3-flash:cloud",
+        "security": "deepseek-v4.1-flash:cloud",
+    }
+    assert set(cloud) == set(expected_profiles)
+    for profile_name, model in expected_profiles.items():
+        profile = cloud[profile_name]
+        assert profile["model"] == model
+        # The current gateway catalog does not publish verified context/output limits;
+        # null is the honest value. Never copy limits from older model IDs.
+        assert profile["context_tokens"] is None
+        assert profile["output_tokens"] is None
+        assert profile["request_body"] == {}
 
-    local = profile_sets["local"]
-    assert local["scout"]["model"] == "nemotron-3.5-lightning:latest"
-    assert local["scout"]["context_tokens"] == 1048576
-    assert local["planner"]["model"] == "laguna-s-2.1:latest"
-    assert local["planner"]["context_tokens"] == 262144
-    assert local["builder"]["model"] == "qwen3.8:latest"
-    assert local["builder"]["context_tokens"] == 262144
-    assert local["builder_fallback"]["model"] == "nemotron-3.5-lightning:latest"
-    assert local["builder_fallback"]["context_tokens"] == 1048576
-    assert local["reviewer"]["model"] == "muse-glimmer:latest"
-    assert local["reviewer"]["context_tokens"] == 131072
-    assert local["security"]["model"] == "gpt-oss:120b"
-    assert local["security"]["context_tokens"] == 131072
+    used_models = {profile["model"] for profile in cloud.values()}
+    # Arena IDs do not identify one stable underlying model for run provenance and must
+    # never back a mandatory Converge agent lane.
+    assert not used_models & {"code-arena", "code-arena-mid", "math-arena"}
+    # gemma4:31b-cloud has unverified capabilities (null) and must not be silently
+    # promoted into a mandatory lane.
+    assert all("gemma" not in model for model in used_models)
+    # Intended independent-lane relationships: the builder fallback is a different model
+    # than the builder, and the semantic review lane does not self-review the builder's
+    # implementation model.
+    assert cloud["builder_fallback"]["model"] != cloud["builder"]["model"]
+    assert cloud["reviewer"]["model"] != cloud["builder"]["model"]
 
-    assert all(
-        profile["request_body"] == {}
-        for profiles in profile_sets.values()
-        for profile in profiles.values()
-    )
-    assert raw["agents"]["scout"]["steps"] == 12
-    assert raw["agents"]["planner"]["steps"] == 18
-    assert raw["agents"]["builder"]["steps"] == 60
-    assert raw["agents"]["correctness_reviewer"]["steps"] == 24
-    assert raw["agents"]["architecture_reviewer"]["steps"] == 24
-    assert raw["agents"]["security_reviewer"]["steps"] == 24
-    assert raw["agents"]["builder"]["fallback_model_profiles"] == [
+    agents = raw["agents"]
+    assert agents["scout"]["steps"] == 12
+    assert agents["planner"]["steps"] == 18
+    assert agents["builder"]["steps"] == 60
+    assert agents["correctness_reviewer"]["steps"] == 48
+    assert agents["architecture_reviewer"]["steps"] == 48
+    assert agents["security_reviewer"]["steps"] == 48
+    assert agents["builder"]["fallback_model_profiles"] == [
         "builder_fallback"
     ]
-    assert all(agent["provider_retries"] == 1 for agent in raw["agents"].values())
-    assert set(raw["agents"]) == {
+    assert agents["scout"]["fallback_model_profiles"] == ["reviewer"]
+    assert agents["planner"]["fallback_model_profiles"] == ["reviewer"]
+    assert agents["correctness_reviewer"]["fallback_model_profiles"] == ["planner"]
+    assert agents["architecture_reviewer"]["fallback_model_profiles"] == [
+        "reviewer"
+    ]
+    assert agents["security_reviewer"]["fallback_model_profiles"] == ["reviewer"]
+    assert all(agent["provider_retries"] == 1 for agent in agents.values())
+    assert set(agents) == {
         "scout",
         "planner",
         "builder",

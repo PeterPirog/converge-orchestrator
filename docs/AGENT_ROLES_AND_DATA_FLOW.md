@@ -20,11 +20,11 @@ The reference quality-first routing is:
 
 | Profile | Reference model | Runtime function |
 | --- | --- | --- |
-| `scout` | `deepseek-v4-flash:cloud` | Repo Scout |
-| `planner` | `deepseek-v4-pro:cloud` | Planner and Architecture Reviewer |
+| `scout` | `deepseek-v4.1-flash:cloud` | Repo Scout |
+| `planner` | `deepseek-v4.1-flash:cloud` | Planner and Architecture Reviewer |
 | `builder` | `kimi-k2.7-code:cloud` | Builder |
 | `reviewer` | `glm-5.3-flash:cloud` | Correctness Reviewer |
-| `security` | `gpt-oss:120b` | Security Reviewer |
+| `security` | `deepseek-v4.1-flash:cloud` | Security Reviewer |
 
 These are replaceable examples, not hard vendor dependencies. They represent different trade-offs in
 latency, reasoning, coding/tool-loop quality, useful context, and independence of review.

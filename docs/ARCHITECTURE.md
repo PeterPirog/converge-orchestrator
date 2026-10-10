@@ -90,17 +90,17 @@ Model selection is part of quality engineering, not policy authority. The refere
 routing intentionally separates generation and review responsibilities:
 
 ```text
-Planner                -> deepseek-v4-pro:cloud
+Planner                -> deepseek-v4.1-flash:cloud
 Builder                -> kimi-k2.7-code:cloud
 Correctness Reviewer   -> glm-5.3-flash:cloud
-Architecture Reviewer  -> deepseek-v4-pro:cloud (fresh review session)
-Security Reviewer      -> gpt-oss:120b
+Architecture Reviewer  -> deepseek-v4.1-flash:cloud (fresh review session)
+Security Reviewer      -> deepseek-v4.1-flash:cloud (fresh review session)
 ```
 
 The Builder is optimized for long-horizon coding. Planner is optimized for architecture/reasoning.
-Correctness and Security Reviewer deliberately come from other model families so review is less likely
-to reproduce the Builder's assumptions. Architecture Reviewer may share the Planner family but runs in
-a fresh read-only session with a different objective and never reviews its own implementation.
+Correctness Reviewer deliberately uses a different family from the Builder. Architecture and Security
+Reviewers currently share the DeepSeek planning family but run as separate fresh read-only sessions with
+different objectives. All mandatory review lanes remain independent from the Kimi implementation writer.
 
 This diversity is **not** sufficient evidence for merge. Model output remains below deterministic
 quality gates, requirement verifiers and CI in the trust hierarchy.
