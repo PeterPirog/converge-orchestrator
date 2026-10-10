@@ -1,5 +1,11 @@
 # Converge Orchestrator
 
+> **Revision 1.0 — release-qualified baseline (2026-10-10).**
+> Canonical external acceptance run `5805a7a3e43640eda3147002de66c62d` completed with
+> `ready=true`: 12 autonomous merged task/PR/CI cycles, one deliberately injected
+> `risk_policy` approval, automatic recovery after a real controller restart, and all final
+> independent audits PASS. See [Revision 1.0 release record](docs/REVISION_1_0.md).
+
 **Converge** is a requirements-driven autonomous software engineering orchestrator built around
 **LangGraph** and **OpenCode**. It repeatedly performs bounded code changes while treating a separate
 architecture Markdown file as an immutable source of truth.
@@ -7,6 +13,11 @@ architecture Markdown file as an immutable source of truth.
 The central idea is controlled convergence: nondeterministic coding agents are surrounded by schema
 validation, Git worktrees, deterministic quality gates, requirement-specific verification,
 independent review, policy, GitHub CI and an auditable evidence store.
+
+
+Revision 1.0 is the frozen reference baseline. Revision 2.0 will be developed as a new target-state
+contract from an improved Source of Truth; Revision 1.0 release evidence remains immutable and is not
+rewritten to describe future behavior.
 
 ## Start here
 

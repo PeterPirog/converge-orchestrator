@@ -7,6 +7,32 @@ exception-based HITL.
 See [CONVERGENCE_AUDIT.md](CONVERGENCE_AUDIT.md) for the current gap analysis against the reference
 autonomous-agent architecture.
 
+
+## Revision 1.0 — release-qualified baseline — complete
+
+Revision 1.0 is the first release-qualified baseline of Converge Orchestrator. The canonical V34
+external acceptance run (`5805a7a3e43640eda3147002de66c62d`) finished with `ready=true` after
+12 autonomous merged task/PR/CI cycles, a real controller restart with automatic recovery, exactly
+one predeclared exceptional `risk_policy` approval, no manual code edit, terminal convergence and
+PASS results for requirements, architecture, compatibility, security and evidence audits.
+
+The functional platform qualified by that run is commit
+`7fa2d3f95a071dd3036492ac15896398aa607103`. Release metadata/documentation may advance after that
+commit without changing the meaning of the V34 qualification record.
+
+## Revision 2.0 — planned self-development
+
+Revision 2.0 will be developed by using Revision 1.0 Converge Orchestrator against the Converge
+repository itself, driven by a separately authored, reviewed and frozen improved Source of Truth.
+
+The Revision 2.0 Source of Truth MUST define the target state independently of the current
+implementation. Existing Revision 1.0 behavior is evidence of current state, not automatic policy for
+Revision 2.0. Compatibility, migration, recovery, security and scope decisions that change observable
+behavior must be explicit in that Source of Truth before autonomous implementation begins.
+
+Revision 1.0 remains the reference release baseline and provenance anchor while Revision 2.0 is being
+specified and developed.
+
 ## v0.1 — executable local core — complete
 
 - immutable requirement hash guard and traceable Markdown contract extraction;
@@ -153,19 +179,16 @@ Implemented:
 
 Next priorities, in order:
 
-1. **External repository acceptance** — make the release gate machine-verifiable, then run the complete
-   document-to-convergence path against a representative repository outside Converge itself through
-   multiple autonomous PR/CI cycles. Deliberately include one controller restart and one exceptional
-   HITL condition, require no manual code edits, and require final independent requirements,
-   architecture, compatibility, security and evidence checks.
-2. **Cross-run economics and forecasting** — provider-reported token/cache/reasoning usage and cost are
-   now durably bound to each run-budget reservation and aggregated by run/role/model. Add only
-   low-cardinality project/fleet trends or price forecasting that proves operational value; measured
-   telemetry must remain secondary to the fail-closed conservative resource envelope.
-3. **Broader language adapters** — extend only parser-backed, high-confidence compatibility/dependency
-   rules for Node/Go/Rust where the claimed support scope requires them.
-4. **Deployment portability follow-up** — deliberately shared/external artifact storage only where
-   independent multi-node workers require it; PostgreSQL alone must never imply stateless worker safety.
+1. **Author and freeze the Revision 2.0 Source of Truth** — reconstruct the intended target system,
+   resolve material product and architecture decisions, define explicit non-goals and verification
+   semantics, and freeze the improved specification before autonomous self-development starts.
+2. **Self-development run for Revision 2.0** — use Revision 1.0 Converge against this repository under
+   the frozen Revision 2.0 Source of Truth, preserving the same fail-closed evidence and protected
+   GitHub integration model.
+3. **Cross-run economics and forecasting** — add low-cardinality project/fleet trends or price
+   forecasting only where operational value is demonstrated.
+4. **Broader language adapters and deployment portability** — extend parser-backed compatibility and
+   shared/external artifact support only where the Revision 2.0 contract explicitly requires them.
 
 ## First real-repository readiness gate
 
@@ -191,9 +214,9 @@ declared ready until all of these executable criteria are met:
    compatibility and security, and the evidence bundle can reconstruct why every integrated change was
    accepted.
 
-Criteria 1-3 are implemented for the current declared Python + conservative Node scope. Criterion 4 is
-now the primary release blocker; criterion 5 must be proven as part of the same external acceptance
-run, not asserted from internal Converge tests.
+Criteria 1-5 were satisfied by the canonical V34 external acceptance run for the declared Revision 1.0
+scope. The result must not be generalized beyond the language and compatibility boundaries that
+Revision 1.0 actually protects.
 
 PDF, DOCX and other authoring formats may be used to prepare requirements, but they must not silently
 become parallel workflow authorities. They should be normalized into the reviewed immutable Markdown
@@ -209,7 +232,7 @@ Planned / partially implemented:
 - cross-run low-cardinality economics, price forecasting and aggregate per-role health statistics;
 - digest-pinned sandbox policy and real container CI proof are implemented; each target project still
   owns the build/publish pipeline for its exact runtime image/toolchain;
-- representative external-repository autonomous acceptance gate is the current release blocker;
+- representative external-repository autonomous acceptance gate completed successfully in canonical V34;
 - durable registry diagnostics and Prometheus metrics are implemented; OpenTelemetry and optional
   LangSmith tracing may be added without making external tracing the source of evidence;
 - multi-project dashboard/operator audit views are optional after the release gate;
