@@ -386,21 +386,21 @@ agents:
     agent: converge-correctness-reviewer
     model_profile: reviewer
     timeout_seconds: 1800
-    steps: 24
+    steps: 48
     tool_permissions: {}
 
   architecture_reviewer:
     agent: converge-architecture-reviewer
     model_profile: planner
     timeout_seconds: 1800
-    steps: 24
+    steps: 48
     tool_permissions: {}
 
   security_reviewer:
     agent: converge-security-reviewer
     model_profile: security
     timeout_seconds: 1800
-    steps: 24
+    steps: 48
     tool_permissions: {}
 ```
 
