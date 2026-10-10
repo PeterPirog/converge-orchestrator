@@ -324,12 +324,12 @@ Przykład:
 models:
   profiles:
     planner:
-      model: deepseek-v4-pro:cloud
-      context_tokens: 1048576
+      model: deepseek-v4.1-flash:cloud
+      context_tokens: null
       request_body: {}
     builder:
       model: kimi-k2.7-code:cloud
-      context_tokens: 262144
+      context_tokens: null
       request_body: {}
 ```
 

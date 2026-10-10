@@ -159,15 +159,15 @@ models:
     api_key_env: OPENWEBUI_API_KEY
   profiles:
     scout:
-      model: deepseek-v4-flash:cloud
+      model: deepseek-v4.1-flash:cloud
     planner:
-      model: deepseek-v4-pro:cloud
+      model: deepseek-v4.1-flash:cloud
     builder:
       model: kimi-k2.7-code:cloud
     reviewer:
       model: glm-5.3-flash:cloud
     security:
-      model: gpt-oss:120b
+      model: deepseek-v4.1-flash:cloud
 
 workflow:
   review_roles:
@@ -177,9 +177,10 @@ workflow:
   max_parallel_reviews: 3
 ```
 
-The routing is deliberate: Scout is optimized for quick repository mapping, Planner for architecture
-reasoning, Builder uses a coding-focused long-horizon model, correctness review uses GLM, architecture
-review uses a fresh DeepSeek session and security review uses an independent gpt-oss family.
+The routing is deliberate: DeepSeek V4.1 Flash handles repository mapping, planning and fresh read-only
+architecture/security review sessions; Kimi K2.7 Code remains the sole implementation writer; GLM 5.3
+Flash provides an independent correctness lane and Builder fallback. Arena IDs are intentionally
+excluded because release evidence should identify an exact model rather than a dynamic arena winner.
 Deterministic tests and policy remain authoritative regardless of model choice. See
 [MODEL_ROUTING.md](docs/MODEL_ROUTING.md) for the full role mapping, alternatives and local-only routing.
 

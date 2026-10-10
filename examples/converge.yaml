@@ -138,11 +138,9 @@ sandbox:
   # agent_gateway_base_url: http://open-webui:8080/api
 
 models:
-  # Recommended setup when OpenWebUI is your model gateway.
-  # This is the HOST-visible endpoint used by `converge models` / `converge doctor`.
-  # In container sandbox mode use sandbox.agent_gateway_base_url for the agent-visible endpoint.
-  # Stable OpenCode's OpenAI-compatible provider appends /chat/completions to this base URL,
-  # therefore OpenWebUI uses /api here.
+  # Current reference setup for the OpenWebUI catalog validated on 2026-10-10.
+  # OpenWebUI remains the gateway boundary even though the underlying entries are served by LiteLLM.
+  # Use the exact model IDs returned by OpenWebUI; do not set provider: litellm here.
   gateway:
     kind: openwebui
     provider_id: openwebui
@@ -150,111 +148,63 @@ models:
     base_url: http://127.0.0.1:3000/api
     api_key_env: OPENWEBUI_API_KEY
 
-  # One-switch routing. `local` is the reference default while local capacity is available.
-  # Change only this value to `cloud` to restore the original quality-first cloud routing.
-  # Both sets are validated when the YAML is loaded, but only the selected set is materialized
-  # into the immutable per-run configuration snapshot and generated OpenCode provider catalog.
-  mode: local
+  # The current catalog exposes stable cloud IDs but no validated local profile set.
+  # Arena IDs are excluded because they do not provide a stable underlying model identity for evidence.
+  mode: cloud
 
   profile_sets:
-    # Original cloud routing retained verbatim for one-line rollback with `mode: cloud`.
     cloud:
       scout:
-        model: deepseek-v4-flash:cloud
-        name: DeepSeek V4 Flash - repository scout
-        context_tokens: 1048576
+        model: deepseek-v4.1-flash:cloud
+        name: DeepSeek V4.1 Flash - repository scout
+        context_tokens: null
+        output_tokens: null
         variant: null
         request_body: {}
 
       planner:
-        model: deepseek-v4-pro:cloud
-        name: DeepSeek V4 Pro - architecture reasoning
-        context_tokens: 1048576
+        model: deepseek-v4.1-flash:cloud
+        name: DeepSeek V4.1 Flash - architecture reasoning
+        context_tokens: null
+        output_tokens: null
         variant: null
         request_body: {}
 
       builder:
         model: kimi-k2.7-code:cloud
         name: Kimi K2.7 Code - implementation builder
-        context_tokens: 262144
+        context_tokens: null
+        output_tokens: null
         variant: null
         request_body: {}
 
       builder_fallback:
-        model: qwen3-coder-next:cloud
-        name: Qwen 3 Coder Next - implementation fallback
-        context_tokens: 262144
+        model: glm-5.3-flash:cloud
+        name: GLM 5.3 Flash - implementation fallback
+        context_tokens: null
+        output_tokens: null
         variant: null
         request_body: {}
 
       reviewer:
         model: glm-5.3-flash:cloud
         name: GLM 5.3 Flash - correctness reviewer
-        context_tokens: 1048576
+        context_tokens: null
+        output_tokens: null
         variant: null
         request_body: {}
 
       security:
-        model: gpt-oss:120b
-        name: gpt-oss 120B - security reviewer
-        context_tokens: 131072
+        model: deepseek-v4.1-flash:cloud
+        name: DeepSeek V4.1 Flash - security reviewer
+        context_tokens: null
+        output_tokens: null
         variant: null
         request_body: {}
 
-    # Self-hosted routing selected from the reference OpenWebUI/Ollama catalog.
-    # Keep different model families across Builder and review lanes so local-only operation does
-    # not collapse independent semantic review into self-review by the implementation model.
-    local:
-      scout:
-        # 30B total / ~3B active MoE: fast agentic repository mapping with 1M catalog context.
-        model: nemotron-3.5-lightning:latest
-        name: Nemotron 3.5 Lightning - local repository scout
-        context_tokens: 1048576
-        variant: null
-        request_body: {}
-
-      planner:
-        # Strong long-horizon coding/repository reasoning; local catalog exposes 262k context.
-        model: laguna-s-2.1:latest
-        name: Laguna S 2.1 - local architecture reasoning
-        context_tokens: 262144
-        variant: null
-        request_body: {}
-
-      builder:
-        # Current local Qwen tool/reasoning model; sole writer in the active worktree.
-        model: qwen3.8:latest
-        name: Qwen 3.8 - local implementation builder
-        context_tokens: 262144
-        variant: null
-        request_body: {}
-
-      builder_fallback:
-        # Different family from the primary Builder for bounded execution failover.
-        model: nemotron-3.5-lightning:latest
-        name: Nemotron 3.5 Lightning - local implementation fallback
-        context_tokens: 1048576
-        variant: null
-        request_body: {}
-
-      reviewer:
-        # Independent agentic/coding family from the primary Builder.
-        model: muse-glimmer:latest
-        name: Muse Glimmer - local correctness reviewer
-        context_tokens: 131072
-        variant: null
-        request_body: {}
-
-      security:
-        # Large independent local reasoning family retained for security/trust-boundary review.
-        model: gpt-oss:120b
-        name: gpt-oss 120B - local security reviewer
-        context_tokens: 131072
-        variant: null
-        request_body: {}
-
-  # Do not collapse all review lanes onto the Builder model merely to reduce latency. Review model
-  # diversity is part of the quality policy, not just a performance preference.
+  # gemma4:31b-cloud is visible, but its supplied capability metadata is null.
+  # Keep it out of mandatory lanes until tool/schema behavior is benchmarked.
+  # Do not collapse review onto the Builder model merely to reduce latency.
 
 agents:
   scout:
@@ -264,7 +214,7 @@ agents:
     timeout_seconds: 900
     steps: 12
     # Ordered, explicit failover only. Every fallback is a fresh session with the same role policy.
-    fallback_model_profiles: [planner]
+    fallback_model_profiles: [reviewer]
     provider_retries: 1
     tool_permissions: {}
 
@@ -295,7 +245,7 @@ agents:
     agent: converge-correctness-reviewer
     model_profile: reviewer
     timeout_seconds: 1800
-    steps: 24
+    steps: 48
     fallback_model_profiles: [planner]
     provider_retries: 1
     tool_permissions: {}
@@ -304,7 +254,7 @@ agents:
     agent: converge-architecture-reviewer
     model_profile: planner
     timeout_seconds: 1800
-    steps: 24
+    steps: 48
     fallback_model_profiles: [reviewer]
     provider_retries: 1
     tool_permissions: {}
@@ -313,8 +263,8 @@ agents:
     agent: converge-security-reviewer
     model_profile: security
     timeout_seconds: 1800
-    steps: 24
-    fallback_model_profiles: [planner]
+    steps: 48
+    fallback_model_profiles: [reviewer]
     provider_retries: 1
     tool_permissions: {}
 
@@ -353,7 +303,8 @@ workflow:
   # Context safety. Authoritative requirements/task/diff are never truncated. The input budget is
   # the smaller of this fraction of model context and (context - output reserve). Only explicitly
   # advisory Scout/working-memory material may be compacted. Core overflow fails closed.
-  # Hard enforcement requires agents to use model profiles with context_tokens defined.
+  # Hard model-context enforcement requires verified context_tokens. The current gateway catalog
+  # does not publish limits, so the reference profiles leave them null rather than guess.
   context_input_fraction: 0.70
   context_output_reserve_tokens: 4096
 

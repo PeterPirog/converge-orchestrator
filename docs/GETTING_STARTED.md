@@ -165,7 +165,7 @@ Referencyjna instalacja ma już quality-first routing:
 models:
   profiles:
     planner:
-      model: deepseek-v4-pro:cloud
+      model: deepseek-v4.1-flash:cloud
     builder:
       model: kimi-k2.7-code:cloud
     reviewer:
@@ -174,14 +174,14 @@ models:
 
 Dobór jest celowy:
 
-- **Planner — `deepseek-v4-pro:cloud`**: szeroki reasoning i 1M context do analizy architektury;
+- **Planner — `deepseek-v4.1-flash:cloud`**: reasoning/tool use do analizy architektury; limit context należy potwierdzić w aktualnym gateway;
 - **Builder — `kimi-k2.7-code:cloud`**: coding-focused long-horizon agent do implementacji;
 - **Reviewer — `glm-5.3-flash:cloud`**: inna rodzina niż Builder, mocne coding/agentic review.
 
 Nie ustawiaj Buildera i Reviewera na ten sam model bez potrzeby. Niezależna rodzina modelu zmniejsza
 ryzyko skorelowanych błędów. Deterministic gates, compliance i CI nadal są ważniejsze niż werdykt LLM.
 
-Dodatkowe rekomendacje i local-only routing są w [MODEL_ROUTING.md](MODEL_ROUTING.md).
+Dodatkowe rekomendacje są w [MODEL_ROUTING.md](MODEL_ROUTING.md). Aktualny referencyjny katalog nie zawiera zweryfikowanego kompletnego local-only profile set.
 
 Jeśli któregoś ID nie ma w Twoim OpenWebUI, uruchom `converge models` i zmień wyłącznie odpowiedni
 `models.profiles.<role>.model`.

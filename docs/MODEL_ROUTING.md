@@ -21,12 +21,12 @@ orkiestratorem; nie dodajemy osobnego modelu LLM „managera”.
 
 | Rola | Domyślny model | Context | Dlaczego |
 | --- | --- | ---: | --- |
-| Repo Scout | `deepseek-v4-flash:cloud` | 1,048,576 | szybka, read-only mapa aktualnego base commit |
-| Planner | `deepseek-v4-pro:cloud` | 1,048,576 | frontier reasoning + tools/thinking; analiza architektury i wybór najmniejszego kolejnego kroku |
-| Builder | `kimi-k2.7-code:cloud` | 262,144 | coding-focused long-horizon agent do wieloetapowego software engineering |
-| Correctness Reviewer | `glm-5.3-flash:cloud` | 1,048,576 | niezależna rodzina od Buildera; zachowanie, edge cases, testy i compatibility |
-| Architecture Reviewer | `deepseek-v4-pro:cloud` | 1,048,576 | szeroki kontekst i reasoning do dependency direction, boundaries i architectural drift |
-| Security Reviewer | `gpt-oss:120b` | 131,072 | niezależna lokalna rodzina reasoning/tool-use do security i trust boundaries |
+| Repo Scout | `deepseek-v4.1-flash:cloud` | provider-managed | szybka, read-only mapa aktualnego base commit |
+| Planner | `deepseek-v4.1-flash:cloud` | provider-managed | reasoning/tool use do analizy architektury i wyboru najmniejszego kolejnego kroku |
+| Builder | `kimi-k2.7-code:cloud` | provider-managed | coding-focused long-horizon agent do wieloetapowego software engineering |
+| Correctness Reviewer | `glm-5.3-flash:cloud` | provider-managed | niezależna rodzina od Buildera; zachowanie, edge cases, testy i compatibility |
+| Architecture Reviewer | `deepseek-v4.1-flash:cloud` | provider-managed | świeża read-only sesja do dependency direction, boundaries i architectural drift |
+| Security Reviewer | `deepseek-v4.1-flash:cloud` | provider-managed | niezależny od Buildera read-only security/trust-boundary review |
 
 Architektura Reviewera jest teraz fan-outem, a nie pojedynczym wywołaniem. `workflow.review_roles`
 definiuje jawne lane'y, które OpenCode uruchamia równolegle w świeżych procesach/sesjach nad tym samym
@@ -37,9 +37,9 @@ zbiorczy jest `reject`.
 Dzięki temu brak odpowiedzi Security Reviewera nie może zostać pomylony z brakiem problemów
 bezpieczeństwa. Failure-to-review jest failure-to-integrate.
 
-Dokładne limity kontekstu są zapisane w `examples/converge.yaml` jako `context_tokens`. Converge
-przekłada je na stable OpenCode `provider.models.<id>.limit.context`, dzięki czemu OpenCode może
-zarządzać compaction względem rzeczywistego limitu custom gateway.
+Aktualny payload katalogu OpenWebUI podaje dokładne ID modeli, ale nie publikuje limitów context/output.
+Dlatego referencyjny preset pozostawia `context_tokens`/`output_tokens` jako `null` zamiast zgadywać.
+Jawne limity należy dodać dopiero po ich wiarygodnym potwierdzeniu dla tego samego gateway/provider path.
 
 ## Jawny bounded retry i fallback
 
@@ -93,16 +93,16 @@ kolejnej iteracji.
 
 ## Profile zapasowe
 
-Po aktywacji parallel review kolejne przydatne role/model policies są następujące:
+Aktualny preset używa tylko modeli rzeczywiście widocznych w dostarczonym katalogu OpenWebUI:
 
-| Profil | Model | Context | Zastosowanie |
-| --- | --- | ---: | --- |
-| Local long-horizon fallback | `laguna-s-2.1:latest` | 262,144 | agentic coding i długie zadania bez zależności od cloud; bardzo duże wymagania pamięciowe |
-| Coding fallback | `qwen3-coder-next:cloud` | 262,144 | coding/tool use jako zapasowy model implementacyjny |
+| Profil | Model | Zastosowanie |
+| --- | --- | --- |
+| Builder fallback | `glm-5.3-flash:cloud` | zapasowy writer po execution/provider failure Kimi |
+| Planner/reviewer fallback | `glm-5.3-flash:cloud` lub `deepseek-v4.1-flash:cloud` | świeża sesja innej aktywnej rodziny zgodnie z rolą |
 
-Repo Scout i bounded model failover są aktywne bez dodawania nowych przejść LangGraph. Nie należy
-dodawać nowych ról do `workflow.review_roles`, jeśli rola nie jest jednym z jawnie obsługiwanych
-reviewerów.
+`gemma4:31b-cloud` jest widoczny, ale jego rekord ma `capabilities: null`; nie trafia do obowiązkowej
+lane bez benchmarku tool calling i schema adherence. `code-arena`, `code-arena-mid` i `math-arena`
+są celowo wyłączone, bo arena ukrywa dokładną tożsamość modelu użytego w trwałych dowodach runu.
 
 ## Dlaczego nie jeden model wszędzie
 
@@ -121,14 +121,12 @@ jest szczególnie wartościowy dla Plannera i reviewerów analizujących szeroki
 
 ## Lokalność vs jakość
 
-Referencyjny preset jest quality-first i używa modeli cloud tam, gdzie ich specjalizacja jest
-najbardziej użyteczna. Jeżeli polityka projektu wymaga local-only, zachowaj role i review fan-out, ale
-zmień profile, np. Planner/Architecture/Builder na lokalny long-horizon model, a Security Reviewer na
-`gpt-oss:120b`.
+Aktualny referencyjny katalog zawiera stabilne modele cloud oraz arena IDs, ale nie zawiera
+zweryfikowanego zestawu lokalnych modeli do wszystkich wymaganych ról. Dlatego
+`examples/converge.yaml` wybiera `models.mode: cloud` i definiuje tylko zestaw `cloud`.
 
-Nie zaleca się redukowania trzech lane'ów do jednego wyłącznie dlatego, że projekt działa local-only.
-Jeżeli sprzęt nie mieści kilku ciężkich modeli jednocześnie, ustaw `max_parallel_reviews: 1` lub `2`.
-Semantyka pozostaje ta sama — zmienia się tylko concurrency, nie wymaganie przejścia wszystkich lane'ów.
+Converge nadal obsługuje `models.mode: local`. Lokalny zestaw należy dodać dopiero po sprawdzeniu
+dokładnych ID przez `converge models` i benchmarku tool/schema behavior.
 
 ## Konfiguracja review fan-out
 
@@ -223,8 +221,7 @@ Nie wybieraj modelu wyłącznie na podstawie liczby parametrów albo długości 
 
 ## Referencje modeli użytych przez preset
 
-- Kimi K2.7 Code: https://ollama.com/library/kimi-k2.7-code
-- DeepSeek V4 Pro: https://ollama.com/library/deepseek-v4-pro
-- GLM 5.3 Flash: https://ollama.com/library/glm-5.3-flash
-- Laguna S 2.1: https://ollama.com/library/laguna-s-2.1
-- gpt-oss: https://openai.com/open-models/
+- Kimi K2.7 Code: current gateway ID `kimi-k2.7-code:cloud`
+- GLM 5.3 Flash: current gateway ID `glm-5.3-flash:cloud`
+- DeepSeek V4.1 Flash: current gateway ID `deepseek-v4.1-flash:cloud`
+- Gemma4 31B: current gateway ID `gemma4:31b-cloud` (not in mandatory lanes until capabilities are verified)
