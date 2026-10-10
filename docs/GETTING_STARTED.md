@@ -1,11 +1,17 @@
 # Pierwsze uruchomienie: PyCharm + OpenCode + OpenWebUI
 
+> **Uwaga językowa / Language note:** this guide is currently maintained in Polish while the
+> canonical technical documentation of this repository is English. There is no explicit localization
+> policy yet; a full localization restructuring is deferred to Revision 2.0 and is intentionally not
+> performed as cosmetic churn.
+
 Ten przewodnik prowadzi od świeżego klona Converge do pierwszego autonomicznego runu na innym
 repozytorium. Dla jednego projektu docelowego powinieneś ręcznie utrzymywać **jeden plik**:
 `converge.yaml`.
 
 Converge nie traktuje historii chatu ani wygenerowanego configu OpenCode jako Source of Truth.
-Architektura docelowa znajduje się w osobnym, read-only Markdown, a orkiestrator przypina jego SHA-256.
+Niezmienne Źródło Prawdy (Source of Truth) projektu — wymagania i architektura docelowa — znajduje się
+w osobnym, read-only Markdown, a orkiestrator przypina jego SHA-256.
 
 ## 1. Zalecany układ katalogów
 

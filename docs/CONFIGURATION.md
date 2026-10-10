@@ -1,5 +1,10 @@
 # Referencja konfiguracji `converge.yaml`
 
+> **Uwaga językowa / Language note:** this configuration reference is currently maintained in Polish
+> (with English technical terms) while the canonical technical documentation of this repository is
+> English. There is no explicit localization policy yet; a full localization restructuring is deferred
+> to Revision 2.0 and is intentionally not performed as cosmetic churn.
+
 `converge.yaml` jest jedynym plikiem, który powinien być ręcznie edytowany dla konkretnego projektu.
 Converge oddziela konfigurację użytkownika od wygenerowanego runtime configu OpenCode i od durable
 state procesu.
