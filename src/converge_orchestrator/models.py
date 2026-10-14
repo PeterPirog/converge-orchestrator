@@ -287,6 +287,8 @@ class ProjectConfig(BaseModel):
         """Accept the documented single-file layout while preserving legacy flat config."""
         if not isinstance(raw, dict):
             return raw
+        if "requirements" in raw or "requirements" in (raw.get("project") or {}):
+            raise ValueError("immutable Source of Truth is the sole requirements authority")
         data = dict(raw)
 
         def copy_value(target: str, section: dict[str, Any], source: str) -> None:
