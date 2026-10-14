@@ -400,6 +400,82 @@ agents:
     assert cfg.opencode_generated_config_path == (project / ".runtime/opencode.json").resolve()
 
 
+def test_project_configuration_rejects_embedded_product_requirements(tmp_path: Path) -> None:
+    # INV-CORE-001: the immutable Markdown Source of Truth is the sole product-requirements
+    # authority. converge.yaml defines execution policy only and must fail closed instead
+    # of silently absorbing its own requirement statements.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "repository").mkdir()
+    (project / "architecture.md").write_text(
+        "System must remain stable.\n", encoding="utf-8"
+    )
+
+    base = (
+        """
+version: 1
+project:
+  repo_path: ./repository
+  requirements_path: ./architecture.md
+  require_spec_read_only: false
+agents:
+  planner:
+    agent: converge-planner
+    model: openai/example
+""".strip()
+    )
+
+    # A configuration that references the Source of Truth by path (requirements_path)
+    # must keep loading unchanged.
+    baseline = project / "converge.yaml"
+    baseline.write_text(base + "\n", encoding="utf-8")
+    assert load_config(baseline).requirements_path == (
+        project / "architecture.md"
+    ).resolve()
+
+    # A top-level `requirements` key declares product requirements and must be rejected.
+    top_level = project / "converge.top.yaml"
+    top_level.write_text(
+        base
+        + "\n"
+        + "requirements:\n"
+        + "  - id: INV-TEST-001\n"
+        + '    statement: "The system must do a thing."\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"Source of Truth.*sole requirements authority",
+    ):
+        load_config(top_level)
+
+    # `project.requirements` is the same declaration nested one level deeper.
+    nested = project / "converge.nested.yaml"
+    nested.write_text(
+        """
+version: 1
+project:
+  repo_path: ./repository
+  requirements_path: ./architecture.md
+  require_spec_read_only: false
+  requirements:
+    - id: INV-TEST-002
+      statement: "The system must do another thing."
+agents:
+  planner:
+    agent: converge-planner
+    model: openai/example
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"Source of Truth.*sole requirements authority",
+    ):
+        load_config(nested)
+
+
 def test_unknown_config_version_is_rejected(tmp_path: Path) -> None:
     raw = _nested_config(tmp_path)
     raw["version"] = 2
