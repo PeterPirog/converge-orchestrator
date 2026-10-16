@@ -1227,7 +1227,7 @@ def human_gate(state: WorkflowState) -> WorkflowState:
         if set(task.requirement_ids) - known_ids:
             raise ValueError("edited task contains unknown requirement IDs")
         _discard_current_workspace(state)
-        return {
+        next_state: WorkflowState = {
             **state,
             "human_decisions": human_decisions,
             "task": task.model_dump(mode="json"),
@@ -1247,6 +1247,13 @@ def human_gate(state: WorkflowState) -> WorkflowState:
             "risk_fingerprint": None,
             "status": "human_edit",
         }
+        # INV-MODE-001: manual authoring uses the same evidence semantics as the
+        # autonomous planner paths (plan/replan/targeting), which all persist the
+        # replacement Task Envelope as task.json before it enters verification.
+        _evidence(next_state).write_json(
+            next_state["run_id"], task.id, "task.json", next_state["task"]
+        )
+        return next_state
     raise ValueError(f"Unsupported human decision: {action}")
 
 
