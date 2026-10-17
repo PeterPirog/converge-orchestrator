@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -77,6 +78,46 @@ def state_store_id(state_dir: Path) -> str:
     """Return an ID shared only by controllers that see the same durable state directory."""
     root = state_dir.expanduser().resolve()
     return _marker_id(root / _STATE_MARKER_NAME, "state-store")
+
+
+def _canonical_identity_source(value: str) -> str:
+    """Normalize a Git origin URL or local path into a stable identity source.
+
+    Cosmetic differences that must not split one repository into two identities
+    (backslash vs. forward slash, drive-letter case, a trailing separator, an
+    upper-cased scheme or host) are canonicalized away.
+    """
+    value = value.strip()
+    if "://" in value:
+        scheme, rest = value.split("://", 1)
+        if "/" in rest:
+            host, tail = rest.split("/", 1)
+            return f"{scheme.lower()}://{host.lower()}/{tail}"
+        return f"{scheme.lower()}://{rest.lower()}"
+    path = value.replace("\\", "/")
+    if len(path) >= 3 and path[1] == ":" and path[2] == "/":
+        path = path[0].lower() + path[1:]
+    return path.rstrip("/")
+
+
+def mutation_domain_id(repo: Path) -> str:
+    """Return one canonical repository mutation domain identity (INV-MUTATION-001).
+
+    The identity is equal for every independent clone and linked worktree of the
+    same repository and distinct across unrelated repositories, independent of
+    project ID, clone path, worktree path, or state store.
+
+    It is derived only from local Git metadata — the canonical ``remote.origin.url``
+    when present, otherwise the resolved Git common directory — and never performs
+    network, model, provider, or fetch operations.
+    """
+    root = repo.expanduser().resolve()
+    result = run(["git", "config", "--get", "remote.origin.url"], cwd=root, timeout=30)
+    origin = result.stdout.strip() if result.returncode == 0 else ""
+    source = origin if origin else _git_common_dir(root).as_posix()
+    normalized = _canonical_identity_source(source)
+    digest = hashlib.sha256(f"converge:mutation-domain:{normalized}".encode()).hexdigest()
+    return f"mutdom-{digest}"
 
 
 def assert_workspace_affinity(project: dict, repo: Path) -> str:
