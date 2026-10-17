@@ -338,10 +338,11 @@ class EvidenceClosure:
     This primitive computes the transitive closure of the evidence-dependency graph rooted at the
     convergence record ids. Starting from ``root_ids`` it follows every id recorded in
     ``dependencies`` until no new id is reachable, so the full set of transitively reachable
-    evidence dependencies is covered. ``missing`` is the exact set of reachable dependencies with
-    no resolved evidence (i.e. absent from ``resolved``), and ``closed`` is ``True`` only when
-    ``missing`` is empty, so a partial closure is reported as ``closed=False`` alongside the
-    stably ordered tuple of unresolved ids.
+    evidence dependencies is covered. The ``root_ids`` themselves are part of the closure, so an
+    unresolved root record is also reported in ``missing``. ``missing`` is the exact set of
+    reachable evidence ids with no resolved evidence (i.e. absent from ``resolved``), and
+    ``closed`` is ``True`` only when ``missing`` is empty, so a partial closure is reported as
+    ``closed=False`` alongside the stably ordered tuple of unresolved ids.
 
     Closure computation is pure and deterministic: no network, model, provider, subprocess, or
     filesystem side effects. ``closure`` and ``missing`` are stably sorted tuples of the evidence
