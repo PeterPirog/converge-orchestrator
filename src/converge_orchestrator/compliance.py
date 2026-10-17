@@ -86,3 +86,40 @@ class ComplianceEngine:
             entry.status = RequirementStatus.PASS
             entry.evidence = list(dict.fromkeys([*entry.evidence, *evidence]))
         return updated
+
+    @staticmethod
+    def pass_survives_canonical_revision(
+        bound_revision: str,
+        later_revision: str,
+        reestablished: bool,
+        evidence: list[dict[str, object]],
+        revision_independent: frozenset[str],
+    ) -> bool:
+        """Report whether a compliance PASS survives a later canonical revision.
+
+        Implements INV-COMPLIANCE-001 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L170):
+        a PASS bound to ``bound_revision`` survives ``later_revision`` only when current
+        evidence is re-established, or deterministic evidence-applicability rules prove that
+        the supporting evidence remains valid for the later revision.
+
+        This is a pure, deterministic in-memory predicate with no network, model, provider,
+        subprocess, git, or filesystem side effects.
+
+        ``evidence`` holds the supporting evidence units; each is a plain mapping with an
+        ``id`` and the ``bound_revision`` the unit is bound to (``None`` when unbound).
+        ``revision_independent`` holds the ids of evidence units declared
+        revision-independent by a deterministic applicability rule.
+
+        Returns ``True`` when ``reestablished`` is set (no applicability proof required),
+        or when every evidence unit is either bound to ``later_revision`` or declared
+        revision-independent. Otherwise fails closed and returns ``False``.
+        """
+        if reestablished:
+            return True
+        for unit in evidence:
+            if unit.get("id") in revision_independent:
+                continue
+            if unit.get("bound_revision") == later_revision:
+                continue
+            return False
+        return True
