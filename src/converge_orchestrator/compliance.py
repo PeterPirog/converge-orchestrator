@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from .models import (
     ComplianceEntry,
     ComplianceSnapshot,
@@ -122,4 +124,37 @@ class ComplianceEngine:
             if unit.get("bound_revision") == later_revision:
                 continue
             return False
+        return True
+
+    @staticmethod
+    def evidence_reusable_across_revisions(
+        pinned_policy: Mapping[str, str],
+        footprint: Mapping[str, str],
+        reestablished_on_later_revision: bool,
+    ) -> bool:
+        """Report whether evidence may be reused on a later canonical revision.
+
+        Implements INV-APPLICABILITY-001 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L171):
+        cross-revision reuse of evidence is permitted only when an integrity-bound evidence
+        dependency footprint is complete under the pinned evidence policy, or when the evidence
+        is re-established on the later canonical revision; otherwise the evidence must stay
+        revision-local.
+
+        This is a pure, deterministic in-memory predicate with no network, model, provider,
+        subprocess, git, or filesystem side effects.
+
+        ``pinned_policy`` maps each required dependency id to the integrity digest mandated by
+        the pinned evidence policy. ``footprint`` maps each dependency id to the integrity
+        digest actually present in the integrity-bound dependency footprint.
+
+        Returns ``True`` when ``reestablished_on_later_revision`` is set (no footprint required),
+        or when every pinned-policy dependency is present in the footprint bound by the very
+        digest the policy mandates. Otherwise fails closed and returns ``False`` so the
+        evidence stays revision-local.
+        """
+        if reestablished_on_later_revision:
+            return True
+        for dependency_id, mandated_digest in pinned_policy.items():
+            if footprint.get(dependency_id) != mandated_digest:
+                return False
         return True
