@@ -254,6 +254,47 @@ class EvidenceStore:
         temporary.replace(path)
 
 
+class CandidateBoundEvidence:
+    """Candidate-bound evidence with drift invalidation (INV-EVID-001).
+
+    INV-EVID-001 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L166 [4. Global invariants]):
+    Candidate-bound evidence SHALL remain valid only for the exact candidate content and policy
+    identity it evaluated, and later mutation of that content or policy SHALL invalidate affected
+    downstream evidence.
+
+    This primitive binds a unit of evidence to the exact candidate content hash and policy
+    identity hash that were present at evaluation time. It remains valid only while both
+    identities still equal the values recorded at binding time; once either identity drifts, the
+    evidence must be treated as invalid (and so must any downstream evidence that depends on it).
+
+    Identity hashes are SHA-256 digests, consistent with the existing evidence and cache code
+    (e.g. ``architecture_policy_sha256`` and the ``candidate_sha256`` fingerprint convention).
+    Validation is a pure, deterministic in-memory comparison: no network, model, provider, or
+    fetch operations.
+    """
+
+    __slots__ = ("candidate_content_sha256", "policy_identity_sha256")
+
+    def __init__(
+        self,
+        candidate_content_sha256: str,
+        policy_identity_sha256: str,
+    ) -> None:
+        self.candidate_content_sha256 = candidate_content_sha256
+        self.policy_identity_sha256 = policy_identity_sha256
+
+    def is_valid(
+        self,
+        candidate_content_sha256: str,
+        policy_identity_sha256: str,
+    ) -> bool:
+        """Return ``True`` only if both identities exactly match the bound values."""
+        return bool(
+            candidate_content_sha256 == self.candidate_content_sha256
+            and policy_identity_sha256 == self.policy_identity_sha256
+        )
+
+
 def _resolve_confined_path(worktree: Path, rel_path: str) -> Path:
     """
     Resolve a repository-relative path confined to the worktree.
