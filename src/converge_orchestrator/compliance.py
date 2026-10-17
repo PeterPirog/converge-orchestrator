@@ -168,3 +168,54 @@ class ComplianceEngine:
         if not decision.get("evidence_policy") or not decision.get("evidence"):
             return False
         return decision.get("canonical_revision") == applicable_revision
+
+    @staticmethod
+    def terminal_content_retrievable(
+        recorded_source_identity: str | None,
+        declared_source_identity: str | None,
+        retrievable_from_recorded_source: bool,
+        existing_only_in: frozenset[str],
+    ) -> bool:
+        """Report whether terminal convergence may depend on Git-native external content.
+
+        Implements INV-MATERIALIZE-001 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L173
+        [4. Global invariants]): terminal convergence SHALL NOT depend on Git-native external
+        content that exists only in a local cache, prior worktree, developer machine, model
+        sandbox, CI cache, or another undeclared source and cannot be retrieved from the
+        external source identity recorded for the canonical repository revision.
+
+        This is a pure, deterministic in-memory predicate with no network, model, provider,
+        subprocess, git, or filesystem side effects.
+
+        ``recorded_source_identity`` is the external source identity recorded for the canonical
+        repository revision (``None`` when none is recorded). ``declared_source_identity`` is
+        the identity declared for the Git-native external content (``None`` when undeclared).
+        ``retrievable_from_recorded_source`` reports whether the content can be retrieved from
+        the recorded external source identity. ``existing_only_in`` names the sources the
+        content exists only in (local cache, prior worktree, developer machine, model sandbox,
+        CI cache, or other undeclared sources).
+
+        Returns ``True`` only when the content can be retrieved from the recorded external
+        source identity, or when a recorded identity exists and the content's declared identity
+        matches it. Fails closed and returns ``False`` whenever the content exists only in a
+        local cache, prior worktree, developer machine, model sandbox, CI cache, or another
+        undeclared source, and whenever no external source identity is recorded (no vacuous
+        identity match) -- so terminal convergence never depends on content confined to local
+        or undeclared sources.
+        """
+        # Content confined to local/undeclared sources fails closed: it is not retrievable
+        # from the external source identity recorded for the canonical repository revision, so
+        # terminal convergence must not depend on it regardless of any other fact.
+        if existing_only_in:
+            return False
+        # A retrievability fact only has meaning against a recorded external source identity;
+        # with none recorded, the content cannot be retrieved from that identity.
+        if retrievable_from_recorded_source and recorded_source_identity is not None:
+            return True
+        if (
+            recorded_source_identity is not None
+            and declared_source_identity is not None
+            and declared_source_identity == recorded_source_identity
+        ):
+            return True
+        return False
