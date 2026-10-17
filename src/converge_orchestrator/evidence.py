@@ -295,6 +295,38 @@ class CandidateBoundEvidence:
         )
 
 
+class ContentIntegrityBinding:
+    """Content-integrity binding for retained convergence evidence (INV-EVID-002).
+
+    INV-EVID-002 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L167 [4. Global invariants]):
+    Evidence that contributes to integration, compliance PASS, acceptance, or release convergence
+    SHALL be content-integrity-bound so later replacement, truncation, or mutation of the retained
+    artifact is detected before that evidence is reused.
+    This primitive binds a unit of retained evidence to the exact SHA-256 digest and byte size of
+    its content at binding time. ``verify`` stays ``True`` only while the content presented for
+    reuse is byte-identical to the content that was bound; any later replacement, truncation, or
+    mutation changes the digest (and usually the size), so it is detected before the evidence is
+    reused.
+
+    Binding and verification are pure, deterministic in-memory operations: no network, model,
+    provider, subprocess, or filesystem side effects. Digests are SHA-256 hex digests, consistent
+    with the existing evidence code (e.g. ``hashlib.sha256(...).hexdigest()``).
+    """
+
+    __slots__ = ("content_sha256", "content_size")
+
+    def __init__(self, content: bytes) -> None:
+        self.content_sha256 = hashlib.sha256(content).hexdigest()
+        self.content_size = len(content)
+
+    def verify(self, content: bytes) -> bool:
+        """Return ``True`` only if ``content`` is byte-identical to the bound content."""
+        return bool(
+            len(content) == self.content_size
+            and hashlib.sha256(content).hexdigest() == self.content_sha256
+        )
+
+
 def _resolve_confined_path(worktree: Path, rel_path: str) -> Path:
     """
     Resolve a repository-relative path confined to the worktree.
