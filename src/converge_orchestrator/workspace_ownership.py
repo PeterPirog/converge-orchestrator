@@ -93,6 +93,15 @@ class WorkspaceOwnershipStore:
                 raise WorkspaceOwnershipError(
                     f"Branch {branch} is already owned by another path: {current.path}"
                 )
+            if (
+                current.status == "active"
+                and current.task_id is not None
+                and current.task_id != task_id
+            ):
+                raise WorkspaceOwnershipError(
+                    f"Workspace {branch} is actively owned by candidate {current.task_id}; "
+                    f"candidate {task_id} cannot inherit writer authority"
+                )
             if current.status == "cleanup_requested":
                 raise WorkspaceOwnershipError(
                     f"Workspace {branch} is awaiting cleanup and cannot be reactivated"
