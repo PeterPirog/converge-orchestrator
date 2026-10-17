@@ -106,6 +106,7 @@ class WorkspaceOwnershipStore:
                 raise WorkspaceOwnershipError(
                     f"Workspace {branch} is awaiting cleanup and cannot be reactivated"
                 )
+        self._refuse_second_active_candidate(task_id)
         return self._write(
             WorkspaceOwnership(
                 task_id=task_id,
@@ -116,6 +117,30 @@ class WorkspaceOwnershipStore:
                 history=self._history(current, "activated"),
             )
         )
+
+    def _refuse_second_active_candidate(self, task_id: str) -> None:
+        """INV-PROJECT-001: refuse a second active candidate on the same integration line.
+
+        At most one mutation-capable candidate may be active per project integration line
+        (worktree-root namespace). ``task_id`` is the authoritative candidate identity, so
+        the candidate's own active records never block an in-place reactivation or a
+        same-candidate workspace on another branch.
+
+        Only ``status == "active"`` records block: a ``cleanup_requested`` record is not
+        active, though its worktree stays on disk until GC removes it. The scan reads every
+        ledger record, so a corrupt ledger fails closed and blocks activation on this line.
+        """
+        for record in self.list_records():
+            if (
+                record.status == "active"
+                and record.task_id is not None
+                and record.task_id != task_id
+            ):
+                raise WorkspaceOwnershipError(
+                    f"Project integration line already has an active candidate "
+                    f"{record.task_id} ({record.branch}); candidate {task_id} cannot "
+                    f"activate a second active workspace on the same line"
+                )
 
     def request_cleanup(
         self,
