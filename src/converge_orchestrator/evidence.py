@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -324,6 +325,89 @@ class ContentIntegrityBinding:
         return bool(
             len(content) == self.content_size
             and hashlib.sha256(content).hexdigest() == self.content_sha256
+        )
+
+
+class CandidateSnapshotEvidenceReport:
+    """Evidence-binding report for one exact candidate snapshot identity (INV-CANDIDATE-001).
+
+    Records, in the canonical required-category order, which categories are bound to the exact
+    snapshot identity (``applied``) and which are not (``unbound``). ``complete`` is ``True``
+    only when every required category is bound to the exact candidate content identity, i.e. the
+    candidate snapshot is fully evidenced.
+    """
+
+    __slots__ = ("applied", "unbound", "complete")
+
+    def __init__(
+        self,
+        applied: tuple[str, ...],
+        unbound: tuple[str, ...],
+        complete: bool,
+    ) -> None:
+        self.applied = applied
+        self.unbound = unbound
+        self.complete = complete
+
+
+class CandidateSnapshotIdentity:
+    """Candidate-snapshot identity binding (INV-CANDIDATE-001).
+
+    INV-CANDIDATE-001 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L168 [4. Global invariants]):
+    Scope, quality, verifier, risk, review, and integration-readiness evidence for a candidate
+    SHALL apply to one exact publishable candidate snapshot and candidate content identity rather
+    than to an incomplete textual patch or mutable ambient working directory.
+
+    This primitive derives one candidate content identity from the complete publishable candidate
+    snapshot bytes using a SHA-256 digest. A unit of evidence applies only when its identity
+    equals this exact snapshot identity; evidence tied to a partial textual patch or to a mutable
+    ambient working directory carries a different identity and therefore does not apply, and the
+    affected categories are reported unbound by :meth:`evaluate`.
+
+    Identity derivation and binding evaluation are pure, deterministic in-memory operations: no
+    network, model, provider, subprocess, or ambient-directory reads. Digests are SHA-256 hex
+    digests, consistent with the existing evidence code (e.g. ``hashlib.sha256(...).hexdigest()``).
+    """
+
+    #: Evidence categories that must each be bound to the exact snapshot identity.
+    REQUIRED_EVIDENCE_CATEGORIES = (
+        "scope",
+        "quality",
+        "verifier",
+        "risk",
+        "review",
+        "integration_readiness",
+    )
+
+    __slots__ = ("identity_sha256", "snapshot_size")
+
+    def __init__(self, snapshot_bytes: bytes) -> None:
+        self.identity_sha256 = hashlib.sha256(snapshot_bytes).hexdigest()
+        self.snapshot_size = len(snapshot_bytes)
+
+    def applies_to(self, evidence_identity_sha256: str) -> bool:
+        """Return ``True`` only if the evidence identity is this exact snapshot identity."""
+        return bool(evidence_identity_sha256 == self.identity_sha256)
+
+    def evaluate(self, evidence_identities: Mapping[str, str]) -> CandidateSnapshotEvidenceReport:
+        """Report which required categories are bound to this exact snapshot identity.
+
+        ``evidence_identities`` maps an evidence category (e.g. ``"scope"``) to the SHA-256
+        identity of the candidate content that evidence was evaluated against. A category counts
+        as applied only when that identity exactly equals ``identity_sha256``; otherwise it is
+        reported unbound. Categories outside :data:`REQUIRED_EVIDENCE_CATEGORIES` are ignored.
+        """
+        applied: list[str] = []
+        unbound: list[str] = []
+        for category in self.REQUIRED_EVIDENCE_CATEGORIES:
+            if evidence_identities.get(category) == self.identity_sha256:
+                applied.append(category)
+            else:
+                unbound.append(category)
+        return CandidateSnapshotEvidenceReport(
+            applied=tuple(applied),
+            unbound=tuple(unbound),
+            complete=not unbound,
         )
 
 
