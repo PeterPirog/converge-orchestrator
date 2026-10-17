@@ -158,3 +158,13 @@ class ComplianceEngine:
             if footprint.get(dependency_id) != mandated_digest:
                 return False
         return True
+
+    @staticmethod
+    def mandatory_pass_admissible(mandatory, status, decision, applicable_revision):
+        if not mandatory or status != RequirementStatus.PASS:
+            return True
+        if not isinstance(decision, Mapping):
+            return False
+        if not decision.get("evidence_policy") or not decision.get("evidence"):
+            return False
+        return decision.get("canonical_revision") == applicable_revision
