@@ -328,6 +328,50 @@ class ContentIntegrityBinding:
         )
 
 
+class EvidenceClosure:
+    """Transitive evidence-dependency closure for terminal convergence (INV-EVID-003).
+
+    INV-EVID-003 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L174 [4. Global invariants]):
+    Terminal convergence SHALL have evidence closure for every evidence dependency used by
+    mandatory PASS, integration, operational acceptance, and release provenance.
+
+    This primitive computes the transitive closure of the evidence-dependency graph rooted at the
+    convergence record ids. Starting from ``root_ids`` it follows every id recorded in
+    ``dependencies`` until no new id is reachable, so the full set of transitively reachable
+    evidence dependencies is covered. ``missing`` is the exact set of reachable dependencies with
+    no resolved evidence (i.e. absent from ``resolved``), and ``closed`` is ``True`` only when
+    ``missing`` is empty, so a partial closure is reported as ``closed=False`` alongside the
+    stably ordered tuple of unresolved ids.
+
+    Closure computation is pure and deterministic: no network, model, provider, subprocess, or
+    filesystem side effects. ``closure`` and ``missing`` are stably sorted tuples of the evidence
+    ids, so repeated evaluation of the same inputs is byte-identical.
+    """
+
+    __slots__ = ("closure", "missing", "closed")
+
+    def __init__(
+        self,
+        root_ids: tuple[str, ...],
+        dependencies: Mapping[str, tuple[str, ...]],
+        resolved: tuple[str, ...],
+    ) -> None:
+        seen: set[str] = set()
+        stack: list[str] = list(root_ids)
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            for dependency in dependencies.get(current, ()):
+                if dependency not in seen:
+                    stack.append(dependency)
+        self.closure = tuple(sorted(seen))
+        resolved_ids = set(resolved)
+        self.missing = tuple(sorted(eid for eid in seen if eid not in resolved_ids))
+        self.closed = not self.missing
+
+
 class CandidateSnapshotEvidenceReport:
     """Evidence-binding report for one exact candidate snapshot identity (INV-CANDIDATE-001).
 
