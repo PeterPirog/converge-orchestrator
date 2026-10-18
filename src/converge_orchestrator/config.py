@@ -139,11 +139,42 @@ def _read_source(source: Path) -> str:
     return payload.decode("utf-8")
 
 
+def resolve_source_of_truth(data: dict[str, Any]) -> Any:
+    """Resolve the single authoritative Markdown Source of Truth declared by ``data``.
+
+    REQ-SOT-001: a run SHALL accept exactly one authoritative Source of Truth.
+    This pure resolver enforces that contract over the raw configuration mapping:
+    it returns the declared ``requirements_path`` when exactly one declaration is
+    present (top-level or under ``project``), and fails closed with ``ValueError``
+    when zero or multiple declarations are present. It performs no filesystem,
+    network, model, git, or subprocess access and enforces no file-name format.
+    """
+    declarations: list[Any] = []
+    if "requirements_path" in data:
+        declarations.append(data["requirements_path"])
+    project = data.get("project")
+    if isinstance(project, dict) and "requirements_path" in project:
+        declarations.append(project["requirements_path"])
+
+    if len(declarations) != 1:
+        if not declarations:
+            raise ValueError(
+                "a run must declare exactly one Source of Truth via requirements_path; "
+                "none declared"
+            )
+        raise ValueError(
+            "a run must declare exactly one Source of Truth via requirements_path; "
+            f"{len(declarations)} declarations are ambiguous"
+        )
+    return declarations[0]
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
         raise ValueError("converge.yaml must contain a YAML mapping at the document root")
     flaky_ci_policy_from_mapping(data)
+    resolve_source_of_truth(data)
     selected = _select_model_profile_set(data)
     return _resolve_relative_paths(selected, source.parent)
 
