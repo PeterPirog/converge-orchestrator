@@ -197,6 +197,37 @@ def evaluate_source_of_truth_pin(state: dict[str, Any]) -> tuple[str, ...]:
     return ()
 
 
+def evaluate_source_of_truth_drift(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SOT-011 over a run-state snapshot.
+
+    REQ-SOT-011: a run SHALL stop mutation and integration when the authoritative
+    Source-of-Truth content no longer matches its pinned digest. This pure, offline,
+    deterministic guard inspects a plain run-state mapping with the keys
+    ``pinned_source_of_truth_sha256`` and ``current_source_of_truth_sha256``, and
+    returns the violated halt clauses in fixed order (mutation first, then
+    integration):
+
+    * ``source_of_truth_drift_halt_mutation`` when the authoritative Source-of-Truth
+      content no longer matches its pinned digest, so repository mutation must stop;
+    * ``source_of_truth_drift_halt_integration`` when the same drift condition holds,
+      so integration must stop.
+
+    It returns an empty tuple when a pinned digest matches the authoritative current
+    Source-of-Truth content digest, and also when no digest was pinned: a missing pin
+    is REQ-SOT-010's concern (enforced by ``evaluate_source_of_truth_pin``), not drift.
+    It performs no filesystem, network, model, git, or subprocess access.
+    """
+    pinned = state.get("pinned_source_of_truth_sha256")
+    current = state.get("current_source_of_truth_sha256")
+
+    if pinned is None or pinned == current:
+        return ()
+    return (
+        "source_of_truth_drift_halt_mutation",
+        "source_of_truth_drift_halt_integration",
+    )
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
