@@ -501,3 +501,65 @@ class GitObjectAvailability:
         self.unbound = tuple(
             sorted({object_id for object_id in required if _is_unbound(object_id)})
         )
+
+
+def _source_is_ref_independent(source: object) -> bool:
+    """True when a source record is a non-mutable, ref-independent retention anchor.
+
+    Fails closed: a source that does not explicitly declare ``mutable`` as falsy is not
+    treated as a ref-independent anchor, so a retained release cannot rely on it.
+    """
+    if isinstance(source, Mapping):
+        declared = "mutable" in source
+        mutable: object = source.get("mutable")
+    else:
+        declared = hasattr(source, "mutable")
+        mutable = getattr(source, "mutable", None)
+    return declared and not bool(mutable)
+
+
+class RetainedReleaseAuditability:
+    """Pure, deterministic, in-memory retained-release auditability predicate (INV-RELEASE-001).
+
+    A retained historical release SHALL remain independently auditable after later branch
+    movement, force-update, ref deletion, repository maintenance, or ordinary remote garbage
+    collection and SHALL NOT depend on the released commit remaining reachable from a mutable
+    Git ref. Given the released commit, the retained audit element ids, the retention sources
+    each element is anchored by, and the ref events that have since occurred, ``auditable`` is
+    True only when every retained audit element is anchored by at least one non-mutable,
+    ref-independent retention source (a mutable Git ref never admits an element, but a
+    ref-independent source does even when a mutable ref also holds it), and ``ref_dependent``
+    is the sorted tuple of exactly the retained audit element ids that have no ref-independent
+    anchor -- including elements absent from ``retention_sources``. Fails closed for any such
+    element. ``ref_events`` records later ref activity and never changes the decision, because
+    the decision depends only on ref-independent retention anchors, not on mutable ref
+    reachability.
+
+    No network, model, provider, subprocess, git command, or filesystem I/O.
+    """
+
+    def __init__(
+        self,
+        released_commit: str,
+        retained_audits: Sequence[str],
+        retention_sources: Mapping[str, Sequence[object]],
+        ref_events: Sequence[object] = (),
+    ) -> None:
+        def _is_ref_dependent(element_id: str) -> bool:
+            return not any(
+                _source_is_ref_independent(source)
+                for source in retention_sources.get(element_id, ())
+            )
+
+        self.auditable = all(
+            not _is_ref_dependent(element_id) for element_id in retained_audits
+        )
+        self.ref_dependent = tuple(
+            sorted(
+                {
+                    element_id
+                    for element_id in retained_audits
+                    if _is_ref_dependent(element_id)
+                }
+            )
+        )
