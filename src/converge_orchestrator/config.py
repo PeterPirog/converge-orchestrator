@@ -169,6 +169,34 @@ def resolve_source_of_truth(data: dict[str, Any]) -> Any:
     return declarations[0]
 
 
+def evaluate_source_of_truth_pin(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SOT-010 over a run-state snapshot.
+
+    REQ-SOT-010: a run SHALL pin the authoritative Source-of-Truth content digest
+    before repository mutation. This pure, offline, deterministic guard inspects a
+    plain run-state mapping with the keys ``pinned_source_of_truth_sha256``,
+    ``current_source_of_truth_sha256``, and ``repository_mutation_started``, and
+    returns the violated clauses in fixed order:
+
+    * ``source_of_truth_pin_missing_before_mutation`` when no Source-of-Truth
+      content digest was pinned, so repository mutation must not proceed;
+    * ``source_of_truth_pin_not_authoritative`` when a pinned digest exists but
+      does not equal the authoritative current Source-of-Truth content digest.
+
+    It returns an empty tuple only when a digest matching the authoritative current
+    Source-of-Truth content was pinned before repository mutation. It performs no
+    filesystem, network, model, git, or subprocess access.
+    """
+    pinned = state.get("pinned_source_of_truth_sha256")
+    current = state.get("current_source_of_truth_sha256")
+
+    if pinned is None:
+        return ("source_of_truth_pin_missing_before_mutation",)
+    if pinned != current:
+        return ("source_of_truth_pin_not_authoritative",)
+    return ()
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
