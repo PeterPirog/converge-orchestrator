@@ -4,6 +4,7 @@ import fnmatch
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -459,3 +460,44 @@ def existing_candidate_commit(worktree: Path, base_branch: str) -> str | None:
 
 def push(worktree: Path, branch: str) -> None:
     _git(worktree, "push", "-u", "origin", branch, timeout=900)
+
+
+def _source_policy_bound(source: object) -> bool:
+    """True when a source record is bound by project policy (mapping or attribute form)."""
+    if isinstance(source, Mapping):
+        value: object = source.get("policy_bound", False)
+    else:
+        value = getattr(source, "policy_bound", False)
+    return bool(value)
+
+
+class GitObjectAvailability:
+    """Pure, deterministic, in-memory Git object availability predicate (INV-GITOBJ-001).
+
+    Candidate readiness, accepted integration, and terminal convergence must not depend
+    on a Git object available only through an undeclared local alternate, stale promisor
+    storage, incomplete shallow history, or another repository-object source not bound by
+    project policy. Given the required object ids and the sources each is reachable
+    through, ``ready`` is True only when every required object is reachable through at
+    least one policy-bound source (an unbound source never admits an object, but a bound
+    one does even when unbound sources also hold it), and ``unbound`` is the sorted tuple
+    of exactly the required object ids that have no policy-bound source -- including
+    objects absent from ``sources``. Fails closed for any such object.
+
+    No network, model, provider, subprocess, git command, or filesystem I/O.
+    """
+
+    def __init__(
+        self,
+        required: Sequence[str],
+        sources: Mapping[str, Sequence[object]],
+    ) -> None:
+        def _is_unbound(object_id: str) -> bool:
+            return not any(
+                _source_policy_bound(source) for source in sources.get(object_id, ())
+            )
+
+        self.ready = all(not _is_unbound(object_id) for object_id in required)
+        self.unbound = tuple(
+            sorted({object_id for object_id in required if _is_unbound(object_id)})
+        )
