@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import posixpath
 import re
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ _PATH_KEYS = (
 _MODEL_MODES = {"cloud", "local"}
 _RUN_CONFIG_DIR = "run-configs"
 _RUN_CONFIG_PATTERN = re.compile(r"^.+-sha256-([0-9a-f]{64})\.yaml$")
+_DRIVE_ROOTED_RE = re.compile(r"^[A-Za-z]:/")
 
 
 def _resolve_path_value(value: Any, base_dir: Path) -> Any:
@@ -167,6 +170,67 @@ def resolve_source_of_truth(data: dict[str, Any]) -> Any:
             f"{len(declarations)} declarations are ambiguous"
         )
     return declarations[0]
+
+
+def _iter_path_list(value: Any) -> list[str]:
+    """Normalize explicit run-state path roots, failing closed on absent, null, or malformed."""
+    if value is None:
+        raise ValueError("path roots must be an explicit list; absent or null roots fail closed")
+    if isinstance(value, (str, os.PathLike)):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("path roots must be a list of paths or a single path")
+    for entry in value:
+        if not isinstance(entry, (str, os.PathLike)):
+            raise ValueError("path root entries must be strings or os.PathLike values")
+    return [os.fspath(entry) for entry in value]
+
+
+def _canonicalize_path(value: str) -> str:
+    """Canonicalize an absolute path offline; fold case as a conservative over-approximation.
+
+    Accept only fully-qualified absolute paths (POSIX ``/...`` or drive-rooted ``[A-Za-z]:/``);
+    drive-relative, non-ASCII-drive, root-relative, and verbatim spellings fail closed.
+    """
+    if value.startswith(("\\", "//?/", "//./")):
+        raise ValueError(f"path {value!r} must be a plain absolute path")
+    normalized = posixpath.normpath(value.replace("\\", "/"))
+    drive = bool(_DRIVE_ROOTED_RE.match(normalized))
+    if not (normalized.startswith("/") or drive):
+        raise ValueError(f"path {value!r} must be absolute; relative paths fail closed")
+    return normalized.lower()
+
+
+def _is_within(path: str, root: str) -> bool:
+    """Return True when ``path`` sits at or inside ``root`` after canonicalization."""
+    canonical_path = _canonicalize_path(path)
+    canonical_root = _canonicalize_path(root)
+    if canonical_root == "/":
+        return canonical_path.startswith("/")
+    return canonical_path == canonical_root or canonical_path.startswith(f"{canonical_root}/")
+
+
+def evaluate_source_of_truth_isolation(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SOT-002 over a run-state snapshot: the Source of Truth SHALL reside outside
+    every candidate worktree and SHALL NOT be modifiable by any model-backed role. Returns the
+    violated clauses in fixed order (candidate worktree first, then model-role-writable); a
+    missing source path defers to REQ-SOT-001, and malformed or relative paths fail closed.
+    """
+    if "source_of_truth_path" not in state or state["source_of_truth_path"] is None:
+        return ()
+    raw_source = state["source_of_truth_path"]
+    if not isinstance(raw_source, (str, os.PathLike)) or not os.fspath(raw_source):
+        raise ValueError("source_of_truth_path must be a non-empty string or os.PathLike")
+    source = _canonicalize_path(os.fspath(raw_source))
+
+    clauses: list[str] = []
+    candidate_roots = _iter_path_list(state.get("candidate_worktree_paths"))
+    if any(_is_within(source, root) for root in candidate_roots):
+        clauses.append("source_of_truth_inside_candidate_worktree")
+    writable_roots = _iter_path_list(state.get("model_role_writable_paths"))
+    if any(_is_within(source, root) for root in writable_roots):
+        clauses.append("source_of_truth_model_role_writable")
+    return tuple(clauses)
 
 
 def evaluate_source_of_truth_pin(state: dict[str, Any]) -> tuple[str, ...]:
