@@ -213,6 +213,8 @@ def build_working_memory(state: WorkflowState) -> dict[str, Any]:
         for item in state.get("requirements", [])
         if isinstance(item, dict) and item.get("id")
     }
+    # REQ-SOT-013: recommended records stay visible (ids only, sorted, bounded to 64).
+    recommended_ids = sorted(rid for rid, sev in severity_by_id.items() if sev == "recommended")
     for requirement_id, raw in entries.items():
         if not isinstance(raw, dict):
             continue
@@ -246,6 +248,8 @@ def build_working_memory(state: WorkflowState) -> dict[str, Any]:
         "compliance_counts": counts,
         "unresolved_mandatory_requirement_ids": sorted(unresolved)[:64],
         "unresolved_ids_truncated": len(unresolved) > 64,
+        "recommended_requirement_ids": recommended_ids[:64],
+        "recommended_ids_truncated": len(recommended_ids) > 64,
         "last_task": (
             {
                 "id": task.get("id"),
