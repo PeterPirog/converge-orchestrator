@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from hashlib import sha256
 from json import dumps
 from pathlib import Path
@@ -39,6 +40,28 @@ def _stable_requirement_id(statement: str, heading: str) -> str:
     return f"REQ-{sha256(material).hexdigest()[:10].upper()}"
 
 
+def evaluate_explicit_identifier_uniqueness(records: Iterable[Requirement]) -> tuple[str, ...]:
+    """Return deterministic clauses for duplicate explicit identifiers (REQ-SOT-003).
+
+    Records whose identifier is a generated stable ID (``REQ-<10 hex>``) never match
+    the explicit-identifier pattern and are exempt; every explicit identifier MUST be
+    unique across the authoritative normative records, so each repeated explicit ID
+    yields exactly one deterministic clause naming it.
+    """
+    explicit_counts: dict[str, int] = {}
+    for record in records:
+        explicit = _EXPLICIT_ID.search(record.id)
+        if explicit is None:
+            continue
+        identifier = explicit.group(1)
+        explicit_counts[identifier] = explicit_counts.get(identifier, 0) + 1
+    return tuple(
+        f"duplicate_explicit_identifier:{identifier}"
+        for identifier, count in explicit_counts.items()
+        if count > 1
+    )
+
+
 def compile_contract(path: Path) -> Contract:
     """Compile Markdown into traceable records without replacing the source text."""
     requirements: list[Requirement] = []
@@ -73,6 +96,11 @@ def compile_contract(path: Path) -> Contract:
                     source=f"{path.name}:L{line_no}",
                 )
             )
+    clauses = evaluate_explicit_identifier_uniqueness(requirements)
+    if clauses:
+        raise ValueError(
+            "contract preflight rejected duplicate explicit identifiers: " + "; ".join(clauses)
+        )
     return Contract(
         source=ContractSource(path=str(path.resolve()), sha256=sha256_file(path)),
         requirements=requirements,
