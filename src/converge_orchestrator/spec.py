@@ -103,6 +103,22 @@ def evaluate_explicit_identifier_contract(records: Iterable[Requirement]) -> tup
     return tuple(clauses)
 
 
+def evaluate_severity_ambiguity(records: Iterable[Requirement]) -> tuple[str, ...]:
+    """Return deterministic clauses for severity-ambiguous records (REQ-SOT-008).
+
+    A normative record whose statement mixes mandatory and advisory language has no
+    unambiguous severity, so the preflight MUST fail closed rather than guess; each
+    ambiguous record yields exactly one deterministic clause naming its identifier, in
+    the fixed order the records were given, and a fully unambiguous set of records
+    yields an empty tuple.
+    """
+    clauses: dict[str, None] = {}
+    for record in records:
+        if _MANDATORY.search(record.statement) and _RECOMMENDED.search(record.statement):
+            clauses.setdefault(f"severity_ambiguity:{record.id}", None)
+    return tuple(clauses)
+
+
 def compile_contract(path: Path) -> Contract:
     """Compile Markdown into traceable records without replacing the source text."""
     requirements: list[Requirement] = []
@@ -152,6 +168,28 @@ def compile_contract(path: Path) -> Contract:
         source=ContractSource(path=str(path.resolve()), sha256=sha256_file(path)),
         requirements=requirements,
     )
+
+
+def preflight_contract(path: Path, expected_sha256: str | None = None) -> Contract:
+    """Expose the compiled contract through a fail-closed Source-of-Truth preflight (REQ-SOT-008).
+
+    Deterministic and offline: no network, model, git, or subprocess access. Returns the
+    compiled contract for a read-only, unambiguous Source of Truth; otherwise fails closed
+    with ``ValueError`` naming the clauses in a fixed order: explicit-ID substitution and
+    duplicate explicit identifiers (raised by ``compile_contract``), then source digest
+    integrity (``contract_source_digest_mismatch``) and read-only integrity
+    (``source_not_read_only``), then severity ambiguity (``severity_ambiguity:<id>``).
+    """
+    integrity_clauses: list[str] = []
+    if expected_sha256 is not None and sha256_file(path) != expected_sha256:
+        integrity_clauses.append("contract_source_digest_mismatch")
+    if not is_read_only(path):
+        integrity_clauses.append("source_not_read_only")
+    contract = compile_contract(path)
+    clauses = tuple(integrity_clauses) + evaluate_severity_ambiguity(contract.requirements)
+    if clauses:
+        raise ValueError("contract preflight rejected Source of Truth: " + "; ".join(clauses))
+    return contract
 
 
 def evaluate_contract_evidence_preservation(contract: Contract) -> tuple[str, ...]:
