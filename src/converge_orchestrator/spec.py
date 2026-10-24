@@ -119,6 +119,42 @@ def evaluate_severity_ambiguity(records: Iterable[Requirement]) -> tuple[str, ..
     return tuple(clauses)
 
 
+def evaluate_normative_record_recognition(records: Iterable[Requirement]) -> tuple[str, ...]:
+    """Return deterministic clauses for unrecognised or fallback-extracted records (REQ-SOT-009).
+
+    A production Source-of-Truth contract MUST contain recognized normative records, never
+    records salvaged by the compiler fallback extraction (which by construction only runs
+    when no record is recognized). When no record is recognized the preflight MUST fail
+    closed naming ``contract_no_recognized_normative_records``, and when records were
+    salvaged by the fallback it additionally names
+    ``contract_relies_on_compiler_fallback_extraction`` in that fixed order; a contract
+    whose records are all recognized yields an empty tuple.
+    """
+    records = tuple(records)
+    if any(_NORMATIVE.search(record.statement) for record in records):
+        return ()
+    clauses = ["contract_no_recognized_normative_records"]
+    if records:
+        clauses.append("contract_relies_on_compiler_fallback_extraction")
+    return tuple(clauses)
+
+
+def evaluate_explicit_identifier_presence(records: Iterable[Requirement]) -> tuple[str, ...]:
+    """Return deterministic clauses for compiled requirements lacking explicit IDs (REQ-SOT-009).
+
+    Every compiled requirement MUST carry the unique explicit stable identifier declared by
+    its authoritative source line; a generated stable ID (``REQ-<10 hex>``) is proof that the
+    source line declared none, so each such record yields exactly one deterministic clause
+    naming its identifier, in the fixed order the records were given, and a fully explicit
+    set of records yields an empty tuple.
+    """
+    clauses: dict[str, None] = {}
+    for record in records:
+        if _EXPLICIT_ID.search(record.id) is None:
+            clauses.setdefault(f"requirement_without_explicit_stable_identifier:{record.id}", None)
+    return tuple(clauses)
+
+
 def compile_contract(path: Path) -> Contract:
     """Compile Markdown into traceable records without replacing the source text."""
     requirements: list[Requirement] = []
@@ -171,14 +207,20 @@ def compile_contract(path: Path) -> Contract:
 
 
 def preflight_contract(path: Path, expected_sha256: str | None = None) -> Contract:
-    """Expose the compiled contract through a fail-closed Source-of-Truth preflight (REQ-SOT-008).
+    """Expose the compiled contract through a fail-closed Source-of-Truth preflight.
 
     Deterministic and offline: no network, model, git, or subprocess access. Returns the
-    compiled contract for a read-only, unambiguous Source of Truth; otherwise fails closed
+    compiled contract for a read-only Source of Truth whose records are all recognized
+    normative records carrying unique explicit stable identifiers; otherwise fails closed
     with ``ValueError`` naming the clauses in a fixed order: explicit-ID substitution and
     duplicate explicit identifiers (raised by ``compile_contract``), then source digest
     integrity (``contract_source_digest_mismatch``) and read-only integrity
-    (``source_not_read_only``), then severity ambiguity (``severity_ambiguity:<id>``).
+    (``source_not_read_only``), then normative identity (REQ-SOT-009): no recognized
+    normative records (``contract_no_recognized_normative_records``), reliance on compiler
+    fallback extraction (``contract_relies_on_compiler_fallback_extraction``), and each
+    requirement without an explicit stable identifier
+    (``requirement_without_explicit_stable_identifier:<id>``), then severity ambiguity
+    (``severity_ambiguity:<id>``).
     """
     integrity_clauses: list[str] = []
     if expected_sha256 is not None and sha256_file(path) != expected_sha256:
@@ -186,7 +228,14 @@ def preflight_contract(path: Path, expected_sha256: str | None = None) -> Contra
     if not is_read_only(path):
         integrity_clauses.append("source_not_read_only")
     contract = compile_contract(path)
-    clauses = tuple(integrity_clauses) + evaluate_severity_ambiguity(contract.requirements)
+    identity_clauses = evaluate_normative_record_recognition(
+        contract.requirements
+    ) + evaluate_explicit_identifier_presence(contract.requirements)
+    clauses = (
+        tuple(integrity_clauses)
+        + identity_clauses
+        + evaluate_severity_ambiguity(contract.requirements)
+    )
     if clauses:
         raise ValueError("contract preflight rejected Source of Truth: " + "; ".join(clauses))
     return contract
