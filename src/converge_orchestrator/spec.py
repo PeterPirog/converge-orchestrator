@@ -82,6 +82,27 @@ def evaluate_explicit_identifier_uniqueness(records: Iterable[Requirement]) -> t
     )
 
 
+def evaluate_explicit_identifier_contract(records: Iterable[Requirement]) -> tuple[str, ...]:
+    """Return deterministic clauses for generated-ID substitution of explicit IDs (REQ-SOT-007).
+
+    A normative record whose single source line declares an explicit identifier MUST be
+    assigned exactly that explicit identifier, never a generated one, so the
+    Source-of-Truth explicit-ID single-line format compiles independently of generated
+    identifiers. Records that declare no explicit identifier are exempt; each substituted
+    declared identifier yields exactly one deterministic clause, in the fixed order the
+    records were given, and a fully compliant set of records yields an empty tuple.
+    """
+    clauses: dict[str, None] = {}
+    for record in records:
+        declared = _EXPLICIT_ID.search(record.statement)
+        if declared is None:
+            continue
+        identifier = declared.group(1)
+        if record.id != identifier:
+            clauses.setdefault(f"explicit_id_single_line_contract:{identifier}", None)
+    return tuple(clauses)
+
+
 def compile_contract(path: Path) -> Contract:
     """Compile Markdown into traceable records without replacing the source text."""
     requirements: list[Requirement] = []
@@ -120,6 +141,12 @@ def compile_contract(path: Path) -> Contract:
     if clauses:
         raise ValueError(
             "contract preflight rejected duplicate explicit identifiers: " + "; ".join(clauses)
+        )
+    clauses = evaluate_explicit_identifier_contract(requirements)
+    if clauses:
+        raise ValueError(
+            "contract preflight rejected generated-ID substitution of explicit "
+            "identifiers: " + "; ".join(clauses)
         )
     return Contract(
         source=ContractSource(path=str(path.resolve()), sha256=sha256_file(path)),
