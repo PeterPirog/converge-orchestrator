@@ -300,6 +300,13 @@ workflow:
   max_iterations: 50
   max_diff_lines_hard: 1000
 
+  # Finite per-run resource envelope, pinned with the normalized run configuration. Non-secret
+  # numeric limits only; the durable budget ledger enforces them and fails closed when exhausted.
+  run_budget:
+    max_wall_time_seconds: 86400
+    max_model_attempts: 512
+    max_estimated_tokens: 8000000
+
   # Context safety. Authoritative requirements/task/diff are never truncated. The input budget is
   # the smaller of this fraction of model context and (context - output reserve). Only explicitly
   # advisory Scout/working-memory material may be compacted. Core overflow fails closed.
