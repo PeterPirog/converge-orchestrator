@@ -107,7 +107,30 @@ def compile_contract(path: Path) -> Contract:
     )
 
 
+def evaluate_contract_evidence_preservation(contract: Contract) -> tuple[str, ...]:
+    """Return deterministic clauses for provenance missing from contract evidence (REQ-SOT-004).
+
+    Durable contract evidence MUST preserve each requirement's identifier,
+    statement, severity, and source location plus a non-empty Source-of-Truth
+    digest; every blank value yields exactly one deterministic clause so
+    ``write_contract`` can fail closed before persisting incomplete provenance.
+    """
+    clauses: list[str] = []
+    if not str(contract.source.sha256).strip():
+        clauses.append("contract.source.sha256_blank")
+    for index, record in enumerate(contract.requirements):
+        for field in ("id", "statement", "severity", "source"):
+            if not str(getattr(record, field)).strip():
+                clauses.append(f"requirements[{index}].{field}_blank")
+    return tuple(clauses)
+
+
 def write_contract(path: Path, contract: Contract) -> None:
+    clauses = evaluate_contract_evidence_preservation(contract)
+    if clauses:
+        raise ValueError(
+            "contract evidence rejected incomplete provenance: " + "; ".join(clauses)
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = contract.model_dump(mode="json")
     path.write_text(
