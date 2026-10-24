@@ -7,6 +7,7 @@ from pathlib import Path
 from re import IGNORECASE
 from re import compile as compile_regex
 from stat import S_IWGRP, S_IWOTH, S_IWUSR
+from typing import Literal
 
 from .models import Contract, ContractSource, Requirement
 
@@ -16,6 +17,25 @@ _NORMATIVE = compile_regex(
 )
 _EXPLICIT_ID = compile_regex(r"\b([A-Z][A-Z0-9_-]{1,20}-\d{1,6})\b")
 _RECOMMENDED = compile_regex(r"\b(should|powinien|powinna|powinno)\b", IGNORECASE)
+_MANDATORY = compile_regex(
+    r"\b(must|shall|required|cannot|must not|nie może|musi|należy|wymag)\b",
+    IGNORECASE,
+)
+
+
+def classify_requirement_severity(statement: str) -> Literal["mandatory", "recommended"]:
+    """Return the deterministic severity for a requirement statement (REQ-SOT-005).
+
+    Pure and order-independent: any mandatory normative keyword classifies the
+    statement as ``mandatory`` even when an advisory word is also present, and
+    only advisory-only statements classify as ``recommended``. No I/O, no model
+    calls, and no locale or environment dependence.
+    """
+    if _MANDATORY.search(statement):
+        return "mandatory"
+    if _RECOMMENDED.search(statement):
+        return "recommended"
+    return "mandatory"
 
 
 def sha256_file(path: Path) -> str:
@@ -75,7 +95,7 @@ def compile_contract(path: Path) -> Contract:
         candidate = text.lstrip("-*0123456789. ").strip()
         if not candidate or len(candidate) < 12 or not _NORMATIVE.search(candidate):
             continue
-        severity = "recommended" if _RECOMMENDED.search(candidate) else "mandatory"
+        severity = classify_requirement_severity(candidate)
         requirements.append(
             Requirement(
                 id=_stable_requirement_id(candidate, heading),
