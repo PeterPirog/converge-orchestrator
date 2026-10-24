@@ -265,11 +265,11 @@ class ProjectConfig(BaseModel):
     quality_gates: list[QualityGate] = Field(default_factory=list)
     requirement_verifiers: dict[str, list[QualityGate]] = Field(default_factory=dict)
     auto_discover_quality: bool = True
-    max_repair_attempts: int = 3
-    max_replans: int = 2
+    max_repair_attempts: int = Field(default=3, ge=0)
+    max_replans: int = Field(default=2, ge=0)
     max_review_execution_retries: int = 3
-    max_iterations: int = 50
-    max_diff_lines_hard: int = 1000
+    max_iterations: int = Field(default=50, ge=0)
+    max_diff_lines_hard: int = Field(default=1000, ge=0)
     review_roles: list[str] = Field(default_factory=list)
     max_parallel_reviews: int = Field(default=3, ge=1, le=16)
     context_input_fraction: float = Field(default=0.70, gt=0.10, le=0.95)
