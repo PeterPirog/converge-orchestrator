@@ -233,6 +233,51 @@ def evaluate_source_of_truth_isolation(state: dict[str, Any]) -> tuple[str, ...]
     return tuple(clauses)
 
 
+def _is_nonempty_string(value: Any) -> bool:
+    """Return True only when ``value`` is a non-empty, non-blank string, else False."""
+    return isinstance(value, str) and value.strip() != ""
+
+
+def evaluate_source_of_truth_change_requires_new_run(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SOT-006 over a run-state snapshot.
+
+    REQ-SOT-006: material Source-of-Truth changes SHALL require a new run identity and
+    a new pinned digest rather than modifying the contract of an active run. This pure,
+    offline, deterministic guard inspects a plain run-state mapping with the keys
+    ``source_of_truth_change_is_material``, ``active_run_identity``,
+    ``proposed_run_identity``, ``pinned_source_of_truth_sha256``, and
+    ``current_source_of_truth_sha256``, returning the violated clauses in fixed order:
+    ``source_of_truth_change_requires_new_run_identity`` then
+    ``source_of_truth_change_requires_new_pinned_digest``.
+
+    It fails closed: an absent, null, or non-boolean materiality value raises
+    ``ValueError``; absent, blank, non-string, or mismatched identities or digests emit
+    the clause. It returns an empty tuple for a non-material change, or a material
+    change properly separated under a new run with a pin matching the changed digest.
+    It performs no filesystem, network, model, git, or subprocess access.
+    """
+    material = state.get("source_of_truth_change_is_material")
+    if not isinstance(material, bool):
+        raise ValueError(
+            "source_of_truth_change_is_material must be an explicit boolean; "
+            "absent, null, or malformed materiality fails closed"
+        )
+    if material is False:
+        return ()
+
+    clauses: list[str] = []
+    active = state.get("active_run_identity")
+    proposed = state.get("proposed_run_identity")
+    if not _is_nonempty_string(active) or not _is_nonempty_string(proposed) or proposed == active:
+        clauses.append("source_of_truth_change_requires_new_run_identity")
+
+    pinned = state.get("pinned_source_of_truth_sha256")
+    current = state.get("current_source_of_truth_sha256")
+    if not _is_nonempty_string(pinned) or not _is_nonempty_string(current) or pinned != current:
+        clauses.append("source_of_truth_change_requires_new_pinned_digest")
+    return tuple(clauses)
+
+
 def evaluate_source_of_truth_pin(state: dict[str, Any]) -> tuple[str, ...]:
     """Enforce REQ-SOT-010 over a run-state snapshot.
 
