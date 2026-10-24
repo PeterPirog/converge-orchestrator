@@ -577,3 +577,66 @@ def test_example_yaml_is_valid_single_file_configuration() -> None:
         "security_reviewer",
     ]
     assert raw["workflow"]["max_parallel_reviews"] == 3
+
+
+def test_example_configuration_declares_every_req_config_001_facet() -> None:
+    """REQ-CONFIG-001: the single user-maintained file must identify every facet."""
+    raw = yaml.safe_load(Path("examples/converge.yaml").read_text(encoding="utf-8"))
+    assert raw["version"] == 1
+
+    # Repository and Source-of-Truth paths.
+    project = raw["project"]
+    assert project["repo_path"]
+    assert project["requirements_path"]
+
+    # State locations (explicit keys; null selects the documented defaults).
+    assert "state_dir" in project
+    assert "worktree_dir" in project
+
+    # Authoring / read-only policy.
+    assert project["require_spec_read_only"] is True
+
+    # External tools.
+    assert raw["opencode"]["binary"] == "opencode"
+    assert raw["opencode"]["mcp"]["servers"] == {}
+
+    # Model and role routing: every agent lane names a model profile and an OpenCode agent.
+    assert raw["models"]["gateway"]["kind"] == "openwebui"
+    assert set(raw["models"]["profile_sets"]) == {"cloud"}
+    assert set(raw["agents"]) == {
+        "scout",
+        "planner",
+        "builder",
+        "correctness_reviewer",
+        "architecture_reviewer",
+        "security_reviewer",
+    }
+    assert all(agent["model_profile"] for agent in raw["agents"].values())
+    assert all(agent["agent"] for agent in raw["agents"].values())
+
+    # Quality policy.
+    assert raw["quality"]["auto_discover"] is True
+    assert raw["quality"]["gates"] == []
+    assert raw["quality"]["requirement_verifiers"] == {}
+
+    # Workflow limits.
+    workflow = raw["workflow"]
+    for key in ("max_repair_attempts", "max_replans", "max_iterations", "max_diff_lines_hard"):
+        assert isinstance(workflow[key], int) and workflow[key] > 0
+    assert workflow["review_roles"]
+    assert workflow["max_parallel_reviews"] >= 1
+
+    # Remote integration.
+    assert raw["github"]["repo"]
+    assert raw["github"]["cli"] == "gh"
+    assert raw["github"]["base_branch"]
+
+    # Sandbox policy.
+    assert raw["sandbox"]["mode"] in {"host", "container"}
+
+    # Run resource budgets: finite, non-secret, and equal to the documented defaults.
+    assert workflow["run_budget"] == {
+        "max_wall_time_seconds": 86400,
+        "max_model_attempts": 512,
+        "max_estimated_tokens": 8000000,
+    }
