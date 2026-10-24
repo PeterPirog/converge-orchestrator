@@ -292,6 +292,62 @@ def evaluate_source_of_truth_drift(state: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def evaluate_mandatory_convergence_blocking(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SOT-012 over a run-state snapshot.
+
+    Mandatory requirement records SHALL block convergence until their compliance
+    status is exactly ``pass``. This pure, offline guard reads ``requirements``
+    (a stable-ordered list of records, each a mapping with a non-empty string
+    ``id`` and optional ``severity``) and ``compliance``. ``compliance`` may be a
+    flat mapping of record id to an entry mapping carrying ``status``, or a
+    snapshot mapping whose ``entries`` value is that flat mapping. It returns one
+    ``mandatory_requirement_blocks_convergence:<id>`` clause per blocking mandatory
+    record, in stable record order. Only severity exactly ``recommended`` is exempt;
+    absent or unknown severity is mandatory (fail closed). A missing compliance
+    entry blocks (no exemption). A missing or non-list ``requirements``, a missing
+    or non-mapping ``compliance`` or ``compliance.entries``, a non-mapping record,
+    a record without a non-empty string id, or a non-mapping entry fails closed with
+    ``ValueError``. No filesystem, network, model, git, or subprocess access is
+    performed.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+    if "requirements" not in state:
+        raise ValueError("requirements must be an explicit list; absent requirements fail closed")
+    requirements = state["requirements"]
+    if not isinstance(requirements, list):
+        raise ValueError("requirements must be a list of requirement records")
+    if "compliance" not in state:
+        raise ValueError("compliance must be an explicit mapping; absent compliance fails closed")
+    compliance = state["compliance"]
+    if not isinstance(compliance, dict):
+        raise ValueError("compliance must be a compliance snapshot mapping")
+    if "entries" in compliance:
+        entries = compliance["entries"]
+        if not isinstance(entries, dict):
+            raise ValueError("compliance.entries must be a mapping of record id to entry")
+    else:
+        entries = compliance
+    for entry_key, entry in entries.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"compliance entry {entry_key!r} must be a mapping")
+
+    clauses: list[str] = []
+    for record in requirements:
+        if not isinstance(record, dict):
+            raise ValueError("requirement records must be mappings")
+        record_id = record.get("id")
+        if not isinstance(record_id, str) or not record_id:
+            raise ValueError("requirement records must carry a non-empty string id")
+        if record.get("severity") == "recommended":
+            continue
+        entry = entries.get(record_id)
+        status = entry.get("status") if isinstance(entry, dict) else None
+        if status != "pass":
+            clauses.append(f"mandatory_requirement_blocks_convergence:{record_id}")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
