@@ -241,6 +241,68 @@ class RunBudgetConfig(BaseModel):
     max_estimated_tokens: int = Field(default=8_000_000, ge=1024)
 
 
+_CAMPAIGN_BOUND_FIELDS = (
+    "max_successor_runs",
+    "max_cumulative_model_attempts",
+    "max_cumulative_estimated_tokens",
+    "max_cumulative_machine_execution_seconds",
+)
+
+
+class CampaignEnvelopeConfig(BaseModel):
+    """REQ-CONFIG-015: pinned finite convergence-campaign envelope.
+
+    Unattended autonomous continuation across multiple runs is bounded by an
+    explicit campaign envelope that pins successor-run count and cumulative
+    model-attempt, conservative-token, and machine-execution authority. The
+    envelope is declared independently from the per-run ``run_budget`` envelope:
+    per-run budget field names do not satisfy campaign bounds, and changing
+    ``run_budget`` never changes the campaign limits.
+
+    The envelope is optional: an absent ``workflow.campaign_envelope`` resolves
+    to a disabled envelope (``pinned=false``) carrying no bounds. When the
+    envelope is enabled it must be pinned (``pinned=true``) and declare every
+    required bound; enabling it without ``pinned=true`` or while omitting a bound
+    fails closed. Bounds are finite non-negative integers; negative or
+    non-integer values are rejected with the offending field named.
+    """
+
+    pinned: bool = False
+    max_successor_runs: int | None = Field(default=None, ge=0)
+    max_cumulative_model_attempts: int | None = Field(default=None, ge=0)
+    max_cumulative_estimated_tokens: int | None = Field(default=None, ge=0)
+    max_cumulative_machine_execution_seconds: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def require_pinned_bounds_when_enabled(self) -> CampaignEnvelopeConfig:
+        declared = [
+            name for name in _CAMPAIGN_BOUND_FIELDS if getattr(self, name) is not None
+        ]
+        if self.pinned:
+            missing = [
+                name for name in _CAMPAIGN_BOUND_FIELDS if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "workflow.campaign_envelope requires pinned=true and explicit "
+                    + ", ".join(missing)
+                    + " when the campaign envelope is enabled; an enabled envelope "
+                    "without every required bound fails closed"
+                )
+        elif declared:
+            missing = [
+                name for name in _CAMPAIGN_BOUND_FIELDS if getattr(self, name) is None
+            ]
+            required = ["pinned=true"] + missing
+            raise ValueError(
+                "workflow.campaign_envelope requires "
+                + ", ".join(required)
+                + " when the campaign envelope is enabled; a disabled envelope "
+                "(pinned=false) must not carry declared bounds: " + ", ".join(declared)
+            )
+        return self
+
+
 class ManualAuthoringPolicy(BaseModel):
     """REQ-CONFIG-011: manual-authoring waits and abandonment are not provider retry policy.
 
@@ -334,6 +396,7 @@ class ProjectConfig(BaseModel):
     context_input_fraction: float = Field(default=0.70, gt=0.10, le=0.95)
     context_output_reserve_tokens: int = Field(default=4096, ge=256)
     run_budget: RunBudgetConfig = Field(default_factory=RunBudgetConfig)
+    campaign_envelope: CampaignEnvelopeConfig = Field(default_factory=CampaignEnvelopeConfig)
     manual_authoring: ManualAuthoringPolicy = Field(default_factory=ManualAuthoringPolicy)
     operator_decisions: OperatorDecisionPolicy = Field(default_factory=OperatorDecisionPolicy)
     ci_poll_seconds: int = 15
@@ -408,6 +471,7 @@ class ProjectConfig(BaseModel):
             "context_input_fraction",
             "context_output_reserve_tokens",
             "run_budget",
+            "campaign_envelope",
             "manual_authoring",
             "operator_decisions",
         ):
