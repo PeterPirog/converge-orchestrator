@@ -495,6 +495,89 @@ def evaluate_control_plane_authority(state: dict[str, Any]) -> tuple[str, ...]:
     return tuple(clauses)
 
 
+_PROVIDER_ENDPOINT_CATEGORIES = ("model", "gateway", "mcp", "external_analysis")
+_TRUSTED_PROVIDER_CLASSES = {"local", "trusted"}
+
+
+def evaluate_provider_data_egress(policy: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-014 over a project-configuration mapping.
+
+    REQ-CONFIG-014: project configuration SHALL define provider trust classes and
+    permitted repository-data egress for model, gateway, MCP, and external analysis
+    endpoints whose invocation can transmit project content.
+
+    This pure, offline, deterministic guard inspects the ``provider_trust`` mapping
+    (a mapping of endpoint category to a declaration mapping carrying
+    ``trust_class`` and ``repository_data_egress``) and returns the violated
+    clauses in fixed order (model, gateway, mcp, external_analysis; within a
+    category, the trust-class clause before the egress clause):
+
+    * ``provider_trust_class_undeclared:<category>`` when the category's trust
+      class is not explicitly declared (absent, null, non-string, or blank);
+    * ``repository_data_egress_undeclared:<category>`` when the category's
+      repository-data egress is not explicitly declared (absent, null, or
+      non-boolean);
+    * ``repository_data_egress_permitted_to_untrusted_provider:<category>`` when
+      the category permits repository-data egress while its declared trust class
+      is neither local nor trusted.
+
+    It fails closed with ``ValueError`` on a missing or empty ``provider_trust``
+    mapping, a missing or unknown endpoint category, or a non-mapping category
+    declaration, so a trust/egress gap cannot be silently verified away. It
+    performs no filesystem, network, model, git, or subprocess access.
+    """
+    if not isinstance(policy, dict):
+        raise ValueError("project configuration must be a mapping")
+
+    provider_trust = policy.get("provider_trust")
+    if not isinstance(provider_trust, dict) or not provider_trust:
+        raise ValueError(
+            "provider_trust must be a non-empty mapping of endpoint categories; "
+            "a missing or empty declaration fails closed"
+        )
+
+    missing = [
+        category for category in _PROVIDER_ENDPOINT_CATEGORIES if category not in provider_trust
+    ]
+    if missing:
+        raise ValueError(
+            "provider_trust must declare every endpoint category; missing: "
+            f"{missing}; allowed: {list(_PROVIDER_ENDPOINT_CATEGORIES)}"
+        )
+    unknown = [key for key in provider_trust if key not in _PROVIDER_ENDPOINT_CATEGORIES]
+    if unknown:
+        raise ValueError(
+            f"provider_trust declares unknown endpoint categories: {unknown}; "
+            f"allowed: {list(_PROVIDER_ENDPOINT_CATEGORIES)}"
+        )
+
+    for category in _PROVIDER_ENDPOINT_CATEGORIES:
+        if not isinstance(provider_trust[category], dict):
+            raise ValueError(
+                f"provider_trust.{category} must be a mapping declaring trust_class "
+                "and repository_data_egress"
+            )
+
+    clauses: list[str] = []
+    for category in _PROVIDER_ENDPOINT_CATEGORIES:
+        declaration = provider_trust[category]
+        trust_class = declaration.get("trust_class")
+        egress = declaration.get("repository_data_egress")
+
+        trust_declared = isinstance(trust_class, str) and trust_class.strip() != ""
+        egress_declared = isinstance(egress, bool)
+
+        if not trust_declared:
+            clauses.append(f"provider_trust_class_undeclared:{category}")
+        if not egress_declared:
+            clauses.append(f"repository_data_egress_undeclared:{category}")
+        elif egress is True and trust_declared and trust_class not in _TRUSTED_PROVIDER_CLASSES:
+            clauses.append(
+                f"repository_data_egress_permitted_to_untrusted_provider:{category}"
+            )
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
