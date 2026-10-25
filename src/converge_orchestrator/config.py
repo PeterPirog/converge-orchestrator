@@ -393,6 +393,108 @@ def evaluate_mandatory_convergence_blocking(state: dict[str, Any]) -> tuple[str,
     return tuple(clauses)
 
 
+_CONTROL_PLANE_ARTIFACTS = (
+    ("project_config_path", "project_config_inside_candidate_writer_root"),
+    ("pinned_run_snapshot_path", "pinned_run_snapshot_inside_candidate_writer_root"),
+    ("source_of_truth_path", "source_of_truth_inside_candidate_writer_root"),
+    ("secret_sources", "secret_source_inside_candidate_writer_root"),
+    ("durable_control_state_path", "durable_control_state_inside_candidate_writer_root"),
+)
+
+
+def evaluate_control_plane_authority(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-012 over a run-state snapshot.
+
+    REQ-CONFIG-012: the authoritative project-configuration source, pinned run
+    snapshots, Source of Truth, secret sources, and durable control state SHALL
+    remain outside candidate-writer mutation authority; any repository-tracked
+    copy of control-plane configuration SHALL be non-authoritative unless a later
+    run explicitly adopts it through trusted project configuration.
+
+    This pure, offline, deterministic guard inspects a plain run-state mapping
+    with the keys ``project_config_path``, ``pinned_run_snapshot_path``,
+    ``source_of_truth_path``, ``secret_sources``, ``durable_control_state_path``,
+    ``candidate_writer_roots``, and optionally
+    ``repository_tracked_control_plane_copy`` (a mapping carrying ``path`` and
+    ``adopted``), and returns the violated clauses in fixed order:
+
+    * ``project_config_inside_candidate_writer_root``
+    * ``pinned_run_snapshot_inside_candidate_writer_root``
+    * ``source_of_truth_inside_candidate_writer_root``
+    * ``secret_source_inside_candidate_writer_root``
+    * ``durable_control_state_inside_candidate_writer_root``
+
+    when the corresponding control-plane artifact sits at or inside any
+    candidate-writer mutation root, reported in that fixed artifact order, then
+
+    * ``repository_tracked_control_plane_copy_is_authoritative`` when a
+      repository-tracked copy of control-plane configuration is declared with
+      ``adopted`` false, so it is treated as authoritative without explicit
+      adoption through trusted project configuration.
+
+    It fails closed with ``ValueError`` on a missing control-plane path
+    declaration, missing or empty candidate-writer roots, or a malformed or
+    relative path, so isolation and adoption cannot be silently verified away.
+    It performs no filesystem, network, model, git, or subprocess access.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+
+    candidate_roots = _iter_path_list(state.get("candidate_writer_roots"))
+    if not candidate_roots:
+        raise ValueError(
+            "candidate_writer_roots must be an explicit non-empty list of paths; "
+            "absent or empty roots fail closed"
+        )
+    for root in candidate_roots:
+        _canonicalize_path(root)
+
+    clauses: list[str] = []
+    for key, clause in _CONTROL_PLANE_ARTIFACTS:
+        if key not in state or state[key] is None:
+            raise ValueError(f"{key} must be declared; a missing control-plane path fails closed")
+        raw = state[key]
+        paths = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        if not paths:
+            raise ValueError(
+                f"{key} must declare at least one path; "
+                "an empty declaration fails closed"
+            )
+        normalized_paths: list[str] = []
+        for path in paths:
+            if not isinstance(path, (str, os.PathLike)) or not os.fspath(path):
+                raise ValueError(
+                    f"{key} entries must be non-empty strings or os.PathLike values"
+                )
+            normalized = os.fspath(path)
+            _canonicalize_path(normalized)
+            normalized_paths.append(normalized)
+        if any(_is_within(path, root) for path in normalized_paths for root in candidate_roots):
+            clauses.append(clause)
+
+    copy = state.get("repository_tracked_control_plane_copy")
+    if copy is not None:
+        if not isinstance(copy, dict):
+            raise ValueError("repository_tracked_control_plane_copy must be a mapping")
+        copy_path = copy.get("path")
+        if not isinstance(copy_path, (str, os.PathLike)) or not os.fspath(copy_path):
+            raise ValueError(
+                "repository_tracked_control_plane_copy.path must be a "
+                "non-empty string or os.PathLike"
+            )
+        _canonicalize_path(os.fspath(copy_path))
+        adopted = copy.get("adopted")
+        if not isinstance(adopted, bool):
+            raise ValueError(
+                "repository_tracked_control_plane_copy.adopted must be an explicit boolean; "
+                "absent, null, or malformed adoption fails closed"
+            )
+        if not adopted:
+            clauses.append("repository_tracked_control_plane_copy_is_authoritative")
+
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
