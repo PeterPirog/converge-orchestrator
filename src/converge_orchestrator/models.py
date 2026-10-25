@@ -241,6 +241,38 @@ class RunBudgetConfig(BaseModel):
     max_estimated_tokens: int = Field(default=8_000_000, ge=1024)
 
 
+class ManualAuthoringPolicy(BaseModel):
+    """REQ-CONFIG-011: manual-authoring waits and abandonment are not provider retry policy.
+
+    Operator-wait and candidate-abandonment durations are declared explicitly by the
+    project configuration when manual authoring is enabled; they are never derived from
+    agent ``provider_retries``, provider ``timeout_seconds``, or ``fallback_model_profiles``.
+    Enabling manual authoring without both explicit durations fails closed.
+    """
+
+    enabled: bool = False
+    operator_wait_seconds: int | None = Field(default=None, ge=1)
+    candidate_abandonment_seconds: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_explicit_durations_when_enabled(self) -> ManualAuthoringPolicy:
+        if not self.enabled:
+            return self
+        missing = [
+            name
+            for name in ("operator_wait_seconds", "candidate_abandonment_seconds")
+            if getattr(self, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                "workflow.manual_authoring requires explicit "
+                + ", ".join(missing)
+                + " when manual authoring is enabled; human editing time must not be "
+                "interpreted as provider failure or derived from provider retry policy"
+            )
+        return self
+
+
 class ProjectConfig(BaseModel):
     version: Literal[1] = 1
     project_name: str | None = None
@@ -275,6 +307,7 @@ class ProjectConfig(BaseModel):
     context_input_fraction: float = Field(default=0.70, gt=0.10, le=0.95)
     context_output_reserve_tokens: int = Field(default=4096, ge=256)
     run_budget: RunBudgetConfig = Field(default_factory=RunBudgetConfig)
+    manual_authoring: ManualAuthoringPolicy = Field(default_factory=ManualAuthoringPolicy)
     ci_poll_seconds: int = 15
     ci_timeout_seconds: int = 1800
     auto_merge: bool = False
@@ -347,6 +380,7 @@ class ProjectConfig(BaseModel):
             "context_input_fraction",
             "context_output_reserve_tokens",
             "run_budget",
+            "manual_authoring",
         ):
             copy_value(key, workflow, key)
         return data
