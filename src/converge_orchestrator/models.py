@@ -273,6 +273,33 @@ class ManualAuthoringPolicy(BaseModel):
         return self
 
 
+class OperatorDecisionPolicy(BaseModel):
+    """REQ-CONFIG-013: operator decisions during a run are declared explicitly.
+
+    ``permitted`` declares whether operator decisions are permitted during a run;
+    ``unattended_autonomous`` declares that the run must complete without any
+    operator action; ``interactive_dependencies`` explicitly names any dependency
+    on interactive approval, confirmation, or manual resume. An unattended
+    autonomous policy that declares such a dependency fails closed at
+    configuration validation instead of acquiring a hidden dependency.
+    """
+
+    permitted: bool = True
+    unattended_autonomous: bool = False
+    interactive_dependencies: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unattended_policy_cannot_hide_interactive_dependency(self) -> OperatorDecisionPolicy:
+        if self.unattended_autonomous and self.interactive_dependencies:
+            raise ValueError(
+                "workflow.operator_decisions: an unattended_autonomous policy must not "
+                f"declare interactive dependencies: {self.interactive_dependencies}; "
+                "an unattended autonomous run SHALL NOT acquire a hidden dependency on "
+                "interactive approval, confirmation, or manual resume"
+            )
+        return self
+
+
 class ProjectConfig(BaseModel):
     version: Literal[1] = 1
     project_name: str | None = None
@@ -308,6 +335,7 @@ class ProjectConfig(BaseModel):
     context_output_reserve_tokens: int = Field(default=4096, ge=256)
     run_budget: RunBudgetConfig = Field(default_factory=RunBudgetConfig)
     manual_authoring: ManualAuthoringPolicy = Field(default_factory=ManualAuthoringPolicy)
+    operator_decisions: OperatorDecisionPolicy = Field(default_factory=OperatorDecisionPolicy)
     ci_poll_seconds: int = 15
     ci_timeout_seconds: int = 1800
     auto_merge: bool = False
@@ -381,6 +409,7 @@ class ProjectConfig(BaseModel):
             "context_output_reserve_tokens",
             "run_budget",
             "manual_authoring",
+            "operator_decisions",
         ):
             copy_value(key, workflow, key)
         return data
