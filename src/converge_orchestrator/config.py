@@ -1123,6 +1123,104 @@ def evaluate_secret_source_resolution(policy: dict[str, Any]) -> tuple[str, ...]
     return tuple(clauses)
 
 
+def _secret_boundary_single_root(state: dict[str, Any], key: str) -> str:
+    """Return one declared boundary root, failing closed on absent, null, or malformed."""
+    raw = state.get(key)
+    if raw is None or not isinstance(raw, (str, os.PathLike)) or not os.fspath(raw).strip():
+        raise ValueError(f"{key} must be an explicit non-empty boundary root path")
+    _canonicalize_path(os.fspath(raw))
+    return os.fspath(raw)
+
+
+def _secret_boundary_readers(value: Any, label: str) -> list[str]:
+    """Return a declared reader-identity list, failing closed on absent, null, or malformed."""
+    if value is None or not isinstance(value, (list, tuple)):
+        raise ValueError(f"{label} must be an explicit list of reader identities")
+    for entry in value:
+        if not _is_nonempty_string(entry):
+            raise ValueError(f"{label} entries must be non-empty string reader identities")
+    return list(value)
+
+
+def evaluate_external_secrets_file_boundary(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SECRET-002: the external secrets file SHALL stay outside the target
+    repository, candidate worktrees, generated runtime directory, and evidence tree, and
+    preflight SHALL reject path aliasing, traversal, symlink, junction, mount, or
+    effective-permission conditions that violate the configured secret boundary.
+
+    Pure, offline, deterministic; inspects a run-state mapping (declared secrets-file path,
+    resolved real path, alias kinds, effective readers, allowed readers, boundary roots) and
+    returns the violated clauses in fixed order. Defers to REQ-SECRET-001 when the
+    declaration is absent or null; fails closed with ValueError on a blank, non-string,
+    relative, or malformed path, a missing boundary root, an unknown alias kind, or a
+    malformed reader. Reads no secret values; no filesystem, network, model, git, or subprocess.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+    if "external_secrets_file" not in state or state["external_secrets_file"] is None:
+        return ()
+
+    raw_file = state["external_secrets_file"]
+    if not isinstance(raw_file, (str, os.PathLike)) or not os.fspath(raw_file).strip():
+        raise ValueError("external_secrets_file must be a non-empty string path")
+    declared = os.fspath(raw_file)
+    if _plain_path_shape(declared) != "absolute":
+        raise ValueError("external_secrets_file must be an absolute path")
+    _canonicalize_path(declared)
+    declared_identity = posixpath.normpath(declared.replace("\\", "/"))
+
+    raw_resolved = state.get("external_secrets_file_resolved")
+    if not isinstance(raw_resolved, (str, os.PathLike)) or not os.fspath(raw_resolved).strip():
+        raise ValueError("external_secrets_file_resolved must be a non-empty string path")
+    resolved = os.fspath(raw_resolved)
+    if _plain_path_shape(resolved) != "absolute":
+        raise ValueError("external_secrets_file_resolved must be an absolute path")
+    _canonicalize_path(resolved)
+    resolved_identity = posixpath.normpath(resolved.replace("\\", "/"))
+
+    target_repository = _secret_boundary_single_root(state, "target_repository_path")
+    candidate_worktrees = _iter_path_list(state.get("candidate_worktree_paths"))
+    if not candidate_worktrees:
+        raise ValueError("candidate_worktree_paths must be an explicit non-empty list of paths")
+    for root in candidate_worktrees:
+        _canonicalize_path(root)
+    generated_runtime = _secret_boundary_single_root(state, "generated_runtime_directory")
+    evidence_tree = _secret_boundary_single_root(state, "evidence_tree_path")
+
+    raw_alias_kinds = state.get("external_secrets_file_alias_kinds")
+    if raw_alias_kinds is None or not isinstance(raw_alias_kinds, (list, tuple)):
+        raise ValueError("external_secrets_file_alias_kinds must be an explicit list of tokens")
+    for kind in raw_alias_kinds:
+        if not _is_nonempty_string(kind) or kind not in ("symlink", "junction", "mount"):
+            raise ValueError(f"external_secrets_file_alias_kinds: unknown alias kind {kind!r}")
+
+    effective_readers = _secret_boundary_readers(
+        state.get("external_secrets_file_effective_readers"),
+        "external_secrets_file_effective_readers",
+    )
+    allowed_readers = _secret_boundary_readers(
+        state.get("secret_boundary_allowed_readers"),
+        "secret_boundary_allowed_readers",
+    )
+
+    clauses: list[str] = []
+    if any(_is_within(path, target_repository) for path in (declared, resolved)):
+        clauses.append("external_secrets_file_inside_target_repository")
+    if any(_is_within(path, root) for path in (declared, resolved) for root in candidate_worktrees):
+        clauses.append("external_secrets_file_inside_candidate_worktree")
+    if any(_is_within(path, generated_runtime) for path in (declared, resolved)):
+        clauses.append("external_secrets_file_inside_generated_runtime_directory")
+    if any(_is_within(path, evidence_tree) for path in (declared, resolved)):
+        clauses.append("external_secrets_file_inside_evidence_tree")
+    if ".." in declared.replace("\\", "/").split("/"):
+        clauses.append("external_secrets_file_path_traversal")
+    if raw_alias_kinds or declared_identity != resolved_identity:
+        clauses.append("external_secrets_file_path_aliased")
+    if set(effective_readers) - set(allowed_readers):
+        clauses.append("external_secrets_file_effective_permission_exceeds_boundary")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
