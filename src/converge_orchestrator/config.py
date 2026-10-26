@@ -1019,6 +1019,110 @@ def evaluate_config_schema_pin(state: dict[str, Any]) -> tuple[str, ...]:
     return tuple(clauses)
 
 
+_SECRET_RESOLUTION_ALT_SOURCES = ("deployment_environment", "credential_backend")
+
+
+def _secret_resolution_file_clause(secrets_file: Any) -> str | None:
+    """Return the violated clause for a first-class external secrets-file declaration.
+
+    A non-blank absolute path is accepted (returns ``None``); an absent, null, blank,
+    or non-string declaration is reported as ``external_secrets_file_not_declared``;
+    a relative (or malformed) path is reported as ``external_secrets_file_not_absolute``.
+    No filesystem, environment, network, model, git, or subprocess access occurs.
+    """
+    if not isinstance(secrets_file, str) or secrets_file.strip() == "":
+        return "external_secrets_file_not_declared"
+    try:
+        shape = _plain_path_shape(secrets_file)
+    except ValueError:
+        return "external_secrets_file_not_absolute"
+    if shape != "absolute":
+        return "external_secrets_file_not_absolute"
+    return None
+
+
+def evaluate_secret_source_resolution(policy: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SECRET-001 over a project-configuration mapping.
+
+    REQ-SECRET-001 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L221
+    [6. Project configuration and secret sources]): project configuration SHALL
+    support a first-class external secrets-file path and SHALL also permit
+    deployment-environment or configured credential-backend resolution without
+    changing role semantics.
+
+    This pure, offline, deterministic guard inspects a project-configuration
+    mapping carrying a base ``role_semantics`` (a mapping of role name to a string
+    semantics description) and a ``secret_resolution`` mapping declaring the
+    first-class external ``secrets_file`` plus optional ``deployment_environment``
+    and ``credential_backend`` alternate resolution declarations, each carrying a
+    ``role_semantics`` mapping that must be identical to the base. It returns the
+    violated clauses in fixed order:
+
+    * ``external_secrets_file_not_declared`` when the ``secrets_file`` is absent,
+      null, blank, or non-string;
+    * ``external_secrets_file_not_absolute`` when the ``secrets_file`` is a
+      relative (or malformed) path;
+    * ``secret_resolution_alters_role_semantics:deployment_environment`` then
+      ``secret_resolution_alters_role_semantics:credential_backend`` when the
+      corresponding alternate resolution declaration changes or adds role
+      semantics relative to the base ``role_semantics``.
+
+    It returns an empty tuple when a non-blank absolute ``secrets_file`` is
+    declared and every present alternate resolution declaration carries role
+    semantics identical to the base. It fails closed with ``ValueError`` for a
+    non-mapping policy, a missing or non-mapping ``secret_resolution``, a missing
+    or non-mapping ``role_semantics`` whose values are not all strings, or a
+    malformed alternate resolution declaration. It does not include, echo,
+    persist, or compare secret values; it assesses only the secrets-file
+    declaration and the role-semantics identities. It performs no filesystem,
+    network, model, git, or subprocess access.
+    """
+    if not isinstance(policy, dict):
+        raise ValueError("project configuration must be a mapping")
+
+    secret_resolution = policy.get("secret_resolution")
+    if not isinstance(secret_resolution, dict):
+        raise ValueError(
+            "secret_resolution must be a mapping declaring the first-class external "
+            "secrets_file; an absent or non-mapping declaration fails closed"
+        )
+
+    role_semantics = policy.get("role_semantics")
+    if not isinstance(role_semantics, dict):
+        raise ValueError(
+            "role_semantics must be a mapping of role name to a string semantics "
+            "description; an absent or non-mapping baseline fails closed"
+        )
+    for role, description in role_semantics.items():
+        if not isinstance(description, str):
+            raise ValueError(
+                f"role_semantics[{role!r}] must be a string semantics description; "
+                "a non-string entry fails closed"
+            )
+
+    clauses: list[str] = []
+    file_clause = _secret_resolution_file_clause(secret_resolution.get("secrets_file"))
+    if file_clause is not None:
+        clauses.append(file_clause)
+
+    for source in _SECRET_RESOLUTION_ALT_SOURCES:
+        if source not in secret_resolution:
+            continue
+        declaration = secret_resolution[source]
+        if not isinstance(declaration, dict):
+            raise ValueError(f"secret_resolution.{source} must be a mapping declaration")
+        alt_role_semantics = declaration.get("role_semantics")
+        if not isinstance(alt_role_semantics, dict):
+            raise ValueError(
+                f"secret_resolution.{source}.role_semantics must be a mapping of "
+                "role name to a string semantics description"
+            )
+        if alt_role_semantics != role_semantics:
+            clauses.append(f"secret_resolution_alters_role_semantics:{source}")
+
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
