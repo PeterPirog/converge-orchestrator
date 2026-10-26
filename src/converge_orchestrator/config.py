@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import posixpath
 import re
@@ -575,6 +576,116 @@ def evaluate_provider_data_egress(policy: dict[str, Any]) -> tuple[str, ...]:
             clauses.append(
                 f"repository_data_egress_permitted_to_untrusted_provider:{category}"
             )
+    return tuple(clauses)
+
+
+_RETENTION_MODES = {"finite_horizon", "durable_archival"}
+
+
+def _is_finite_positive_number(value: Any) -> bool:
+    """Return True only when ``value`` is a finite, positive real number (bool excluded)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        return value > 0  # All ints are finite; float() would overflow on huge ints.
+    return math.isfinite(value) and value > 0
+
+
+def _requires_durable_retention(declaration: Any) -> bool:
+    """Return True only when an evidence-class/archive declaration is a mapping that
+    requires durable capture, immutable retention proof, or both. Malformed or
+    under-declared declarations fail closed to False."""
+    if not isinstance(declaration, dict):
+        return False
+    return (
+        declaration.get("durable_capture") is True
+        or declaration.get("immutable_retention_proof") is True
+    )
+
+
+def evaluate_release_evidence_retention(policy: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-017 over a project-configuration mapping.
+
+    REQ-CONFIG-017: the project configuration SHALL define a finite release-evidence
+    retention horizon or an explicitly durable archival policy, and SHALL define which
+    external evidence classes and released repository-object archives require durable
+    capture, immutable retention proof, or both before they can contribute to release
+    convergence.
+
+    This pure, offline, deterministic guard inspects the ``release_evidence_retention``
+    section of a project-configuration mapping and returns the violated clauses in fixed
+    order (retention mode first, then external evidence classes, then released
+    repository-object archives):
+
+    * ``retention_mode_undeclared`` when ``retention_mode`` is absent, blank, or not one
+      of the two declared modes (``finite_horizon`` or ``durable_archival``);
+    * ``retention_horizon_invalid`` when the mode is ``finite_horizon`` but
+      ``retention_horizon`` is absent, zero, negative, non-numeric, or non-finite;
+    * ``durable_archival_policy_undeclared`` when the mode is ``durable_archival`` but
+      ``durable_archival_policy`` is absent, blank, or non-string;
+    * ``external_evidence_classes_undeclared`` when ``external_evidence_classes`` is
+      absent or empty; otherwise ``external_evidence_class_retention_undeclared:<name>``
+      for each class whose name is not a non-empty string, or whose declaration is
+      malformed or requires neither durable capture nor immutable retention proof;
+    * ``released_repository_object_archives_undeclared`` when
+      ``released_repository_object_archives`` is absent or empty; otherwise
+      ``released_repository_object_archive_retention_undeclared:<name>`` for each archive
+      whose name is not a non-empty string, or whose declaration is malformed or
+      requires neither durable capture nor immutable retention proof.
+
+    A complete policy declaring a finite positive retention horizon (or an explicit
+    durable archival policy) plus a complete durable-capture / immutable-retention-proof
+    requirement for every external evidence class and released repository-object archive
+    is accepted with no violated clauses. Requiring durable capture alone, or immutable
+    retention proof alone, satisfies the "durable capture, immutable retention proof, or
+    both" contract. It fails closed with ``ValueError`` on a missing or non-mapping
+    ``release_evidence_retention`` section so an under-declared retention policy cannot be
+    silently verified away. It performs no filesystem, network, model, git, or subprocess
+    access.
+    """
+    if not isinstance(policy, dict):
+        raise ValueError("project configuration must be a mapping")
+    section = policy.get("release_evidence_retention")
+    if not isinstance(section, dict):
+        raise ValueError(
+            "release_evidence_retention must be a mapping declaring the retention mode, "
+            "external evidence classes, and released repository-object archives; "
+            "an absent retention section fails closed"
+        )
+
+    clauses: list[str] = []
+
+    # Retention mode: a finite horizon or an explicitly durable archival policy.
+    mode = section.get("retention_mode")
+    if not isinstance(mode, str) or mode not in _RETENTION_MODES:
+        clauses.append("retention_mode_undeclared")
+    elif mode == "finite_horizon":
+        if not _is_finite_positive_number(section.get("retention_horizon")):
+            clauses.append("retention_horizon_invalid")
+    else:  # durable_archival
+        if not _is_nonempty_string(section.get("durable_archival_policy")):
+            clauses.append("durable_archival_policy_undeclared")
+
+    # External evidence classes.
+    evidence_classes = section.get("external_evidence_classes")
+    if not isinstance(evidence_classes, dict) or not evidence_classes:
+        clauses.append("external_evidence_classes_undeclared")
+    else:
+        for name, declaration in evidence_classes.items():
+            if not _is_nonempty_string(name) or not _requires_durable_retention(declaration):
+                clauses.append(f"external_evidence_class_retention_undeclared:{name}")
+
+    # Released repository-object archives.
+    archives = section.get("released_repository_object_archives")
+    if not isinstance(archives, dict) or not archives:
+        clauses.append("released_repository_object_archives_undeclared")
+    else:
+        for name, declaration in archives.items():
+            if not _is_nonempty_string(name) or not _requires_durable_retention(declaration):
+                clauses.append(
+                    f"released_repository_object_archive_retention_undeclared:{name}"
+                )
+
     return tuple(clauses)
 
 
