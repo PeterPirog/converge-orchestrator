@@ -815,6 +815,96 @@ def evaluate_shared_control_state_backend_identity(declaration: Any) -> tuple[st
     return tuple(clauses)
 
 
+_AUTHORITATIVE_POLICY_DOMAINS = frozenset(
+    {
+        "control",
+        "security",
+        "verification",
+        "authoring",
+        "recovery",
+        "integration",
+        "budget",
+        "evidence",
+    }
+)
+_POLICY_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+_POLICY_SEPARATOR_RE = re.compile(r"[_\-.\s]+")
+
+
+def _is_authoritative_policy_field(key: str) -> bool:
+    """Return True when a configuration field name carries an authoritative policy domain.
+
+    Detection is a case-insensitive snake_case/camelCase token match against the eight
+    authoritative policy domains (control, security, verification, authoring, recovery,
+    integration, budget, evidence), so ``security_policy`` and ``securityPolicy`` are policy
+    fields while ``custom_widget`` is not.
+    """
+    spaced = _POLICY_SEPARATOR_RE.sub(" ", key)
+    tokens = [token.lower() for token in _POLICY_TOKEN_RE.findall(spaced)]
+    return any(token in _AUTHORITATIVE_POLICY_DOMAINS for token in tokens)
+
+
+def evaluate_unknown_authoritative_config_fields(
+    config: dict[str, Any],
+    active_schema: dict[str, Any],
+) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-020 over a project-configuration mapping and its active schema.
+
+    REQ-CONFIG-020: configuration validation SHALL reject an unknown field that could be
+    interpreted as control, security, verification, authoring, recovery, integration, budget,
+    or evidence policy unless the active schema explicitly declares that field or declares its
+    namespace as non-authoritative extension data.
+
+    This pure, offline, deterministic guard inspects the configuration mapping (field names to
+    values) against the active schema mapping carrying ``declared_fields`` (an explicit list of
+    declared field names) and optionally ``non_authoritative_extension_namespaces`` (a list of
+    namespaces declared as non-authoritative extension data). It returns one
+    ``unknown_authoritative_config_field:<key>`` clause, in sorted deterministic order, for each
+    configuration field that is neither explicitly declared nor listed as a non-authoritative
+    extension namespace yet whose name is interpretable as one of the eight authoritative policy
+    domains. Unknown fields whose names carry no policy domain are not policy surface and are
+    accepted with no clause.
+
+    It fails closed with ``ValueError`` on a non-mapping configuration or active schema, a
+    missing or non-list ``declared_fields``, a non-list ``non_authoritative_extension_namespaces``,
+    a non-string configuration key, or a non-string namespace entry, so an unknown authoritative
+    policy field cannot be silently verified away. It performs no filesystem, network, model,
+    git, or subprocess access.
+    """
+    if not isinstance(config, dict):
+        raise ValueError("configuration must be a mapping of field names to values")
+    if not isinstance(active_schema, dict):
+        raise ValueError("active schema must be a mapping")
+
+    if "declared_fields" not in active_schema:
+        raise ValueError(
+            "declared_fields must be an explicit list; absent declared_fields fail closed"
+        )
+    declared_fields = active_schema["declared_fields"]
+    if not isinstance(declared_fields, list):
+        raise ValueError("declared_fields must be a list of declared field names")
+
+    namespaces = active_schema.get("non_authoritative_extension_namespaces", [])
+    if not isinstance(namespaces, list):
+        raise ValueError(
+            "non_authoritative_extension_namespaces must be a list of namespaces; "
+            "a non-list declaration fails closed"
+        )
+    for entry in namespaces:
+        if not isinstance(entry, str):
+            raise ValueError("non_authoritative_extension_namespaces entries must be strings")
+
+    clauses: list[str] = []
+    for key in config:
+        if not isinstance(key, str):
+            raise ValueError(f"configuration keys must be strings; {key!r} is not a string")
+        if key in declared_fields or key in namespaces:
+            continue
+        if _is_authoritative_policy_field(key):
+            clauses.append(f"unknown_authoritative_config_field:{key}")
+    return tuple(sorted(clauses))
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
