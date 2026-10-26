@@ -24,6 +24,7 @@ _MODEL_MODES = {"cloud", "local"}
 _RUN_CONFIG_DIR = "run-configs"
 _RUN_CONFIG_PATTERN = re.compile(r"^.+-sha256-([0-9a-f]{64})\.yaml$")
 _DRIVE_ROOTED_RE = re.compile(r"^[A-Za-z]:/")
+_DRIVE_RELATIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
 def _resolve_path_value(value: Any, base_dir: Path) -> Any:
@@ -687,6 +688,88 @@ def evaluate_release_evidence_retention(policy: dict[str, Any]) -> tuple[str, ..
                 )
 
     return tuple(clauses)
+
+
+def _plain_path_shape(value: str) -> str:
+    """Classify a plain path as ``absolute`` or ``relative``; malformed spellings fail closed.
+
+    POSIX ``/...`` and drive-rooted ``[A-Za-z]:/...`` spellings are absolute; verbatim,
+    ``//?/``/``//./``, drive-relative, and drive-rooted spellings that lose their drive root
+    under normalization (e.g. ``C:foo/../bar``) fail closed with ``ValueError``; the
+    remaining plain spellings are relative. No filesystem access occurs.
+    """
+    if value.startswith(("\\", "//?/", "//./")):
+        raise ValueError(f"path {value!r} must be a plain absolute or relative path")
+    slash = value.replace("\\", "/")
+    if _DRIVE_RELATIVE_RE.match(slash):
+        normalized = posixpath.normpath(slash)
+        if not _DRIVE_ROOTED_RE.match(slash) or not (
+            normalized.startswith("/") or _DRIVE_ROOTED_RE.match(normalized)
+        ):
+            raise ValueError(f"path {value!r} must be a plain absolute or relative path")
+        return "absolute"
+    if posixpath.normpath(slash).startswith("/"):
+        return "absolute"
+    return "relative"
+
+
+_PINNED_AUTHORITY_KINDS = {"pinned_project_config", "pinned_authority_source"}
+
+
+def evaluate_canonical_durable_control_state_paths(declaration: Any) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-018 over one durable control-state path declaration.
+
+    The canonical absolute identity SHALL come from pinned project configuration or another
+    explicitly pinned authority source and SHALL NOT depend on process CWD. This pure, offline,
+    deterministic guard inspects ``durable_control_state_path``, ``pinned_authority_source``
+    (a pinned ``kind`` plus an absolute ``base``), and ``process_cwd``; it returns the violated
+    clauses in fixed order: ``pinned_authority_source_undeclared`` when that source is missing,
+    unpinned, blank-kind, or non-absolute-base (required for both absolute and relative
+    declarations), and ``control_state_path_depends_on_process_cwd`` when a relative declaration
+    is anchored on the process CWD (including a canonical re-spelling). It fails closed with
+    ``ValueError`` for a missing or empty path, a malformed path value (verbatim, ``//?/``/
+    ``//./``, drive-relative, or a drive-qualified spelling that does not remain absolute), or
+    a missing or non-absolute ``process_cwd``; it performs no filesystem, network, model, git,
+    or subprocess access.
+    """
+    if not isinstance(declaration, dict):
+        raise ValueError("durable control-state declaration must be a mapping")
+
+    raw_path = declaration.get("durable_control_state_path")
+    if not isinstance(raw_path, (str, os.PathLike)) or not os.fspath(raw_path).strip():
+        raise ValueError("durable_control_state_path must be a non-empty string path")
+    path = os.fspath(raw_path)
+
+    raw_cwd = declaration.get("process_cwd")
+    if not isinstance(raw_cwd, (str, os.PathLike)) or not os.fspath(raw_cwd).strip():
+        raise ValueError("process_cwd must be a non-empty string path")
+    canonical_cwd = _canonicalize_path(os.fspath(raw_cwd))
+
+    # Validate the pinned, non-CWD authority source for every declaration, absolute or relative.
+    authority = declaration.get("pinned_authority_source")
+    kind = authority.get("kind") if isinstance(authority, dict) else None
+    base = authority.get("base") if isinstance(authority, dict) else None
+    canonical_base: str | None = None
+    if (
+        isinstance(kind, str)
+        and kind in _PINNED_AUTHORITY_KINDS
+        and isinstance(base, (str, os.PathLike))
+        and os.fspath(base)
+    ):
+        try:
+            canonical_base = _canonicalize_path(os.fspath(base))
+        except ValueError:
+            canonical_base = None
+    if canonical_base is None:
+        return ("pinned_authority_source_undeclared",)
+
+    if _plain_path_shape(path) == "absolute":
+        _canonicalize_path(path)
+        return ()
+
+    if canonical_base == canonical_cwd:
+        return ("control_state_path_depends_on_process_cwd",)
+    return ()
 
 
 def _load_mapping(source: Path) -> dict[str, Any]:
