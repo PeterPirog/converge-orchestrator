@@ -964,6 +964,61 @@ def evaluate_non_authoritative_extension_field_authority(
     )
 
 
+_UNKNOWN_FIELD_SEMANTICS = (
+    "reject_unknown_authoritative_fields",
+    "reject_all_unknown_fields",
+)
+
+
+def evaluate_config_schema_pin(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-022 over a run-state snapshot.
+
+    REQ-CONFIG-022: every run SHALL pin and record the authoritative
+    configuration-schema identity and unknown-field handling semantics used to
+    validate its effective project policy before mutation begins.
+
+    This pure, offline, deterministic guard inspects a plain run-state mapping
+    with the keys ``pinned_config_schema_identity``,
+    ``recorded_config_schema_identity``, and ``unknown_field_handling_semantics``,
+    and returns the violated clauses in fixed order:
+
+    * ``config_schema_identity_not_pinned_before_mutation`` when the pinned
+      configuration-schema identity is missing, null, non-string, or blank, so
+      repository mutation must not begin;
+    * ``config_schema_identity_not_recorded`` when the recorded
+      configuration-schema identity is missing, null, non-string, or blank;
+    * ``config_schema_identity_pin_record_mismatch`` when both identities are
+      non-blank strings but differ;
+    * ``unknown_field_handling_semantics_not_recorded`` when the unknown-field
+      handling semantics value is missing, null, non-string, blank, or a token
+      outside the two explicit supported semantics (``reject_unknown_authoritative_fields``
+      and the stricter ``reject_all_unknown_fields``).
+
+    It returns an empty tuple only when the pinned and recorded
+    configuration-schema identities are matching non-blank strings and the
+    unknown-field handling semantics value is an explicit supported token. It
+    fails closed with ``ValueError`` on a non-mapping run state. It performs no
+    filesystem, network, model, git, or subprocess access.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+
+    pinned = state.get("pinned_config_schema_identity")
+    recorded = state.get("recorded_config_schema_identity")
+    semantics = state.get("unknown_field_handling_semantics")
+
+    clauses: list[str] = []
+    if not _is_nonempty_string(pinned):
+        clauses.append("config_schema_identity_not_pinned_before_mutation")
+    if not _is_nonempty_string(recorded):
+        clauses.append("config_schema_identity_not_recorded")
+    if _is_nonempty_string(pinned) and _is_nonempty_string(recorded) and pinned != recorded:
+        clauses.append("config_schema_identity_pin_record_mismatch")
+    if semantics not in _UNKNOWN_FIELD_SEMANTICS:
+        clauses.append("unknown_field_handling_semantics_not_recorded")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
