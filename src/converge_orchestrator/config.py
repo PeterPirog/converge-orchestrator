@@ -5,6 +5,7 @@ import math
 import os
 import posixpath
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -903,6 +904,64 @@ def evaluate_unknown_authoritative_config_fields(
         if _is_authoritative_policy_field(key):
             clauses.append(f"unknown_authoritative_config_field:{key}")
     return tuple(sorted(clauses))
+
+
+_AUTHORITY_SURFACES = (
+    "workflow_authority", "pass_semantics", "mutation_authority", "secret_scope",
+    "sandbox_policy", "git_or_remote_integration_semantics", "release_convergence",
+)
+
+
+def evaluate_non_authoritative_extension_field_authority(
+    extension: Any, active_schema: Any
+) -> tuple[str, ...]:
+    """REQ-CONFIG-021: report ``non_authoritative_extension_field_alters_<surface>:<ns>.<field>``
+    clauses for un-adopted altered surfaces in fixed surface order; fail closed with ValueError.
+    """
+    if not isinstance(extension, Mapping):
+        raise ValueError("extension must be a mapping declaring a namespace and its fields")
+    if not isinstance(active_schema, Mapping):
+        raise ValueError("active schema must be a mapping")
+    if "namespace" not in extension:
+        raise ValueError("extension.namespace must be declared; a missing namespace fails closed")
+    namespace = extension["namespace"]
+    if not _is_nonempty_string(namespace):
+        raise ValueError("extension.namespace must be a non-empty, non-blank string")
+    if "fields" not in extension:
+        raise ValueError("extension.fields must be declared; missing extension fields fail closed")
+    fields = extension["fields"]
+    if not isinstance(fields, Mapping):
+        raise ValueError("extension.fields must be a mapping of field name to declaration")
+    if "adopted_authoritative_fields" not in active_schema:
+        raise ValueError("adopted_authoritative_fields must be an explicit list of adopted fields")
+    adopted = active_schema["adopted_authoritative_fields"]
+    if not isinstance(adopted, list):
+        raise ValueError("adopted_authoritative_fields must be an explicit string list")
+    if not all(isinstance(entry, str) for entry in adopted):
+        raise ValueError("adopted_authoritative_fields entries must be qualified-field strings")
+    adopted_set = frozenset(adopted)
+    field_surfaces: dict[str, frozenset[str]] = {}
+    for name, declaration in fields.items():
+        if not isinstance(name, str):
+            raise ValueError(f"extension field names must be strings; {name!r} is not a string")
+        if not isinstance(declaration, Mapping):
+            raise ValueError(f"extension field {name!r} must be a mapping declaring an alters list")
+        if "alters" not in declaration:
+            raise ValueError(f"extension field {name!r} must carry an explicit alters surface list")
+        alters = declaration["alters"]
+        if not isinstance(alters, list):
+            raise ValueError(f"extension field {name!r} alters must be a surface-token list")
+        for token in alters:
+            if token not in _AUTHORITY_SURFACES:
+                raise ValueError(f"extension field {name!r} declares unknown surface {token!r}")
+        field_surfaces[name] = frozenset(alters)
+    unadopted = {name for name in field_surfaces if f"{namespace}.{name}" not in adopted_set}
+    return tuple(
+        f"non_authoritative_extension_field_alters_{surface}:{namespace}.{name}"
+        for surface in _AUTHORITY_SURFACES
+        for name in sorted(unadopted)
+        if surface in field_surfaces[name]
+    )
 
 
 def _load_mapping(source: Path) -> dict[str, Any]:
