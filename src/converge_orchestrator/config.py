@@ -772,6 +772,49 @@ def evaluate_canonical_durable_control_state_paths(declaration: Any) -> tuple[st
     return ()
 
 
+def _contains_secret_material(value: Any, secret_values: frozenset[str]) -> bool:
+    if isinstance(value, dict):
+        return any(_contains_secret_material(item, secret_values) for item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_secret_material(item, secret_values) for item in value)
+    if isinstance(value, str):
+        return any(secret in value for secret in secret_values)
+    return any(secret in str(value) for secret in secret_values)
+
+
+def evaluate_shared_control_state_backend_identity(declaration: Any) -> tuple[str, ...]:
+    """Enforce REQ-CONFIG-019: record the shared control-state backend identity secret-safe.
+    Fixed clauses in order: backend_kind_undeclared, logical_database_or_namespace_undeclared,
+    authority_generation_invalid, stable_deployment_identity_invalid,
+    secret_material_in_backend_identity; connection_material holds secrets (substring); offline."""
+    if not isinstance(declaration, dict):
+        raise ValueError("declaration must be a mapping")
+    material = declaration.get("connection_material")
+    if not isinstance(material, dict) or not material or not all(
+        _is_nonempty_string(k) and _is_nonempty_string(v) for k, v in material.items()
+    ):
+        raise ValueError("connection_material must be a non-empty mapping of non-empty strings")
+    recorded = declaration.get("recorded_backend_identity")
+    if not isinstance(recorded, dict) or not recorded:
+        raise ValueError("recorded_backend_identity must be a non-empty mapping")
+    secret_values = frozenset(material.values())
+    clauses: list[str] = []
+    if not _is_nonempty_string(declaration.get("backend_kind")):
+        clauses.append("backend_kind_undeclared")
+    if not _is_nonempty_string(declaration.get("logical_database_or_namespace")):
+        clauses.append("logical_database_or_namespace_undeclared")
+    generation = declaration.get("authority_generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
+        clauses.append("authority_generation_invalid")
+    if "stable_deployment_identity" in declaration and not _is_nonempty_string(
+        declaration["stable_deployment_identity"]
+    ):
+        clauses.append("stable_deployment_identity_invalid")
+    if _contains_secret_material(recorded, secret_values):
+        clauses.append("secret_material_in_backend_identity")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
