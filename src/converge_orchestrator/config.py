@@ -1285,6 +1285,82 @@ def evaluate_pinned_secret_declaration(state: dict[str, Any]) -> tuple[str, ...]
     return tuple(clauses)
 
 
+_INVOCATION_CREDENTIAL_SURFACES = (
+    "environment",
+    "mounts",
+    "generated_configuration",
+    "prompt",
+    "tool_configuration",
+)
+
+
+def evaluate_invocation_credential_scope(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SECRET-004: a role receives only its role/operation credentials.
+
+    Return one ``credential_not_assigned_to_role_operation:<surface>:<credential>``
+    clause per delivered credential not assigned to this exact role and operation,
+    in fixed surface order (names sorted per surface), or ``()`` when all are
+    authorized. Fail closed with ``ValueError`` on malformed state; names only.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("invocation state must be a mapping")
+    role = state.get("role")
+    if not _is_nonempty_string(role):
+        raise ValueError("role must be a non-blank string")
+    operation = state.get("operation")
+    if not _is_nonempty_string(operation):
+        raise ValueError("operation must be a non-blank string")
+    if "credential_assignments" not in state:
+        raise ValueError("credential_assignments must be an explicit list")
+    assignments = state["credential_assignments"]
+    if not isinstance(assignments, list):
+        raise ValueError("credential_assignments must be a list")
+    authorized: set[str] = set()
+    for entry in assignments:
+        if not isinstance(entry, dict):
+            raise ValueError("credential assignments must be mappings")
+        credential = entry.get("credential")
+        assigned_role = entry.get("role")
+        assigned_operation = entry.get("operation")
+        for field in (credential, assigned_role, assigned_operation):
+            if not _is_nonempty_string(field):
+                raise ValueError(
+                    "assignment must carry non-blank credential, role, and operation"
+                )
+        if (
+            isinstance(credential, str)
+            and assigned_role == role
+            and assigned_operation == operation
+        ):
+            authorized.add(credential)
+    if "invocation_surfaces" not in state:
+        raise ValueError("invocation_surfaces must be a mapping")
+    surfaces = state["invocation_surfaces"]
+    if not isinstance(surfaces, dict):
+        raise ValueError("invocation_surfaces must be a mapping")
+    if any(surface not in surfaces for surface in _INVOCATION_CREDENTIAL_SURFACES):
+        raise ValueError("invocation_surfaces must declare every required surface")
+    if any(surface not in _INVOCATION_CREDENTIAL_SURFACES for surface in surfaces):
+        raise ValueError("invocation_surfaces declares an unknown surface")
+    delivered: dict[str, set[str]] = {}
+    for surface in _INVOCATION_CREDENTIAL_SURFACES:
+        names = surfaces[surface]
+        if not isinstance(names, list):
+            raise ValueError(f"invocation_surfaces.{surface} must be a list")
+        for name in names:
+            if not _is_nonempty_string(name):
+                raise ValueError(
+                    f"invocation_surfaces.{surface} entries must be credential names"
+                )
+        delivered[surface] = set(names)
+    return tuple(
+        f"credential_not_assigned_to_role_operation:{surface}:{credential}"
+        for surface in _INVOCATION_CREDENTIAL_SURFACES
+        for credential in sorted(delivered[surface])
+        if credential not in authorized
+    )
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
