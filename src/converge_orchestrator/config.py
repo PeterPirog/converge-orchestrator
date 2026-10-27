@@ -1221,6 +1221,70 @@ def evaluate_external_secrets_file_boundary(state: dict[str, Any]) -> tuple[str,
     return tuple(clauses)
 
 
+_PINNED_SECRET_DECLARATION_FIELDS = frozenset({"name", "source_identity"})
+
+
+def evaluate_pinned_secret_declaration(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SECRET-003 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L223,
+    [6. Project configuration and secret sources]) over a run-state snapshot.
+
+    Pure, offline, deterministic. Inspects ``secret_declarations`` (each entry a
+    mapping carrying exactly a non-empty ``name`` and ``source_identity``) and
+    ``operation`` (explicit ``resolves_secret_values`` /
+    ``has_explicit_credential_authority`` booleans). Reports
+    ``pinned_secret_declaration_contains_secret_value`` when a declaration carries
+    a field beyond those two, then
+    ``secret_value_resolution_without_explicit_credential_authority`` when the
+    operation resolves secret values without explicit credential authority. Fails
+    closed with ``ValueError`` for malformed or missing declarations or flags;
+    never reads, echoes, persists, or compares secret values; performs no
+    filesystem, environment, network, model, git, or subprocess access.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+
+    if "secret_declarations" not in state:
+        raise ValueError(
+            "secret_declarations must be an explicit list; "
+            "absent declarations fail closed"
+        )
+    declarations = state["secret_declarations"]
+    if not isinstance(declarations, list):
+        raise ValueError("secret_declarations must be a list of pinned secret declarations")
+    for declaration in declarations:
+        if not isinstance(declaration, dict):
+            raise ValueError("pinned secret declarations must be mappings")
+        if not _is_nonempty_string(declaration.get("name")):
+            raise ValueError("pinned secret declarations must carry a non-empty string name")
+        if not _is_nonempty_string(declaration.get("source_identity")):
+            raise ValueError(
+                "pinned secret declarations must carry a non-empty string source identity"
+            )
+
+    if "operation" not in state:
+        raise ValueError("operation must be declared; a missing operation fails closed")
+    operation = state["operation"]
+    if not isinstance(operation, dict):
+        raise ValueError("operation must be a mapping carrying the authority booleans")
+    if not isinstance(operation.get("resolves_secret_values"), bool):
+        raise ValueError(
+            "operation.resolves_secret_values must be an explicit boolean; "
+            "absent, null, or malformed flags fail closed"
+        )
+    if not isinstance(operation.get("has_explicit_credential_authority"), bool):
+        raise ValueError(
+            "operation.has_explicit_credential_authority must be an explicit boolean; "
+            "absent, null, or malformed flags fail closed"
+        )
+
+    clauses: list[str] = []
+    if any(set(declaration) - _PINNED_SECRET_DECLARATION_FIELDS for declaration in declarations):
+        clauses.append("pinned_secret_declaration_contains_secret_value")
+    if operation["resolves_secret_values"] and not operation["has_explicit_credential_authority"]:
+        clauses.append("secret_value_resolution_without_explicit_credential_authority")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
