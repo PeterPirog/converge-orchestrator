@@ -1361,6 +1361,39 @@ def evaluate_invocation_credential_scope(state: dict[str, Any]) -> tuple[str, ..
     )
 
 
+_ALLOWED_CREDENTIAL_STATUSES = ("available", "missing", "unreadable")
+
+
+def evaluate_missing_credential_preflight(state: Any) -> tuple[str, ...]:
+    """Fail closed when required credentials are missing or unreadable (REQ-SECRET-005)."""
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+    required = state.get("required_credentials")
+    if not isinstance(required, list) or not all(_is_nonempty_string(n) for n in required):
+        raise ValueError("required_credentials must be an explicit list of non-blank names")
+    resolutions = state.get("credential_resolutions")
+    if not isinstance(resolutions, dict):
+        raise ValueError("credential_resolutions must be an explicit credential-name mapping")
+    for entry in resolutions.values():
+        if not isinstance(entry, dict) or entry.get("status") not in _ALLOWED_CREDENTIAL_STATUSES:
+            raise ValueError("every credential resolution entry must carry a valid status token")
+    side_effects_started = state.get("external_side_effects_started")
+    if not isinstance(side_effects_started, bool):
+        raise ValueError("external_side_effects_started must be an explicit boolean")
+    clauses: list[str] = []
+    for name in sorted(required):
+        if name not in resolutions:
+            raise ValueError(f"credential {name!r} must carry a resolution entry")
+        status = resolutions[name]["status"]
+        if status == "missing":
+            clauses.append(f"missing_credential:{name}")
+        elif status == "unreadable":
+            clauses.append(f"unreadable_credential:{name}")
+    if clauses and side_effects_started:
+        clauses.append("failure_before_external_side_effects")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
