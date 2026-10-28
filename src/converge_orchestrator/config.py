@@ -1394,6 +1394,96 @@ def evaluate_missing_credential_preflight(state: Any) -> tuple[str, ...]:
     return tuple(clauses)
 
 
+_SECRET_DETECTION_KIND_CLAUSES = {
+    "repository_content": "credential_material_in_repository_content",
+    "durable_non_secret_artifact": "credential_material_in_durable_non_secret_artifact",
+}
+_SECRET_DETECTION_INTEGRATION_CLAUSE = "integration_not_blocked_by_secret_detection"
+
+
+def evaluate_secret_detection_policy(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SECRET-006 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L226,
+    [6. Project configuration and secret sources]) over a run-state snapshot.
+
+    REQ-SECRET-006: the secret-detection policy SHALL block integration when a
+    candidate introduces credential material into repository content or durable
+    non-secret artifacts.
+
+    This pure, offline, deterministic guard inspects a run-state mapping carrying
+    ``credential_material_findings`` (an explicit list; each entry a mapping with a
+    declared ``artifact_kind`` -- ``repository_content`` or
+    ``durable_non_secret_artifact`` -- and a non-blank string ``identity``) and
+    ``integration_authorized`` (an explicit boolean). It reports one identity-only
+    clause per finding, repository content first and durable non-secret artifacts
+    after, identities sorted within each kind:
+
+    * ``credential_material_in_repository_content:<identity>``;
+    * ``credential_material_in_durable_non_secret_artifact:<identity>``;
+
+    and, only when at least one finding exists and ``integration_authorized`` is
+    true, the fixed clause ``integration_not_blocked_by_secret_detection`` after
+    the finding clauses. It returns an empty tuple for an explicit empty finding
+    list, including when ``integration_authorized`` is true.
+
+    It fails closed with ``ValueError`` on a non-mapping state, a missing or
+    non-list ``credential_material_findings``, a non-mapping finding entry, an
+    unknown ``artifact_kind`` value, a blank artifact identity, or a non-boolean
+    ``integration_authorized`` flag. It does not read, echo, persist, or compare
+    credential values; it reports artifact identities only. It performs no
+    filesystem, environment, network, model, git, or subprocess access.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+
+    if "credential_material_findings" not in state:
+        raise ValueError(
+            "credential_material_findings must be an explicit list; "
+            "absent findings fail closed"
+        )
+    findings = state["credential_material_findings"]
+    if not isinstance(findings, list):
+        raise ValueError("credential_material_findings must be a list of findings")
+
+    identities: dict[str, set[str]] = {kind: set() for kind in _SECRET_DETECTION_KIND_CLAUSES}
+    for entry in findings:
+        if not isinstance(entry, dict):
+            raise ValueError("credential_material_findings entries must be mappings")
+        kind = entry.get("artifact_kind")
+        if not isinstance(kind, str) or kind not in _SECRET_DETECTION_KIND_CLAUSES:
+            raise ValueError(
+                f"credential_material_findings artifact_kind must be one of "
+                f"{sorted(_SECRET_DETECTION_KIND_CLAUSES)}; {kind!r} is unknown"
+            )
+        identity = entry.get("identity")
+        if not isinstance(identity, str) or identity.strip() == "":
+            raise ValueError(
+                "credential_material_findings entries must carry a "
+                "non-blank string identity"
+            )
+        identities[kind].add(identity)
+
+    if "integration_authorized" not in state:
+        raise ValueError(
+            "integration_authorized must be an explicit boolean; "
+            "absent, null, or malformed flags fail closed"
+        )
+    integration_authorized = state["integration_authorized"]
+    if not isinstance(integration_authorized, bool):
+        raise ValueError(
+            "integration_authorized must be an explicit boolean; "
+            "absent, null, or malformed flags fail closed"
+        )
+
+    clauses: list[str] = [
+        f"{clause}:{identity}"
+        for kind, clause in _SECRET_DETECTION_KIND_CLAUSES.items()
+        for identity in sorted(identities[kind])
+    ]
+    if clauses and integration_authorized:
+        clauses.append(_SECRET_DETECTION_INTEGRATION_CLAUSE)
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
