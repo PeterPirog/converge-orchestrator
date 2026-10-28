@@ -1484,6 +1484,56 @@ def evaluate_secret_detection_policy(state: dict[str, Any]) -> tuple[str, ...]:
     return tuple(clauses)
 
 
+def evaluate_repository_content_transfer_sanitization(state: dict[str, Any]) -> tuple[str, ...]:
+    """Fail-closed REQ-SECRET-007 guard: repository-content transfer sanitization.
+    Pure and deterministic; clauses carry only surface and content-identity tokens.
+    """
+    surfaces = ("model_backed_role", "external_analysis_tool")
+    clause_names = (
+        "secret_detection_not_applied", "sanitization_not_applied",
+        "credential_material_not_withheld", "credential_material_withheld_without_bounded_evidence")
+    flag_names = (
+        "secret_detection_applied", "sanitization_applied",
+        "credential_material_detected", "credential_material_withheld")
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+    transfers = state.get("repository_content_transfers")
+    if not isinstance(transfers, list):
+        raise ValueError("repository_content_transfers must be an explicit list")
+    violated = {surface: [set() for _ in clause_names] for surface in surfaces}
+    for record in transfers:
+        if not isinstance(record, dict):
+            raise ValueError("repository_content_transfers records must be mappings")
+        surface = record.get("surface")
+        if surface not in surfaces:
+            raise ValueError("repository_content_transfers surface is unknown")
+        identity = record.get("identity")
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError("repository_content_transfers identity must be non-blank")
+        for flag in flag_names:
+            if not isinstance(record.get(flag), bool):
+                raise ValueError(f"repository_content_transfers {flag} must be a boolean")
+        if not record["secret_detection_applied"]:
+            violated[surface][0].add(identity)
+        if not record["sanitization_applied"]:
+            violated[surface][1].add(identity)
+        if record["credential_material_detected"]:
+            evidence = record.get("withholding_evidence")
+            if not isinstance(evidence, dict):
+                raise ValueError("withholding_evidence must be a mapping when detected")
+            if not record["credential_material_withheld"]:
+                violated[surface][2].add(identity)
+            identity_ok = _is_nonempty_string(evidence.get("evidence_identity"))
+            if not identity_ok or evidence.get("bounded") is not True:
+                violated[surface][3].add(identity)
+    return tuple(
+        f"{name}:{surface}:{identity}"
+        for surface in surfaces
+        for name, identities in zip(clause_names, violated[surface], strict=True)
+        for identity in sorted(identities)
+    )
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
