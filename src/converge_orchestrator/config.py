@@ -1534,6 +1534,55 @@ def evaluate_repository_content_transfer_sanitization(state: dict[str, Any]) -> 
     )
 
 
+_BROWNFIELD_CREDENTIAL_SURFACES = (
+    "prompt",
+    "generated_configuration",
+    "ordinary_evidence_payload",
+    "diagnostic",
+    "provider_request",
+)
+
+
+def evaluate_brownfield_credential_material_containment(state: dict[str, Any]) -> tuple[str, ...]:
+    """REQ-SECRET-008 (L228 [6.]): pending brownfield credential material stays a
+    visible gap and is not copied into the five surfaces; identity-only clauses."""
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a dict")
+    if "brownfield_credential_findings" not in state:
+        raise ValueError("brownfield_credential_findings must be an explicit list")
+    findings = state["brownfield_credential_findings"]
+    if not isinstance(findings, list):
+        raise ValueError("brownfield_credential_findings must be a list")
+    gap: set[str] = set()
+    into: dict[str, set[str]] = {s: set() for s in _BROWNFIELD_CREDENTIAL_SURFACES}
+    for entry in findings:
+        if not isinstance(entry, dict):
+            raise ValueError("brownfield_credential_findings entries must be dicts")
+        identity = entry.get("identity")
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError("finding identity must be a non-blank string")
+        if not isinstance(entry.get("remediation_pending"), bool):
+            raise ValueError("remediation_pending must be an explicit boolean")
+        if not isinstance(entry.get("visible_compliance_gap"), bool):
+            raise ValueError("visible_compliance_gap must be an explicit boolean")
+        affected = entry.get("affected_surfaces")
+        if not isinstance(affected, list):
+            raise ValueError("affected_surfaces must be an explicit list")
+        if not all(token in _BROWNFIELD_CREDENTIAL_SURFACES for token in affected):
+            raise ValueError("affected_surfaces must only declare the five surfaces")
+        if entry["remediation_pending"] is not True:
+            continue
+        if entry["visible_compliance_gap"] is not True:
+            gap.add(identity)
+        for surface in affected:
+            into[surface].add(identity)
+    clauses = [f"credential_material_gap_not_visible:{i}" for i in sorted(gap)]
+    for surface in _BROWNFIELD_CREDENTIAL_SURFACES:
+        for i in sorted(into[surface]):
+            clauses.append(f"credential_material_copied_into_{surface}:{i}")
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
