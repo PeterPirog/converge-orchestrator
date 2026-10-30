@@ -1583,6 +1583,145 @@ def evaluate_brownfield_credential_material_containment(state: dict[str, Any]) -
     return tuple(clauses)
 
 
+_SECRET_SOURCE_EVIDENCE_IDENTITY_FIELDS = frozenset(
+    {"secret_source_identity", "credential_authority_identity"}
+)
+
+
+def evaluate_secret_source_rotation_evidence(state: dict[str, Any]) -> tuple[str, ...]:
+    """Enforce REQ-SECRET-009 over a run-state snapshot.
+
+    REQ-SECRET-009: durable evidence for an external operation SHALL identify the
+    configured secret source and the non-secret credential-authority identity
+    without persisting the credential value, and secret rotation SHALL remain
+    compatible only when fresh authority observation proves the resulting
+    operation identity and permissions are still valid for the pending action.
+
+    This pure, offline, deterministic guard inspects a plain run-state mapping
+    with the keys ``configured_secret_source_identity``,
+    ``credential_authority_identity``, ``durable_evidence_records``,
+    ``rotation_performed``, ``pending_action``, and optionally
+    ``fresh_authority_observation``. It returns the violated clauses in fixed
+    order:
+
+    * ``durable_evidence_omits_configured_secret_source_identity`` when any
+      durable evidence record fails to identify the configured secret source;
+    * ``durable_evidence_omits_credential_authority_identity`` when any record
+      fails to identify the non-secret credential-authority identity;
+    * ``durable_evidence_carries_credential_value`` when any record carries a
+      field outside the two allowed identity fields, so it may persist a
+      credential value;
+    * ``secret_rotation_missing_fresh_authority_observation`` when a rotation
+      was performed but no fresh authority observation is present;
+    * ``secret_rotation_fresh_identity_mismatch`` when the fresh observation
+      names a different operation identity than the pending action;
+    * ``secret_rotation_fresh_permissions_mismatch`` when the fresh
+      observation reports permissions that do not satisfy the pending action.
+
+    It fails closed with ``ValueError`` on a non-mapping state, a missing
+    required declaration, a non-list ``durable_evidence_records``, a
+    non-mapping record, a non-boolean ``rotation_performed`` flag, or a
+    malformed ``pending_action``. It does not read, echo, persist, compare,
+    or return credential values; clauses carry only identity and permission
+    tokens. It performs no filesystem, environment, network, model, git,
+    or subprocess access.
+    """
+    if not isinstance(state, dict):
+        raise ValueError("run-state must be a mapping")
+
+    required_keys = (
+        "configured_secret_source_identity",
+        "credential_authority_identity",
+        "durable_evidence_records",
+        "rotation_performed",
+        "pending_action",
+    )
+    for key in required_keys:
+        if key not in state:
+            raise ValueError(
+                f"{key} must be declared; a missing required declaration fails closed"
+            )
+
+    configured_source = state["configured_secret_source_identity"]
+    if not _is_nonempty_string(configured_source):
+        raise ValueError("configured_secret_source_identity must be a non-empty string")
+
+    authority_identity = state["credential_authority_identity"]
+    if not _is_nonempty_string(authority_identity):
+        raise ValueError("credential_authority_identity must be a non-empty string")
+
+    records = state["durable_evidence_records"]
+    if not isinstance(records, list):
+        raise ValueError("durable_evidence_records must be a list of evidence records")
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("durable_evidence_records entries must be mappings")
+
+    rotation_performed = state["rotation_performed"]
+    if not isinstance(rotation_performed, bool):
+        raise ValueError("rotation_performed must be an explicit boolean")
+
+    pending_action = state["pending_action"]
+    if not isinstance(pending_action, dict):
+        raise ValueError("pending_action must be a mapping")
+    pending_identity = pending_action.get("operation_identity")
+    if not _is_nonempty_string(pending_identity):
+        raise ValueError("pending_action.operation_identity must be a non-empty string")
+    pending_permissions = pending_action.get("permissions")
+    if not isinstance(pending_permissions, list) or not all(
+        _is_nonempty_string(p) for p in pending_permissions
+    ):
+        raise ValueError(
+            "pending_action.permissions must be a list of non-empty string permission tokens"
+        )
+
+    clauses: list[str] = []
+    omits_source = False
+    omits_authority = False
+    carries_value = False
+    for record in records:
+        record_source = record.get("secret_source_identity")
+        if not _is_nonempty_string(record_source) or record_source != configured_source:
+            omits_source = True
+        record_authority = record.get("credential_authority_identity")
+        if not _is_nonempty_string(record_authority) or record_authority != authority_identity:
+            omits_authority = True
+        if set(record) - _SECRET_SOURCE_EVIDENCE_IDENTITY_FIELDS:
+            carries_value = True
+
+    if omits_source:
+        clauses.append("durable_evidence_omits_configured_secret_source_identity")
+    if omits_authority:
+        clauses.append("durable_evidence_omits_credential_authority_identity")
+    if carries_value:
+        clauses.append("durable_evidence_carries_credential_value")
+
+    if rotation_performed:
+        observation = state.get("fresh_authority_observation")
+        if not isinstance(observation, dict):
+            clauses.append("secret_rotation_missing_fresh_authority_observation")
+        else:
+            observed_identity = observation.get("operation_identity")
+            if not _is_nonempty_string(observed_identity):
+                raise ValueError(
+                    "fresh_authority_observation.operation_identity must be a non-empty string"
+                )
+            observed_permissions = observation.get("permissions")
+            if not isinstance(observed_permissions, list) or not all(
+                _is_nonempty_string(p) for p in observed_permissions
+            ):
+                raise ValueError(
+                    "fresh_authority_observation.permissions must be a list of "
+                    "non-empty string permission tokens"
+                )
+            if observed_identity != pending_identity:
+                clauses.append("secret_rotation_fresh_identity_mismatch")
+            elif set(observed_permissions) != set(pending_permissions):
+                clauses.append("secret_rotation_fresh_permissions_mismatch")
+
+    return tuple(clauses)
+
+
 def _load_mapping(source: Path) -> dict[str, Any]:
     data = yaml.safe_load(_read_source(source)) or {}
     if not isinstance(data, dict):
