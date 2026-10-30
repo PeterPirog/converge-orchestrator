@@ -11,6 +11,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .config import (
+    _PROVIDER_ENDPOINT_CATEGORIES,
+    _TRUSTED_PROVIDER_CLASSES,
+    evaluate_provider_data_egress,
+)
 from .models import ProjectConfig, WorkflowState
 
 _ESTIMATED_BYTES_PER_TOKEN = 3
@@ -274,3 +279,42 @@ def build_working_memory(state: WorkflowState) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def evaluate_context_provider_trust(
+    repository_derived: bool,
+    endpoint_category: str,
+    provider_trust: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Enforce REQ-DATA-001: fail-closed guard for repository-derived content egress.
+
+    Returns an empty tuple only when repository-derived content targets a category
+    whose ``trust_class`` is ``local`` or ``trusted`` and ``repository_data_egress``
+    is explicitly ``True``. Reports the violated clauses otherwise and raises
+    ``ValueError`` for a malformed or empty ``provider_trust`` mapping, unknown
+    endpoint category, or non-mapping category declaration.
+    """
+    if not repository_derived:
+        return ()
+
+    # Fail-closed structural validation is single-sourced from REQ-CONFIG-014.
+    evaluate_provider_data_egress({"provider_trust": provider_trust})
+    assert isinstance(provider_trust, dict)
+
+    if endpoint_category not in _PROVIDER_ENDPOINT_CATEGORIES:
+        raise ValueError(f"unknown endpoint category: {endpoint_category!r}")
+
+    declaration = provider_trust[endpoint_category]
+    trust_class = declaration.get("trust_class")
+    egress = declaration.get("repository_data_egress")
+
+    clauses: list[str] = []
+    if not isinstance(trust_class, str) or not trust_class.strip():
+        clauses.append(f"context_provider_trust_class_undeclared:{endpoint_category}")
+    elif trust_class not in _TRUSTED_PROVIDER_CLASSES:
+        clauses.append(
+            f"repository_derived_content_transmitted_to_untrusted_provider:{endpoint_category}"
+        )
+    if egress is not True:
+        clauses.append(f"repository_derived_content_egress_not_permitted:{endpoint_category}")
+    return tuple(clauses)
