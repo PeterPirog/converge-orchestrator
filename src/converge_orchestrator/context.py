@@ -4,6 +4,7 @@ import json
 import math
 import threading
 import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -318,3 +319,72 @@ def evaluate_context_provider_trust(
     if egress is not True:
         clauses.append(f"repository_derived_content_egress_not_permitted:{endpoint_category}")
     return tuple(clauses)
+
+
+def _is_non_blank_string(value: Any) -> bool:
+    """Return True only for non-empty, non-whitespace strings."""
+    return isinstance(value, str) and value.strip() != ""
+
+
+def select_authorized_fallback_endpoints(
+    role: Any, endpoints: Any
+) -> tuple[dict[str, Any], ...]:
+    """Return fallback endpoints authorized to receive the complete context for ``role``.
+
+    REQ-DATA-005: a fallback endpoint that is not authorized to receive the complete
+    authoritative context required for the role SHALL be skipped. The selector is
+    pure, offline, and deterministic: it consumes explicit caller-supplied endpoint
+    declarations and returns, in declaration order, only those whose
+    ``authorized_roles`` include the role and whose
+    ``receives_complete_authoritative_context`` is explicitly ``True``.
+
+    Malformed ``role`` values, non-iterable ``endpoints``, non-mapping endpoint
+    declarations, missing or malformed ``authorized_roles``, and any context flag
+    other than the explicit boolean ``True`` or ``False`` fail closed with
+    ``ValueError``. An endpoint declaring ``receives_complete_authoritative_context``
+    as ``False`` is skipped rather than treated as authorized.
+    """
+    if not _is_non_blank_string(role):
+        raise ValueError(f"role must be a non-blank string: {role!r}")
+
+    if isinstance(endpoints, (str, bytes)) or not isinstance(endpoints, Iterable):
+        raise ValueError(f"endpoints must be an iterable of mappings: {endpoints!r}")
+
+    selected: list[dict[str, Any]] = []
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            raise ValueError(f"each endpoint must be a mapping: {endpoint!r}")
+
+        authorized_roles = endpoint.get("authorized_roles")
+        if (
+            authorized_roles is None
+            or isinstance(authorized_roles, (str, bytes, Mapping))
+            or not isinstance(authorized_roles, Iterable)
+        ):
+            raise ValueError(
+                f"authorized_roles must be an iterable of non-blank strings: "
+                f"{authorized_roles!r}"
+            )
+
+        roles = tuple(authorized_roles)
+        for authorized_role in roles:
+            if not _is_non_blank_string(authorized_role):
+                raise ValueError(
+                    f"authorized_roles must be an iterable of non-blank strings: "
+                    f"{authorized_roles!r}"
+                )
+
+        receives_complete = endpoint.get("receives_complete_authoritative_context")
+        if receives_complete is True:
+            if role in roles:
+                selected.append(endpoint)
+        elif receives_complete is False:
+            # Well-formed declaration of incomplete context authorization: skip.
+            continue
+        else:
+            raise ValueError(
+                f"receives_complete_authoritative_context must be a boolean "
+                f"True or False: {receives_complete!r}"
+            )
+
+    return tuple(selected)
