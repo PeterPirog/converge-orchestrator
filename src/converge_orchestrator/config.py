@@ -581,6 +581,75 @@ def evaluate_provider_data_egress(policy: dict[str, Any]) -> tuple[str, ...]:
     return tuple(clauses)
 
 
+def evaluate_retry_fallback_egress(
+    provider_trust: dict[str, Any],
+    primary_category: str,
+    attempts: list[str] | tuple[str, ...],
+) -> tuple[str, ...]:
+    """Enforce REQ-DATA-002 over a project-configuration mapping and retry/fallback attempts.
+
+    REQ-DATA-002 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L231
+    [6. Project configuration and secret sources]): Provider retry or fallback SHALL
+    NOT widen authorized data egress.
+
+    This pure, offline, deterministic guard inspects a ``provider_trust`` mapping
+    and a sequence of retry/fallback endpoint categories starting from a primary
+    attempt category. It returns an empty tuple when every attempt targets the
+    primary category or a category whose ``repository_data_egress`` is explicitly
+    ``false``. It returns one
+    ``retry_or_fallback_widens_authorized_data_egress:<category>`` clause per
+    qualifying attempt, in attempt order, when the attempt targets a different
+    category whose ``repository_data_egress`` is explicitly ``true``.
+
+    It fails closed with ``ValueError`` on a missing or empty ``provider_trust``
+    mapping, an unknown primary endpoint category, or an unknown or non-string
+    attempt category. It performs no filesystem, network, model, MCP, git, or
+    subprocess access.
+    """
+    # Fail-closed structural validation is single-sourced from REQ-CONFIG-014.
+    structural_clauses = evaluate_provider_data_egress({"provider_trust": provider_trust})
+
+    if primary_category not in _PROVIDER_ENDPOINT_CATEGORIES:
+        raise ValueError(
+            f"primary_category {primary_category!r} is not a known endpoint category; "
+            f"allowed: {list(_PROVIDER_ENDPOINT_CATEGORIES)}"
+        )
+
+    if not isinstance(attempts, (list, tuple)):
+        raise ValueError(
+            "attempts must be a list or tuple of endpoint category strings"
+        )
+
+    clauses: list[str] = []
+    for attempt in attempts:
+        if not isinstance(attempt, str) or not attempt:
+            raise ValueError(
+                "every attempt category must be a non-empty string endpoint category"
+            )
+        if attempt not in _PROVIDER_ENDPOINT_CATEGORIES:
+            raise ValueError(
+                f"attempt category {attempt!r} is not a known endpoint category; "
+                f"allowed: {list(_PROVIDER_ENDPOINT_CATEGORIES)}"
+            )
+
+    # A malformed or non-boolean repository_data_egress declaration for any involved
+    # category is unknown/malformed safety-relevant state and must fail closed.
+    for category in {primary_category, *attempts}:
+        if f"repository_data_egress_undeclared:{category}" in structural_clauses:
+            raise ValueError(
+                f"provider_trust.{category}.repository_data_egress must be an explicit boolean; "
+                "absent, null, or malformed egress fails closed"
+            )
+
+    for attempt in attempts:
+        if attempt == primary_category:
+            continue
+        declaration = provider_trust[attempt]
+        if declaration.get("repository_data_egress") is True:
+            clauses.append(f"retry_or_fallback_widens_authorized_data_egress:{attempt}")
+    return tuple(clauses)
+
+
 _RETENTION_MODES = {"finite_horizon", "durable_archival"}
 
 
