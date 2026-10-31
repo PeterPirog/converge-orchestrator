@@ -388,3 +388,28 @@ def select_authorized_fallback_endpoints(
             )
 
     return tuple(selected)
+
+
+def evaluate_authorized_fallback_non_pass(
+    role: Any, endpoints: Any
+) -> tuple[str, ...]:
+    """Return a non-PASS evidence clause unless an authorized complete-context fallback exists.
+
+    REQ-DATA-006: when no authorized fallback can receive the complete authoritative
+    context required for the role, the operation SHALL remain non-PASS rather than
+    sending restricted content or weakening authoritative context.
+
+    The evaluator is pure, offline, and deterministic. It returns an empty tuple
+    only when ``select_authorized_fallback_endpoints`` finds at least one fallback
+    endpoint declaration that is authorized for ``role`` and explicitly declares
+    ``receives_complete_authoritative_context`` as ``True``. Otherwise it returns
+    the single clause
+    ``no_authorized_fallback_receives_complete_authoritative_context:<role>``.
+
+    Malformed ``role`` values and malformed ``endpoints`` declarations fail closed
+    with ``ValueError`` by delegating validation to the selector.
+    """
+    selected = select_authorized_fallback_endpoints(role, endpoints)
+    if selected:
+        return ()
+    return (f"no_authorized_fallback_receives_complete_authoritative_context:{role}",)
