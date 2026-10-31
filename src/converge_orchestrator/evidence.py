@@ -511,3 +511,36 @@ def _resolve_confined_path(worktree: Path, rel_path: str) -> Path:
     # This is already covered by relative_to check above since both are resolved
 
     return target
+
+
+def build_outbound_evidence_record(
+    provider_trust_class: str | None = None,
+    endpoint_identity: str | None = None,
+    profile_identity: str | None = None,
+    role_identity: str | None = None,
+    context_envelope: bytes | None = None,
+    *,
+    restricted_payload: bytes | None = None,
+) -> dict[str, Any]:
+    """Build digest-only outbound evidence (REQ-DATA-004); ``restricted_payload`` is ignored."""
+    if restricted_payload is not None and not isinstance(restricted_payload, bytes):
+        raise ValueError("restricted_payload must be bytes or None")
+    for name, value in (
+        ("provider_trust_class", provider_trust_class),
+        ("endpoint_identity", endpoint_identity),
+        ("profile_identity", profile_identity),
+        ("role_identity", role_identity),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a non-blank string")
+    if not isinstance(context_envelope, bytes):
+        raise ValueError("context_envelope must be bytes")
+    record = {
+        "provider_trust_class": provider_trust_class,
+        "endpoint_identity": endpoint_identity,
+        "profile_identity": profile_identity,
+        "role_identity": role_identity,
+        "context_envelope_sha256": hashlib.sha256(context_envelope).hexdigest(),
+    }
+    return {key: record[key] for key in sorted(record)}
+
