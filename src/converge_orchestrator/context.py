@@ -413,3 +413,66 @@ def evaluate_authorized_fallback_non_pass(
     if selected:
         return ()
     return (f"no_authorized_fallback_receives_complete_authoritative_context:{role}",)
+
+
+def _validate_authoritative_items(items: Any, label: str) -> set[str]:
+    """Return a set of non-blank string identifiers, failing closed on malformed input."""
+    if isinstance(items, (str, bytes, Mapping)) or not isinstance(items, Iterable):
+        raise ValueError(f"{label} must be an iterable of non-blank strings: {items!r}")
+
+    validated: set[str] = set()
+    for item in items:
+        if not _is_non_blank_string(item):
+            raise ValueError(f"{label} must be an iterable of non-blank strings: {items!r}")
+        validated.add(item)
+    return validated
+
+
+def evaluate_bounded_content_authority_retention(
+    role: Any,
+    bounded: Any,
+    required_authoritative_items: Any,
+    retained_authoritative_items: Any,
+) -> tuple[str, ...]:
+    """Enforce REQ-DATA-003: bounded content must retain required authoritative items.
+
+    When project policy permits only a subset of repository content to leave a trust
+    boundary (``bounded`` is explicitly ``True``), the role invocation either
+    operates correctly with that bounded content or remains non-PASS. Sanitization
+    or omission SHALL NOT remove authoritative information required for a valid
+    decision.
+
+    This pure, offline, deterministic evaluator returns:
+
+    * an empty tuple when every required authoritative item is still present in
+      ``retained_authoritative_items``;
+    * one ``bounded_content_omits_authoritative_information:<role>:<item>`` clause
+      per missing required item, sorted deterministically by item identifier;
+    * an empty tuple when ``bounded`` is explicitly ``False``, regardless of any
+      difference between required and retained items.
+
+    Malformed ``role`` values, blank roles, non-boolean ``bounded`` flags, and
+    malformed ``required_authoritative_items`` or ``retained_authoritative_items``
+    collections fail closed with ``ValueError``. Clause tokens contain only the
+    role and item identifiers; no content values are emitted.
+    """
+    if not _is_non_blank_string(role):
+        raise ValueError(f"role must be a non-blank string: {role!r}")
+
+    if bounded is not True and bounded is not False:
+        raise ValueError(f"bounded must be a boolean True or False: {bounded!r}")
+
+    required = _validate_authoritative_items(
+        required_authoritative_items, "required_authoritative_items"
+    )
+    retained = _validate_authoritative_items(
+        retained_authoritative_items, "retained_authoritative_items"
+    )
+
+    if bounded is False:
+        return ()
+
+    missing = sorted(required - retained)
+    return tuple(
+        f"bounded_content_omits_authoritative_information:{role}:{item}" for item in missing
+    )
