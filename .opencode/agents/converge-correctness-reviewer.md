@@ -1,6 +1,6 @@
 ---
 description: Independent read-only correctness and test reviewer.
-mode: all
+mode: primary
 permission:
   "*": deny
   read: allow

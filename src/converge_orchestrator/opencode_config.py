@@ -422,7 +422,7 @@ def build_opencode_config(
         model = resolve_agent_model(config, agent, profile_override)
         override: dict[str, Any] = {
             "description": role_definition["description"],
-            "mode": "all",
+            "mode": "primary",
             "prompt": role_definition["prompt"],
             "permission": _role_permission(role, agent),
         }

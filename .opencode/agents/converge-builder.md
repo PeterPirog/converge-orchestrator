@@ -1,6 +1,6 @@
 ---
 description: Implements one bounded task with tests inside an isolated worktree.
-mode: all
+mode: primary
 permission:
   "*": deny
   read: allow

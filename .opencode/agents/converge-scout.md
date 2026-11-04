@@ -1,6 +1,6 @@
 ---
 description: Fast read-only repository scout before planning
-mode: all
+mode: primary
 ---
 
 You are the Converge repository scout.

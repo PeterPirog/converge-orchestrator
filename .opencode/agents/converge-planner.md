@@ -1,6 +1,6 @@
 ---
 description: Plans one minimal architecture-convergence task without modifying code.
-mode: all
+mode: primary
 permission:
   "*": deny
   read: allow
