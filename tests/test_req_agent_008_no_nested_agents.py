@@ -24,20 +24,16 @@ These deterministic offline assertions lock the behavior:
 
 from __future__ import annotations
 
-import json
 import pathlib
 import types
 from unittest.mock import patch
 
-import pytest
-
-from converge_orchestrator.models import ProjectConfig, AgentResult
-from converge_orchestrator.opencode import OpenCodeAdapter
-from converge_orchestrator.opencode_config import build_opencode_config
 from converge_orchestrator.model_usage import ParsedOpenCodeOutput, ProviderUsage, TokenUsage
+from converge_orchestrator.models import ProjectConfig
+from converge_orchestrator.opencode import OpenCodeAdapter
 
 
-def _base_config(tmp_path: pathlib.Path) -> "ProjectConfig":
+def _base_config(tmp_path: pathlib.Path) -> ProjectConfig:
     repo = tmp_path / "repo"
     repo.mkdir()
     requirements = tmp_path / "architecture.md"
@@ -63,8 +59,8 @@ def _base_config(tmp_path: pathlib.Path) -> "ProjectConfig":
     return ProjectConfig.model_validate(raw)
 
 
-def _make_success_parsed_output() -> "ParsedOpenCodeOutput":
-    from converge_orchestrator.model_usage import ParsedOpenCodeOutput, ProviderUsage, TokenUsage
+def _make_success_parsed_output() -> ParsedOpenCodeOutput:
+    from converge_orchestrator.model_usage import ParsedOpenCodeOutput
     return ParsedOpenCodeOutput(
         text='{"verdict": "pass", "findings": [], "confidence": 0.9}',
         format="json",
@@ -101,18 +97,25 @@ def test_req_agent_008_no_nested_agent_creation_via_invoke(tmp_path: pathlib.Pat
         )
 
     with patch("converge_orchestrator.opencode.ExecutionSandbox.run", side_effect=fake_run):
-        with patch("converge_orchestrator.opencode.parse_opencode_output", return_value=_make_success_parsed_output()):
+        with patch(
+            "converge_orchestrator.opencode.parse_opencode_output",
+            return_value=_make_success_parsed_output(),
+        ):
             result = adapter.invoke("correctness_reviewer", "Review this diff", cfg.repo_path)
 
     assert result.ok
     # Verify only one invocation occurred (no nested agent creation)
     assert len(invocations) == 1
-    assert invocations[0]["command"][invocations[0]["command"].index("--agent") + 1] == "converge-correctness-reviewer"
+    cmd = invocations[0]["command"]
+    assert cmd[cmd.index("--agent") + 1] == "converge-correctness-reviewer"
 
 
-def test_req_agent_008_sandbox_executes_single_command_per_invocation(tmp_path: pathlib.Path) -> None:
-    """REQ-AGENT-008: ExecutionSandbox.run() executes exactly one command per invocation;
-    no code path permits a running agent to spawn a child process that itself invokes a model."""
+def test_req_agent_008_sandbox_executes_single_command_per_invocation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """REQ-AGENT-008: ExecutionSandbox.run() executes exactly one command per
+    invocation; no code path permits a running agent to spawn a child process
+    that itself invokes a model."""
     cfg = _base_config(tmp_path)
     adapter = OpenCodeAdapter(cfg)
 
@@ -126,7 +129,10 @@ def test_req_agent_008_sandbox_executes_single_command_per_invocation(tmp_path: 
         )
 
     with patch("converge_orchestrator.opencode.ExecutionSandbox.run", side_effect=fake_run):
-        with patch("converge_orchestrator.opencode.parse_opencode_output", return_value=_make_success_parsed_output()):
+        with patch(
+            "converge_orchestrator.opencode.parse_opencode_output",
+            return_value=_make_success_parsed_output(),
+        ):
             result = adapter.invoke("correctness_reviewer", "Review this diff", cfg.repo_path)
 
     assert result.ok
@@ -154,11 +160,16 @@ def test_req_agent_008_no_continue_or_session_flags(tmp_path: pathlib.Path) -> N
         )
 
     with patch("converge_orchestrator.opencode.ExecutionSandbox.run", side_effect=fake_run):
-        with patch("converge_orchestrator.opencode.parse_opencode_output", return_value=_make_success_parsed_output()):
+        with patch(
+            "converge_orchestrator.opencode.parse_opencode_output",
+            return_value=_make_success_parsed_output(),
+        ):
             # First invocation
             result1 = adapter.invoke("correctness_reviewer", "Review this diff", cfg.repo_path)
             # Second invocation
-            result2 = adapter.invoke("correctness_reviewer", "Review this diff again", cfg.repo_path)
+            result2 = adapter.invoke(
+                "correctness_reviewer", "Review this diff again", cfg.repo_path
+            )
 
     assert result1.ok
     assert result2.ok
@@ -176,7 +187,6 @@ def test_req_agent_008_sandbox_no_nested_agent_mechanism(tmp_path: pathlib.Path)
     agent to spawn a child process that inherits the parent's model credentials
     or OpenCode configuration."""
     cfg = _base_config(tmp_path)
-    adapter = OpenCodeAdapter(cfg)
 
     # Verify the sandbox configuration doesn't expose mechanisms for nested agent creation
     sandbox = cfg.sandbox
@@ -203,7 +213,10 @@ def test_req_agent_008_all_invocations_through_adapter(tmp_path: pathlib.Path) -
         )
 
     with patch("converge_orchestrator.opencode.ExecutionSandbox.run", side_effect=fake_run):
-        with patch("converge_orchestrator.opencode.parse_opencode_output", return_value=_make_success_parsed_output()):
+        with patch(
+            "converge_orchestrator.opencode.parse_opencode_output",
+            return_value=_make_success_parsed_output(),
+        ):
             # Multiple invocations through the adapter
             adapter.invoke("correctness_reviewer", "Review 1", cfg.repo_path)
             adapter.invoke("correctness_reviewer", "Review 2", cfg.repo_path)
