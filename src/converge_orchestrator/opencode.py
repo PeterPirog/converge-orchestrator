@@ -196,13 +196,20 @@ class OpenCodeAdapter:
                 generated_config,
                 run_id=run_id,
             )
-        return self._invoke_with_resilience(
+        result = self._invoke_with_resilience(
             role,
             prompt,
             cwd,
             generated_config,
             run_id=run_id,
         )
+        if role == "reviewer" and result.ok:
+            # REQ-AGENT-010: deterministic lane-identity validation. In single-lane mode the
+            # model-claimed reviewers map and unattributed findings are stamped with the actually
+            # invoked lane identity before the output can change review state.
+            normalized = _normalize_review(role, result)
+            return result.model_copy(update={"output": normalized.model_dump_json()})
+        return result
 
     def _append_provider_health(self, cwd: Path, payload: dict) -> None:
         target = self.config.state_dir / "provider-health.jsonl"
