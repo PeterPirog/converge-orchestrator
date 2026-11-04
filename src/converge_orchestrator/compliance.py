@@ -6,6 +6,7 @@ from .models import (
     ComplianceEntry,
     ComplianceSnapshot,
     Contract,
+    QualityGate,
     Requirement,
     RequirementStatus,
     RequirementVerification,
@@ -40,6 +41,37 @@ class ComplianceEngine:
             entry.status = result.status
             entry.evidence = list(dict.fromkeys([*entry.evidence, *result.evidence]))
         return updated
+
+    @staticmethod
+    def assess_semantic_compliance(
+        contract: Contract,
+        verifiers: Mapping[str, list[QualityGate]],
+    ) -> ComplianceSnapshot:
+        """Return a read-only canonical compliance assessment for semantic requirements.
+
+        Implements REQ-AGENT-011 (CONVERGE_ORCHESTRATOR_2_0_SOURCE_OF_TRUTH.md:L259
+        [7. Deterministic architecture and agent roles]): a pure, deterministic, in-memory
+        assessment that identifies requirements lacking configured deterministic verifier proof
+        and records per-requirement UNVERIFIED entries with explanatory evidence. It performs no
+        filesystem writes, subprocess calls, git operations, model or provider invocations, or
+        any writer-side mutations, and depends only on the immutable contract and configured
+        verifier map.
+        """
+        entries: dict[str, ComplianceEntry] = {}
+        for requirement in contract.requirements:
+            if verifiers.get(requirement.id):
+                # Requirements with configured deterministic verifier proof are out of scope
+                # for this read-only semantic assessment.
+                continue
+            entries[requirement.id] = ComplianceEntry(
+                requirement_id=requirement.id,
+                status=RequirementStatus.UNVERIFIED,
+                evidence=[
+                    f"{requirement.id}: semantic requirement has no configured "
+                    "deterministic verifier proof; remains UNVERIFIED"
+                ],
+            )
+        return ComplianceSnapshot(entries=entries)
 
     @staticmethod
     def compare_mandatory_regressions(
