@@ -13,6 +13,11 @@ _REVIEW_AGENT_ROLES = {
     "architecture_reviewer",
     "security_reviewer",
 }
+# Full built-in role set includes planning/execution roles that must never be
+# reinterpreted as declared read-only specialty analyzers.
+_BUILT_IN_ROLE_NAMES = _REVIEW_AGENT_ROLES | {"scout", "planner", "builder"}
+# Safe role identifiers are valid filesystem path segments and configuration keys.
+_ROLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _PYTHON_MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
@@ -109,6 +114,21 @@ class QualityGate(BaseModel):
     required: bool = True
     timeout_seconds: int = 1800
     shell: bool = False
+
+
+class SpecialtyAnalyzer(BaseModel):
+    """Declared read-only review lane beyond the built-in review role set."""
+
+    description: str
+    prompt: str
+
+    @model_validator(mode="after")
+    def non_empty_fields(self) -> SpecialtyAnalyzer:
+        if not self.description.strip():
+            raise ValueError("specialty analyzer description must not be blank")
+        if not self.prompt.strip():
+            raise ValueError("specialty analyzer prompt must not be blank")
+        return self
 
 
 class PythonImportBoundary(BaseModel):
@@ -383,6 +403,7 @@ class ProjectConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     architecture: ArchitecturePolicyConfig = Field(default_factory=ArchitecturePolicyConfig)
     agents: dict[str, AgentConfig]
+    specialty_analyzers: dict[str, SpecialtyAnalyzer] = Field(default_factory=dict)
     quality_gates: list[QualityGate] = Field(default_factory=list)
     requirement_verifiers: dict[str, list[QualityGate]] = Field(default_factory=dict)
     auto_discover_quality: bool = True
@@ -518,11 +539,35 @@ class ProjectConfig(BaseModel):
 
         if len(self.review_roles) != len(set(self.review_roles)):
             raise ValueError("workflow.review_roles must not contain duplicates")
-        invalid_review_roles = sorted(set(self.review_roles) - _REVIEW_AGENT_ROLES)
+
+        if len(self.specialty_analyzers) > 4:
+            raise ValueError("at most 4 specialty analyzers")
+        for name in self.specialty_analyzers:
+            stripped = name.strip()
+            if not stripped:
+                raise ValueError("specialty analyzer name must not be blank")
+            if name != stripped:
+                raise ValueError(
+                    f"specialty analyzer name {name!r} must not have leading or trailing "
+                    "whitespace"
+                )
+            if not _ROLE_NAME_RE.fullmatch(stripped):
+                raise ValueError(
+                    f"specialty analyzer name {stripped!r} must be a valid lowercase "
+                    "identifier"
+                )
+            if stripped in _BUILT_IN_ROLE_NAMES:
+                raise ValueError(
+                    f"specialty analyzer name {stripped!r} is a reserved built-in role"
+                )
+
+        invalid_review_roles = sorted(
+            set(self.review_roles) - _REVIEW_AGENT_ROLES - set(self.specialty_analyzers)
+        )
         if invalid_review_roles:
+            allowed_roles = sorted(_REVIEW_AGENT_ROLES | set(self.specialty_analyzers))
             raise ValueError(
-                f"unsupported review roles: {invalid_review_roles}; allowed: "
-                f"{sorted(_REVIEW_AGENT_ROLES)}"
+                f"unsupported review roles: {invalid_review_roles}; allowed: {allowed_roles}"
             )
         missing_review_roles = sorted(set(self.review_roles) - set(self.agents))
         if missing_review_roles:

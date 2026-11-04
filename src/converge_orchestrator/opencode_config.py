@@ -79,6 +79,10 @@ _ROLE_DEFINITIONS: dict[str, dict[str, str]] = {
     },
 }
 
+_SPECIALTY_READ_ONLY_DIRECTIVE = (
+    "Do not modify files, create files, or execute mutating commands; report findings only."
+)
+
 _RESERVED_AGENT_OPTIONS = {
     "description",
     "disable",
@@ -404,10 +408,16 @@ def build_opencode_config(
             raise ValueError(f"agent role {role!r} has empty OpenCode agent id")
         role_definition = _ROLE_DEFINITIONS.get(role)
         if role_definition is None:
-            raise ValueError(
-                f"unsupported agent role {role!r}; built-in roles are "
-                f"{sorted(_ROLE_DEFINITIONS)}"
-            )
+            specialty = config.specialty_analyzers.get(role)
+            if specialty is None:
+                raise ValueError(
+                    f"unsupported agent role {role!r}; built-in roles are "
+                    f"{sorted(_ROLE_DEFINITIONS)}"
+                )
+            role_definition = {
+                "description": specialty.description,
+                "prompt": f"{specialty.prompt}\n\n{_SPECIALTY_READ_ONLY_DIRECTIVE}",
+            }
         profile_override = (model_profile_overrides or {}).get(role)
         model = resolve_agent_model(config, agent, profile_override)
         override: dict[str, Any] = {
@@ -434,6 +444,13 @@ def runtime_opencode_config(
     active_role: str | None = None,
 ) -> dict[str, Any]:
     """Return the highest-precedence runtime config used for every local OpenCode call."""
+    # Roles without assigned managed skills (for example declared specialty analyzers)
+    # still need their per-role OpenCode config directory to exist before it is mounted
+    # read-only; the skill materialization step assumes the root is already present.
+    if active_role and config.state_dir:
+        (config.state_dir / "opencode-runtime" / active_role).mkdir(
+            parents=True, exist_ok=True
+        )
     return build_opencode_config(
         config,
         model_profile_overrides,
