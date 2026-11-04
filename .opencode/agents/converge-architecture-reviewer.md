@@ -1,6 +1,6 @@
 ---
 description: Independent read-only architecture-compliance reviewer.
-mode: all
+mode: primary
 permission:
   "*": deny
   read: allow

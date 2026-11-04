@@ -31,6 +31,7 @@ from unittest.mock import patch
 from converge_orchestrator.model_usage import ParsedOpenCodeOutput, ProviderUsage, TokenUsage
 from converge_orchestrator.models import ProjectConfig
 from converge_orchestrator.opencode import OpenCodeAdapter
+from converge_orchestrator.opencode_config import build_opencode_config
 
 
 def _base_config(tmp_path: pathlib.Path) -> ProjectConfig:
@@ -226,3 +227,58 @@ def test_req_agent_008_all_invocations_through_adapter(tmp_path: pathlib.Path) -
     assert invocation_count == 3
     # Verify the adapter was the entry point (not some hidden channel)
     # The adapter enforces role-based permissions, budget accounting, and evidence recording
+
+
+def _all_roles_config(tmp_path: pathlib.Path) -> ProjectConfig:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    requirements = tmp_path / "architecture.md"
+    requirements.write_text("System must not allow nested agents.\n", encoding="utf-8")
+    agents = {
+        role: {"agent": f"converge-{role.replace('_', '-')}", "model": "openai/cheap"}
+        for role in (
+            "scout",
+            "planner",
+            "builder",
+            "reviewer",
+            "correctness_reviewer",
+            "architecture_reviewer",
+            "security_reviewer",
+        )
+    }
+    raw = {
+        "version": 1,
+        "project": {
+            "repo_path": str(repo),
+            "requirements_path": str(requirements),
+            "require_spec_read_only": False,
+        },
+        "workflow": {
+            "review_roles": [
+                "reviewer",
+                "correctness_reviewer",
+                "architecture_reviewer",
+                "security_reviewer",
+            ],
+            "max_parallel_reviews": 4,
+        },
+        "agents": agents,
+    }
+    return ProjectConfig.model_validate(raw)
+
+
+def test_req_agent_008_opencode_config_primary_only_mode(tmp_path: pathlib.Path) -> None:
+    """REQ-AGENT-008: build_opencode_config emits every configured converge agent
+    with OpenCode mode 'primary' (never 'all'), eliminating the subagent-delegation
+    surface for converge roles."""
+    cfg = _all_roles_config(tmp_path)
+    payload = build_opencode_config(cfg)
+    agent_entries = payload.get("agent") or {}
+    assert agent_entries, "build_opencode_config produced no agent entries"
+    for agent_id, entry in agent_entries.items():
+        mode = entry.get("mode")
+        assert mode == "primary", (
+            "REQ-AGENT-008_PRIMARY_ONLY_AGENT_MODE_REQUIRED: "
+            f"agent {agent_id!r} emitted mode {mode!r}; "
+            "every converge role must be declared as primary-only (non-delegable)"
+        )
