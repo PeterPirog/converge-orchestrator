@@ -15,7 +15,6 @@ from converge_orchestrator.opencode_config import (
     build_opencode_config,
 )
 
-
 SPECIALTY_DESCRIPTION = "Independent read-only performance and efficiency reviewer."
 SPECIALTY_PROMPT = (
     "You are the performance review lane. Inspect the actual diff and surrounding code "
