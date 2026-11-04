@@ -245,3 +245,52 @@ def test_req_agent_009_no_silent_truncation_of_authoritative_content(
         result.context["estimated_core_tokens"] > result.context["input_budget_tokens"]
         or result.context["budget_status"] == "invalid_budget"
     )
+
+
+def test_req_agent_009_output_reserve_bound_rejected_before_invocation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """REQ-AGENT-009: A profile whose context window is smaller than the output
+    reserve is rejected as invalid_budget before ExecutionSandbox.run is called.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    requirements = tmp_path / "architecture.md"
+    requirements.write_text("System must check context capacity.\n", encoding="utf-8")
+    cfg = ProjectConfig(
+        repo_path=repo,
+        requirements_path=requirements,
+        require_spec_read_only=False,
+        context_output_reserve_tokens=256,
+        context_input_fraction=0.5,
+        model_gateway=ModelGatewayConfig(
+            kind="openwebui",
+            base_url="http://127.0.0.1:3000/api",
+            provider_id="openwebui",
+        ),
+        model_profiles={
+            "tiny_context": ModelProfile(
+                model="tiny-model",
+                context_tokens=128,
+                output_tokens=256,
+            ),
+        },
+        agents={
+            "planner": AgentConfig(
+                agent="converge-planner",
+                model_profile="tiny_context",
+            ),
+        },
+    )
+    adapter = OpenCodeAdapter(cfg)
+
+    with patch("converge_orchestrator.opencode.ExecutionSandbox.run") as mock_run:
+        result = adapter.invoke("planner", "small prompt", cfg.repo_path)
+
+    assert not result.ok
+    assert result.returncode == 78
+    assert "CONTEXT_BUDGET_EXCEEDED" in result.output
+    assert result.context is not None
+    assert result.context["budget_status"] == "invalid_budget"
+    assert len(result.context["provider_attempts"]) == 1
+    assert mock_run.call_count == 0
