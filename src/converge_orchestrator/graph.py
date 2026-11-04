@@ -41,6 +41,7 @@ class RepoScoutPayload(BaseModel):
     risk_notes: list[str] = Field(default_factory=list)
     requirement_hints: dict[str, list[str]] = Field(default_factory=dict)
     uncertainties: list[str] = Field(default_factory=list)
+    base_commit_evidence: list[str] = Field(default_factory=list)
 
 
 class RepoScoutSnapshot(RepoScoutPayload):
@@ -83,6 +84,8 @@ def _normalize_payload(
         if len(hints) >= 40:
             warnings.append("requirement hints truncated to 40 entries")
             break
+    if not payload.base_commit_evidence:
+        warnings.append("scout report omitted base_commit_evidence")
     normalized = RepoScoutPayload(
         summary=_bounded_text(payload.summary),
         stacks=_bounded_list(payload.stacks, items=20, chars=120),
@@ -92,6 +95,7 @@ def _normalize_payload(
         risk_notes=_bounded_list(payload.risk_notes, items=24),
         requirement_hints=hints,
         uncertainties=_bounded_list(payload.uncertainties, items=24),
+        base_commit_evidence=_bounded_list(payload.base_commit_evidence, items=8, chars=200),
     )
     return normalized, warnings
 
@@ -106,12 +110,15 @@ def _scout_prompt(requirements: list[Requirement], base_branch: str, base_commit
         "risk_notes": ["Public API surface exists under src/package/api.py"],
         "requirement_hints": {"ARCH-001": ["src/package/service.py"]},
         "uncertainties": ["No integration-test fixture found for external provider"],
+        "base_commit_evidence": ["<exact observed base commit> <git log -1 --oneline headline>"],
     }
     return f"""Act as a fast read-only repository scout for an autonomous engineering workflow.
 Do not edit files. Build a compact factual map of the repository at the exact base commit below.
 Use repository evidence, not guesses. Focus on structure, relevant code/test paths, architectural
 boundaries, risky surfaces and where immutable requirements appear to map into code. Do NOT choose
 or design the implementation task; Planner owns that decision. Unknown requirement IDs are invalid.
+Report the exact observed base commit plus at most 8 unique `git log -1 --oneline`-style headlines
+as `base_commit_evidence` so the planner can trust the mapping is anchored to the exact revision.
 Keep the output bounded and return ONLY JSON matching this shape: {json.dumps(schema)}
 Base branch: {base_branch}
 Base commit: {base_commit}
