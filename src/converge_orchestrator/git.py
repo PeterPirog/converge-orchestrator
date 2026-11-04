@@ -295,10 +295,47 @@ def create_worktree(
     return target, branch
 
 
+def _untracked_files_diff(worktree: Path) -> str:
+    """Return a deterministic diff-like representation of untracked candidate files.
+
+    Untracked files are invisible to ``git diff origin/base...HEAD`` and ``git diff HEAD``,
+    so they must be represented explicitly so every review lane inspects a complete
+    publishable candidate snapshot. Regenerable cache artifacts are excluded.
+    """
+
+    hunks: list[str] = []
+    for path in sorted(_git_lines(worktree, "ls-files", "--others", "--exclude-standard")):
+        if is_deterministic_cache_artifact(path):
+            continue
+        candidate = worktree / path
+        if not candidate.is_file():
+            continue
+        try:
+            content = candidate.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = candidate.read_bytes().decode("utf-8", errors="replace")
+        lines = content.splitlines()
+        body = "\n".join(f"+{line}" for line in lines)
+        hunks.append(
+            "\n".join(
+                [
+                    f"diff --git a/{path} b/{path}",
+                    "new file mode 100644",
+                    "--- /dev/null",
+                    f"+++ b/{path}",
+                    f"@@ -0,0 +1,{len(lines)} @@",
+                    body,
+                ]
+            )
+        )
+    return "\n".join(hunks)
+
+
 def diff(worktree: Path, base_branch: str) -> str:
     committed = _git_stdout(worktree, "diff", f"origin/{base_branch}...HEAD")
     working = _git_stdout(worktree, "diff", "HEAD")
-    return f"{committed}\n{working}".strip()
+    untracked = _untracked_files_diff(worktree)
+    return "\n".join(part for part in (committed, working, untracked) if part).strip()
 
 
 _CACHE_DIRECTORY_NAMES = frozenset(
