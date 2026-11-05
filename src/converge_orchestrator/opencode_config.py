@@ -126,13 +126,13 @@ _MUTATING_CONNECTOR_FAMILIES = (
 
 
 def _fail_closed_on_mutating_connector_grants(role: str, agent: AgentConfig) -> None:
-    """Reject read-only roles that would gain mutating connector capabilities."""
+    """Reject any role that would gain mutating connector capabilities."""
     for tool, value in agent.tool_permissions.items():
         if value not in {"allow", "ask"}:
             continue
         if any(tool.startswith(prefix) for prefix in _MUTATING_CONNECTOR_FAMILIES):
             raise ValueError(
-                f"read-only role {role!r} declares mutating connector tool grant "
+                f"role {role!r} declares mutating connector tool grant "
                 f"{tool!r} as {value!r}"
             )
 
@@ -268,9 +268,9 @@ def _builder_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
 
 
 def _role_permission(role: str, agent: AgentConfig) -> dict[str, Any]:
+    _fail_closed_on_mutating_connector_grants(role, agent)
     if role == "builder":
         return _builder_permission(role, agent)
-    _fail_closed_on_mutating_connector_grants(role, agent)
     return _read_only_permission(role, agent)
 
 
