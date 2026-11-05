@@ -76,7 +76,7 @@ def _config(tmp_path: Path, *, mode: str = "host") -> ProjectConfig:
             "builder": {
                 "agent": "converge-builder",
                 "model_profile": "builder",
-                "tool_permissions": {"deploy_*": "allow"},
+                "tool_permissions": {"docs_*": "allow"},
             },
         },
     )
@@ -98,8 +98,8 @@ def test_runtime_config_enables_only_role_assigned_mcp_and_skills(tmp_path: Path
     }
 
     builder = runtime_opencode_config(cfg, active_role="builder")
-    assert builder["mcp"]["docs"]["enabled"] is False
-    assert builder["mcp"]["deploy"]["enabled"] is True
+    assert builder["mcp"]["docs"]["enabled"] is True
+    assert builder["mcp"]["deploy"]["enabled"] is False
     assert builder["mcp"]["disabled_docs"]["enabled"] is False
     builder_skills = builder["agent"]["converge-builder"]["permission"]["skill"]
     assert builder_skills == {
