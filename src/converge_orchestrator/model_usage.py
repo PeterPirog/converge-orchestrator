@@ -54,6 +54,10 @@ class ModelUsageAttempt(BaseModel):
     role: str
     model: str | None = None
     model_profile: str | None = None
+    gateway_kind: str | None = None
+    gateway_provider_id: str | None = None
+    input_envelope_sha256: str | None = None
+    output_sha256: str | None = None
     returncode: int
     usage_status: Literal["reported", "unavailable", "invalid"]
     usage: ProviderUsage | None = None
@@ -251,6 +255,10 @@ def record_model_usage_attempt(
     role: str,
     model: str | None,
     model_profile: str | None,
+    gateway_kind: str | None = None,
+    gateway_provider_id: str | None = None,
+    input_envelope_sha256: str | None = None,
+    output_sha256: str | None = None,
     returncode: int,
     parsed: ParsedOpenCodeOutput,
 ) -> ModelUsageAttempt:
@@ -262,6 +270,10 @@ def record_model_usage_attempt(
         role=role,
         model=model,
         model_profile=model_profile,
+        gateway_kind=gateway_kind,
+        gateway_provider_id=gateway_provider_id,
+        input_envelope_sha256=input_envelope_sha256,
+        output_sha256=output_sha256,
         returncode=returncode,
         usage_status=parsed.usage_status,
         usage=parsed.usage,
