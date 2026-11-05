@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import time
@@ -457,6 +458,12 @@ class OpenCodeAdapter:
             context["provider_usage"] = parsed_output.usage.model_dump(mode="json")
         if budget_reservation is not None:
             context["run_budget_reservation"] = budget_reservation
+            input_envelope_sha256 = hashlib.sha256(
+                rendered_prompt.encode("utf-8")
+            ).hexdigest()
+            output_sha256 = hashlib.sha256(
+                parsed_output.text.encode("utf-8")
+            ).hexdigest()
             try:
                 usage_record = record_model_usage_attempt(
                     self.config,
@@ -465,6 +472,10 @@ class OpenCodeAdapter:
                     role=role,
                     model=model,
                     model_profile=model_profile,
+                    gateway_kind=self.config.model_gateway.kind,
+                    gateway_provider_id=self.config.model_gateway.provider_id,
+                    input_envelope_sha256=input_envelope_sha256,
+                    output_sha256=output_sha256,
                     returncode=result.returncode,
                     parsed=parsed_output,
                 )
