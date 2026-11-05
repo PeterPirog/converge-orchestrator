@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from .budget import (
     RunBudgetExceeded,
@@ -181,6 +182,22 @@ def _aggregate_reviews(
         confidence=confidence,
         reviewers={role: results[role].verdict for role in roles},
     )
+
+
+@runtime_checkable
+class AgentRuntime(Protocol):
+    """Runtime-checkable replaceable boundary for agent invocation.
+
+    REQ-RUNTIME-001: Converge 2.0 retains the documented v1.0 OpenCode agent-execution
+    transport through ``OpenCodeAdapter`` while placing agent-runtime invocation behind
+    this replaceable boundary. Alternatives implementing this protocol cannot alter role,
+    permission, evidence, or integration semantics: the workflow consumes only the
+    ``AgentResult`` returned for the requested ``role``, ``prompt``, and ``cwd``.
+    """
+
+    def invoke(self, role: str, prompt: str | PromptEnvelope, cwd: Path) -> AgentResult:
+        """Invoke an agent for ``role`` with ``prompt`` in ``cwd`` and return an ``AgentResult``."""
+        ...
 
 
 class OpenCodeAdapter:
