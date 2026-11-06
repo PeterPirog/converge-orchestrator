@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from .models import ComplianceSnapshot, Requirement, TaskEnvelope
@@ -214,6 +215,7 @@ def reviewer_prompt(
         ],
         "confidence": 0.9,
     }
+    candidate_content_sha256 = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
     return f"""Act as an independent architecture and code reviewer. Do not edit files.
 Review against immutable requirements and acceptance criteria. Do not trust the Builder's
 narrative as evidence. Reject architectural drift, unnecessary scope, weak tests, security
@@ -227,6 +229,9 @@ Return ONLY JSON matching this shape: {json.dumps(schema)}
 TASK:
 {task.model_dump_json(indent=2)}
 {review_scope_sections(task, requirements, compliance)}
+CANDIDATE CONTENT IDENTITY (sha256 of the exact rendered diff bytes):
+{candidate_content_sha256}
+
 DIFF:
 {diff_text}
 """
