@@ -19,6 +19,27 @@ class GitError(RuntimeError):
     pass
 
 
+def _reject_boundary_escape(
+    path: Path,
+    authorized_root: Path,
+    context: str,
+) -> Path:
+    """Resolve *path* and reject traversal, symlink, junction, mount, or alias escapes."""
+    path = path.expanduser()
+    authorized_root = authorized_root.expanduser().resolve()
+    logical = path.parent.resolve() / path.name
+    resolved = path.resolve()
+    if resolved != logical:
+        raise GitError(
+            f"REQ-REPO-003 boundary escape rejected: {context} alias ({path} -> {resolved})"
+        )
+    if resolved != authorized_root and authorized_root not in resolved.parents:
+        raise GitError(
+            f"REQ-REPO-003 boundary escape rejected: {context} outside root: {resolved}"
+        )
+    return resolved
+
+
 def _git(repo: Path, *args: str, timeout: int = 300) -> str:
     result = run(["git", *args], cwd=repo, timeout=timeout)
     if result.returncode != 0:
@@ -203,6 +224,10 @@ def cleanup_worktree(
     reason: str = "controlled_cleanup",
 ) -> None:
     """Remove a worktree only after persisting explicit cleanup intent."""
+    authorized_root = next(
+        (p.parent for p, b in _worktree_entries(repo).items() if b == branch), target.parent
+    )
+    _reject_boundary_escape(target, authorized_root, "cleanup target")
     target = target.expanduser().resolve()
     store = WorkspaceOwnershipStore(target.parent)
     store.request_cleanup(target=target, branch=branch, reason=reason)
@@ -276,6 +301,7 @@ def create_worktree(
     """
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", task_id).strip("-").lower()
     branch = f"{branch_prefix}{safe}"
+    _reject_boundary_escape(worktree_root, worktree_root.parent, "worktree_root")
     root = worktree_root.expanduser().resolve()
     target = (root / safe).resolve()
     if target.parent != root:
@@ -453,6 +479,7 @@ def delete_remote_branch(repo: Path, branch: str) -> None:
 def _remove_untracked_cache_artifacts(worktree: Path) -> None:
     """Delete only untracked regenerable cache artifacts so they never enter candidate commits."""
 
+    _reject_boundary_escape(worktree, worktree.parent, "worktree")
     root = worktree.resolve()
     prunable: set[Path] = set()
     status = _git(worktree, "status", "--porcelain", "-uall")
