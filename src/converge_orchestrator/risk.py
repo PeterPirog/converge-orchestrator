@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .git import changed_files
+from .git import changed_files, resolve_base_ref
 from .models import ProjectConfig, TaskEnvelope
 from .node_compat import (
     is_typescript_source_path,
@@ -134,8 +134,9 @@ def _read_candidate(cwd: Path, path: str) -> str | None:
 
 
 def _read_base(cwd: Path, base_branch: str, path: str) -> str | None:
+    base_ref = resolve_base_ref(cwd, base_branch)
     result = run(
-        ["git", "show", f"origin/{base_branch}:{path}"],
+        ["git", "show", f"{base_ref}:{path}"],
         cwd=cwd,
         timeout=60,
     )
