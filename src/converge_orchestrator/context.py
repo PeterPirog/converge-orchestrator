@@ -231,19 +231,35 @@ def build_working_memory(state: WorkflowState) -> dict[str, Any]:
 
     task = state.get("task") if isinstance(state.get("task"), dict) else None
     review = state.get("review_result") if isinstance(state.get("review_result"), dict) else None
+    raw_findings: list[Any] = review.get("findings", []) if review else []
     findings: list[dict[str, Any]] = []
-    if review:
-        for finding in review.get("findings", [])[:12]:
-            if not isinstance(finding, dict):
-                continue
-            findings.append(
-                {
-                    "severity": finding.get("severity"),
-                    "requirement_id": finding.get("requirement_id"),
-                    "file": finding.get("file"),
-                    "reason": str(finding.get("reason", ""))[:500],
-                }
-            )
+    for finding in raw_findings[:12]:
+        if not isinstance(finding, dict):
+            continue
+        reason_raw = str(finding.get("reason", ""))
+        findings.append(
+            {
+                "severity": finding.get("severity"),
+                "requirement_id": finding.get("requirement_id"),
+                "file": finding.get("file"),
+                "reason": reason_raw[:500],
+                "reason_truncated": len(reason_raw) > 500,
+            }
+        )
+
+    if task:
+        requirement_ids_raw = list(task.get("requirement_ids", []))
+        objective_raw = str(task.get("objective", ""))
+        last_task: dict[str, Any] | None = {
+            "id": task.get("id"),
+            "title": task.get("title"),
+            "requirement_ids": requirement_ids_raw[:32],
+            "requirement_ids_truncated": len(requirement_ids_raw) > 32,
+            "objective": objective_raw[:1000],
+            "objective_truncated": len(objective_raw) > 1000,
+        }
+    else:
+        last_task = None
 
     scout = (state.get("baseline") or {}).get("repo_scout")
     return {
@@ -256,19 +272,12 @@ def build_working_memory(state: WorkflowState) -> dict[str, Any]:
         "unresolved_ids_truncated": len(unresolved) > 64,
         "recommended_requirement_ids": recommended_ids[:64],
         "recommended_ids_truncated": len(recommended_ids) > 64,
-        "last_task": (
-            {
-                "id": task.get("id"),
-                "title": task.get("title"),
-                "requirement_ids": list(task.get("requirement_ids", []))[:32],
-                "objective": str(task.get("objective", ""))[:1000],
-            }
-            if task
-            else None
-        ),
+        "last_task": last_task,
         "repair_attempts": state.get("repair_attempts", 0),
         "replan_attempts": state.get("replan_attempts", 0),
         "last_review_findings": findings,
+        "last_review_findings_total": len(raw_findings),
+        "last_review_findings_truncated": len(raw_findings) > 12,
         "ci_status": (state.get("ci") or {}).get("status") if state.get("ci") else None,
         "repo_scout": (
             {
