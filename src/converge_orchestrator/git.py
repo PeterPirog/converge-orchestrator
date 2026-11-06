@@ -75,6 +75,33 @@ def _git_lines(repo: Path, *args: str, timeout: int = 300) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def _origin_remote_exists(repo: Path) -> bool:
+    """Return True when an ``origin`` remote is configured in ``repo``.
+
+    This is a non-network probe: it only reads local Git configuration.
+    """
+    result = run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=repo,
+        timeout=60,
+    )
+    return result.returncode == 0
+
+
+def resolve_base_ref(repo: Path, base_branch: str) -> str:
+    """Return the full ref to use as the convergence base.
+
+    Prefer the remote tracking ref ``refs/remotes/origin/{base_branch}`` when
+    an ``origin`` remote is configured so origin-connected repositories keep
+    their existing fetch/pull semantics.  Fall back to the local branch ref
+    ``refs/heads/{base_branch}`` for local-only repositories that have commits
+    but no ``origin`` remote.
+    """
+    if _origin_remote_exists(repo):
+        return f"refs/remotes/origin/{base_branch}"
+    return f"refs/heads/{base_branch}"
+
+
 def ensure_clean(repo: Path) -> None:
     if _git(repo, "status", "--porcelain"):
         raise GitError("Repository must be clean before orchestration starts.")
@@ -85,9 +112,12 @@ def current_head(repo: Path) -> str:
 
 
 def update_base(repo: Path, branch: str) -> str:
-    _git(repo, "fetch", "origin")
-    _git(repo, "checkout", branch)
-    _git(repo, "pull", "--ff-only", "origin", branch)
+    if _origin_remote_exists(repo):
+        _git(repo, "fetch", "origin")
+        _git(repo, "checkout", branch)
+        _git(repo, "pull", "--ff-only", "origin", branch)
+    else:
+        _git(repo, "checkout", branch)
     return current_head(repo)
 
 
@@ -287,7 +317,8 @@ def create_worktree(
     if _local_branch_exists(repo, branch):
         _git(repo, "worktree", "add", str(target), branch)
     else:
-        _git(repo, "worktree", "add", "-b", branch, str(target), f"origin/{base_branch}")
+        base_ref = resolve_base_ref(repo, base_branch)
+        _git(repo, "worktree", "add", "-b", branch, str(target), base_ref)
     try:
         store.activate(task_id=task_id, target=target, branch=branch)
     except WorkspaceOwnershipError as exc:
@@ -332,7 +363,8 @@ def _untracked_files_diff(worktree: Path) -> str:
 
 
 def diff(worktree: Path, base_branch: str) -> str:
-    committed = _git_stdout(worktree, "diff", f"origin/{base_branch}...HEAD")
+    base_ref = resolve_base_ref(worktree, base_branch)
+    committed = _git_stdout(worktree, "diff", f"{base_ref}...HEAD")
     working = _git_stdout(worktree, "diff", "HEAD")
     untracked = _untracked_files_diff(worktree)
     return "\n".join(part for part in (committed, working, untracked) if part).strip()
@@ -369,9 +401,10 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     `status --porcelain -uall`, so per-file cache-artifact filtering stays exact.
     """
 
+    base_ref = resolve_base_ref(worktree, base_branch)
     names: set[str] = set()
     for args in (
-        ("diff", "--name-only", f"origin/{base_branch}...HEAD"),
+        ("diff", "--name-only", f"{base_ref}...HEAD"),
         ("diff", "--name-only", "HEAD"),
     ):
         names.update(_git_lines(worktree, *args))
@@ -384,7 +417,8 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
 def diff_line_count(worktree: Path, base_branch: str) -> int:
     total = 0
     tracked: set[str] = set()
-    for line in _git_lines(worktree, "diff", "--numstat", f"origin/{base_branch}"):
+    base_ref = resolve_base_ref(worktree, base_branch)
+    for line in _git_lines(worktree, "diff", "--numstat", base_ref):
         parts = line.split("\t")
         if len(parts) != 3:
             continue
@@ -487,7 +521,8 @@ def existing_candidate_commit(worktree: Path, base_branch: str) -> str | None:
     """Return an already-created candidate commit after a checkpoint race/crash."""
     if _git(worktree, "status", "--porcelain"):
         return None
-    ahead = _git(worktree, "rev-list", "--count", f"origin/{base_branch}..HEAD")
+    base_ref = resolve_base_ref(worktree, base_branch)
+    ahead = _git(worktree, "rev-list", "--count", f"{base_ref}..HEAD")
     try:
         count = int(ahead)
     except ValueError as exc:
