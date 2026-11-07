@@ -732,6 +732,7 @@ class WorkflowState(TypedDict, total=False):
     approved_risk_flags: list[str]
     risk_report: dict[str, Any] | None
     risk_fingerprint: str | None
+    recorded_canonical_base_revision: str | None
     human_decisions: list[dict[str, Any]]
     status: str
     message: str
