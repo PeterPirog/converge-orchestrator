@@ -24,6 +24,7 @@ from .git import (
     ensure_clean,
     existing_candidate_commit,
     push,
+    resolve_canonical_base_revision,
     update_base,
 )
 from .github import GitHubAdapter
@@ -652,6 +653,7 @@ def review(state: WorkflowState) -> WorkflowState:
     worktree = Path(state["worktree"])
     patch = diff(worktree, cfg.base_branch)
     fingerprint = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+    canonical_base = resolve_canonical_base_revision(worktree, cfg.base_branch)
     report = classify_repository_risk(cfg, worktree, task)
     risk_report = report.model_dump(mode="json")
     declared_risk_flags = set(task.risk_flags) - BLOCKING_RISK_FLAGS
@@ -671,6 +673,7 @@ def review(state: WorkflowState) -> WorkflowState:
             "flags": risk_flags,
             "findings": len(report.findings),
             "candidate_sha256": fingerprint,
+            "canonical_base_revision": canonical_base,
         },
     )
 
@@ -704,6 +707,7 @@ def review(state: WorkflowState) -> WorkflowState:
             "approved_risk_flags": approved_risk_flags,
             "risk_report": risk_report,
             "risk_fingerprint": fingerprint,
+            "recorded_canonical_base_revision": canonical_base,
             "review_result": review_result.model_dump(mode="json"),
             "status": "risk_blocked",
         }
@@ -742,6 +746,7 @@ def review(state: WorkflowState) -> WorkflowState:
     )
     store.write_text(state["run_id"], task.id, "diff.patch", patch)
     review_payload = review_result.model_dump(mode="json")
+    review_payload["canonical_base_revision"] = canonical_base
     if scoping:
         review_payload["scoping"] = scoping
     store.write_json(
@@ -774,6 +779,7 @@ def review(state: WorkflowState) -> WorkflowState:
         "approved_risk_flags": approved_risk_flags,
         "risk_report": risk_report,
         "risk_fingerprint": fingerprint,
+        "recorded_canonical_base_revision": canonical_base,
         "review_result": review_payload,
         "status": "reviewed",
     }
@@ -1136,6 +1142,7 @@ def replan(state: WorkflowState) -> WorkflowState:
         "approved_risk_flags": [],
         "risk_report": None,
         "risk_fingerprint": None,
+        "recorded_canonical_base_revision": None,
         "review_execution_retries": 0,
         "status": "replanning",
     }
@@ -1276,6 +1283,29 @@ def integrate(state: WorkflowState) -> WorkflowState:
         return spec_stop(state)
     task = TaskEnvelope.model_validate(state["task"])
     worktree = Path(state["worktree"])
+
+    recorded_base = state.get("recorded_canonical_base_revision")
+    if recorded_base is not None:
+        current_base = resolve_canonical_base_revision(worktree, cfg.base_branch)
+        if current_base != recorded_base:
+            store = _evidence(state)
+            store.append_event(
+                state["run_id"],
+                "base_moved",
+                {
+                    "task_id": task.id,
+                    "recorded_canonical_base_revision": recorded_base,
+                    "current_canonical_base_revision": current_base,
+                },
+            )
+            next_state: WorkflowState = {
+                **state,
+                "commit_sha": None,
+                "status": "base_moved",
+                "message": "Canonical base revision moved since review; revalidation required.",
+            }
+            return next_state
+
     created_commit = commit_all(worktree, f"feat: {task.title}")
     commit = created_commit or existing_candidate_commit(worktree, cfg.base_branch)
     if commit:
@@ -1316,6 +1346,8 @@ def route_after_integrate(state: WorkflowState) -> str:
     cfg = load_config(state["config_path"])
     if state.get("status") == "spec_changed":
         return "end"
+    if state.get("status") == "base_moved":
+        return "replan" if state.get("replan_attempts", 0) < cfg.max_replans else "end"
     if state.get("commit_sha"):
         return "pr" if cfg.github_repo else "end"
     if state.get("replan_attempts", 0) < cfg.max_replans:

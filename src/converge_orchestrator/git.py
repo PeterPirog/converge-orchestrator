@@ -123,6 +123,33 @@ def resolve_base_ref(repo: Path, base_branch: str) -> str:
     return f"refs/heads/{base_branch}"
 
 
+def resolve_canonical_base_revision(repo: Path, base_branch: str) -> str | None:
+    """Return the commit SHA of the canonical base ref, or None when absent.
+
+    Mirrors ``resolve_base_ref`` semantics and returns ``None`` for an unborn
+    branch or any git-unavailability condition, so callers record the base
+    revision exactly when one exists.
+    """
+    try:
+        base_ref = resolve_base_ref(repo, base_branch)
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", base_ref],
+            cwd=repo,
+            encoding="utf-8",
+            errors="replace",
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # Missing repository, unavailable git, or hung git command: treat as no base.
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
 def ensure_clean(repo: Path) -> None:
     if _git(repo, "status", "--porcelain"):
         raise GitError("Repository must be clean before orchestration starts.")
