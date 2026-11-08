@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import shutil
 import subprocess
@@ -548,6 +549,122 @@ def _prune_empty_cache_ancestors(root: Path, start: Path) -> None:
         current = current.parent
 
 
+def _git_nul_fields(worktree: Path, *args: str, timeout: int = 300) -> list[bytes]:
+    """Run a git ``-z`` command and return its non-empty NUL-separated fields as bytes.
+
+    ``-z`` output is never C-quoted and is not line-oriented, so it remains correct for
+    pathnames that ``core.quotepath`` would otherwise quote.  Callers decode the bytes
+    with the filesystem encoding so the resulting strings match the worktree paths.
+    """
+
+    result = subprocess.run(
+        ["git", *args],
+        cwd=worktree,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        raise GitError(f"{stdout}{stderr}".strip())
+    if not result.stdout:
+        return []
+    return [field for field in result.stdout.split(b"\x00") if field]
+
+
+def secondary_repository_roots(worktree: Path) -> list[str]:
+    """Return sorted relative paths to secondary repository roots inside *worktree*.
+
+    Uses only local Git metadata:
+      - Staged gitlinks (index mode 160000) from ``git ls-files -s -z``.
+      - Untracked paths whose directory chain contains a ``.git`` entry.
+
+    Any present ``.git`` entry -- whether a directory, a linked-worktree ``gitdir``
+    pointer file, or a symlinked external repository mount -- is treated as a secondary
+    repository root.  This is an intentional fail-closed interpretation: authority over
+    the primary repository does not imply authority over a nested repository identity.
+
+    No network, model, provider, or fetch operations.
+    """
+
+    roots: set[str] = set()
+    for field in _git_nul_fields(worktree, "ls-files", "-s", "-z"):
+        if b"\t" not in field:
+            continue
+        metadata, path = field.split(b"\t", 1)
+        mode = metadata.split(b" ", 1)[0]
+        if mode == b"160000":
+            roots.add(PurePosixPath(os.fsdecode(path).replace("\\", "/")).as_posix())
+    for field in _git_nul_fields(worktree, "status", "--porcelain", "-z", "-uall"):
+        if len(field) < 3 or field[:3] != b"?? ":
+            continue
+        raw = os.fsdecode(field[3:])
+        candidate = worktree / raw
+        # The untracked entry itself may be the secondary repository root.
+        if (candidate / ".git").exists():
+            roots.add(PurePosixPath(raw.replace("\\", "/")).as_posix())
+            continue
+        # Or it may be a file/directory inside an embedded repository.
+        for parent in candidate.parents:
+            if parent == worktree:
+                break
+            if (parent / ".git").exists():
+                roots.add(parent.relative_to(worktree).as_posix())
+                break
+    return sorted(roots)
+
+
+def _candidate_mutations(worktree: Path) -> set[str]:
+    """Return relative paths of all candidate mutations in *worktree* before staging.
+
+    Combines already-staged changes, tracked unstaged changes, untracked files, and
+    submodule/dirty-directory status entries.  Paths are read via ``-z`` so they remain
+    correct even when ``core.quotepath`` would otherwise C-quote them.
+    """
+
+    names: set[str] = set()
+    for args in (
+        ("diff", "--cached", "--name-only", "-z", "HEAD"),
+        ("diff", "--name-only", "-z", "HEAD"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+    ):
+        names.update(
+            PurePosixPath(os.fsdecode(field).replace("\\", "/")).as_posix()
+            for field in _git_nul_fields(worktree, *args)
+        )
+    for field in _git_nul_fields(worktree, "status", "--porcelain", "-z", "-uall"):
+        if len(field) < 3 or field[2:3] != b" ":
+            continue
+        names.add(PurePosixPath(os.fsdecode(field[3:]).replace("\\", "/")).as_posix())
+    return names
+
+
+def _reject_secondary_repository_mutations(worktree: Path) -> None:
+    """Fail closed when the candidate would mutate a secondary repository identity.
+
+    A secondary repository identity is either a staged gitlink (index mode 160000) or an
+    embedded repository whose ``.git`` metadata is detected under an untracked path. Any
+    candidate mutation under such a root is rejected before staging so no primary-repository
+    commit is created and the nested repository remains untouched.  Any staged index entry
+    for the offending root is reset before raising so the gitlink does not remain staged.
+    """
+
+    roots = secondary_repository_roots(worktree)
+    if not roots:
+        return
+    root_paths = [PurePosixPath(root.replace("\\", "/")) for root in roots]
+    for path in _candidate_mutations(worktree):
+        if is_deterministic_cache_artifact(path):
+            continue
+        posix = PurePosixPath(path.replace("\\", "/"))
+        for root in root_paths:
+            if posix == root or root in posix.parents:
+                for root_path in roots:
+                    _git(worktree, "reset", "--", root_path)
+                raise GitError("REQ-REPO-005 secondary repository mutation rejected")
+
+
 def commit_all(worktree: Path, message: str) -> str | None:
     """Commit every candidate change, skipping noise-only candidate states.
 
@@ -561,9 +678,32 @@ def commit_all(worktree: Path, message: str) -> str | None:
     warnings never become entries) reports a real staged diff relative to HEAD; otherwise return
     None so integrate reaches its designed no_changes outcome. Genuine git errors still fail
     closed via GitError.
+
+    Nested repository identities remain separate (REQ-REPO-005): any candidate mutation that
+    touches a staged gitlink or a path under a detected secondary repository root is rejected
+    before staging so neither the primary nor the nested repository is committed implicitly.
+    Defense in depth also scans the staged index after ``git add -A`` and resets any
+    escaped gitlink before raising the same GitError.
     """
     _remove_untracked_cache_artifacts(worktree)
+    _reject_secondary_repository_mutations(worktree)
     _git(worktree, "add", "-A")
+    staged_gitlinks: list[str] = []
+    raw_fields = _git_nul_fields(
+        worktree, "diff", "--cached", "--raw", "-z", "--no-renames", "HEAD"
+    )
+    for i in range(0, len(raw_fields), 2):
+        meta = raw_fields[i].decode("utf-8", errors="replace")
+        if i + 1 >= len(raw_fields):
+            break
+        path = os.fsdecode(raw_fields[i + 1]).replace("\\", "/")
+        parts = meta.lstrip(":").split()
+        if len(parts) >= 2 and "160000" in (parts[0], parts[1]):
+            staged_gitlinks.append(path)
+    if staged_gitlinks:
+        for path in staged_gitlinks:
+            _git(worktree, "reset", "--", path)
+        raise GitError("REQ-REPO-005 secondary repository mutation rejected")
     staged = _git_lines(worktree, "diff", "--cached", "--name-only", "HEAD")
     if not staged:
         return None
