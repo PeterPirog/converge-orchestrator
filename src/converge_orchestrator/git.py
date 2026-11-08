@@ -584,6 +584,8 @@ def secondary_repository_roots(worktree: Path) -> list[str]:
     pointer file, or a symlinked external repository mount -- is treated as a secondary
     repository root.  This is an intentional fail-closed interpretation: authority over
     the primary repository does not imply authority over a nested repository identity.
+    Because a tracked submodule's root path equals the gitlink, a content-dirty submodule
+    worktree (e.g. `` m sub``) is also reported as a root mutation and rejected.
 
     No network, model, provider, or fetch operations.
     """
@@ -615,12 +617,24 @@ def secondary_repository_roots(worktree: Path) -> list[str]:
     return sorted(roots)
 
 
+_STATUS_PAIR_CHARS = frozenset(b" MADRCUT?!mu")
+
+
+def _posix_path_from_nul_field(field: bytes) -> str:
+    return PurePosixPath(os.fsdecode(field).replace("\\", "/")).as_posix()
+
+
 def _candidate_mutations(worktree: Path) -> set[str]:
     """Return relative paths of all candidate mutations in *worktree* before staging.
 
     Combines already-staged changes, tracked unstaged changes, untracked files, and
     submodule/dirty-directory status entries.  Paths are read via ``-z`` so they remain
     correct even when ``core.quotepath`` would otherwise C-quote them.
+
+    ``status --porcelain -z`` entries are validated as two-letter porcelain status
+    pairs before slicing, and both fields of a rename/copy pair are retained so that
+    the destination (and source) can be matched against secondary repository roots
+    regardless of field ordering.
     """
 
     names: set[str] = set()
@@ -630,14 +644,77 @@ def _candidate_mutations(worktree: Path) -> set[str]:
         ("ls-files", "--others", "--exclude-standard", "-z"),
     ):
         names.update(
-            PurePosixPath(os.fsdecode(field).replace("\\", "/")).as_posix()
+            _posix_path_from_nul_field(field)
             for field in _git_nul_fields(worktree, *args)
         )
-    for field in _git_nul_fields(worktree, "status", "--porcelain", "-z", "-uall"):
-        if len(field) < 3 or field[2:3] != b" ":
+    fields = _git_nul_fields(worktree, "status", "--porcelain", "-z", "-uall")
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        if (
+            len(field) < 3
+            or field[2:3] != b" "
+            or field[0] not in _STATUS_PAIR_CHARS
+            or field[1] not in _STATUS_PAIR_CHARS
+        ):
+            i += 1
             continue
-        names.add(PurePosixPath(os.fsdecode(field[3:]).replace("\\", "/")).as_posix())
+        names.add(_posix_path_from_nul_field(field[3:]))
+        if b"R" in field[:2] or b"C" in field[:2]:
+            if i + 1 < len(fields):
+                names.add(_posix_path_from_nul_field(fields[i + 1]))
+            i += 2
+            continue
+        i += 1
     return names
+
+
+def _staged_path_set(worktree: Path) -> set[str]:
+    """Return the set of staged relative paths."""
+    return {
+        _posix_path_from_nul_field(field)
+        for field in _git_nul_fields(worktree, "diff", "--cached", "--name-only", "-z", "HEAD")
+    }
+
+
+def _staged_gitlink_paths(worktree: Path) -> list[str]:
+    """Return relative paths of all gitlinks (mode 160000) present in the index.
+
+    Callers that need only gitlinks newly staged relative to HEAD must intersect the
+    result with the set of paths reported by ``git diff --cached --name-only HEAD``.
+    """
+    paths: list[str] = []
+    for field in _git_nul_fields(worktree, "ls-files", "-s", "-z"):
+        if b"\t" not in field:
+            continue
+        metadata, path = field.split(b"\t", 1)
+        mode = metadata.split(b" ", 1)[0]
+        if mode == b"160000":
+            paths.append(_posix_path_from_nul_field(path))
+    return paths
+
+
+def _unstage_roots_safely(worktree: Path, roots: set[str]) -> None:
+    """Reset staged entries under *roots* without letting pathspec magic select other paths.
+
+    Errors are ignored: the caller raises the deterministic REQ-REPO-005 GitError next,
+    so no primary-repository commit can be created regardless of reset outcome.
+    """
+    if not roots:
+        return
+    env = {**os.environ, "GIT_LITERAL_PATHSPECS": "1"}
+    try:
+        subprocess.run(
+            ["git", "reset", "--", *sorted(roots)],
+            cwd=worktree,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=300,
+        )
+    except Exception:
+        # The caller's unconditional marker GitError is the observable contract.
+        pass
 
 
 def _reject_secondary_repository_mutations(worktree: Path) -> None:
@@ -648,21 +725,39 @@ def _reject_secondary_repository_mutations(worktree: Path) -> None:
     candidate mutation under such a root is rejected before staging so no primary-repository
     commit is created and the nested repository remains untouched.  Any staged index entry
     for the offending root is reset before raising so the gitlink does not remain staged.
+
+    Only roots that currently hold staged index entries are reset, repository-derived
+    pathspecs are neutralized via ``GIT_LITERAL_PATHSPECS=1``, and the marker GitError is
+    raised unconditionally even if a reset subprocess fails, so the deterministic message
+    cannot be replaced by an incidental git diagnostic.
     """
 
     roots = secondary_repository_roots(worktree)
     if not roots:
         return
     root_paths = [PurePosixPath(root.replace("\\", "/")) for root in roots]
+    staged = _staged_path_set(worktree)
+    offending: set[str] = set()
     for path in _candidate_mutations(worktree):
         if is_deterministic_cache_artifact(path):
             continue
         posix = PurePosixPath(path.replace("\\", "/"))
         for root in root_paths:
             if posix == root or root in posix.parents:
-                for root_path in roots:
-                    _git(worktree, "reset", "--", root_path)
-                raise GitError("REQ-REPO-005 secondary repository mutation rejected")
+                offending.add(root.as_posix())
+    if not offending:
+        return
+    staged_roots = {
+        root.as_posix()
+        for root in root_paths
+        if any(
+            staged_path == root.as_posix()
+            or staged_path.startswith(root.as_posix() + "/")
+            for staged_path in staged
+        )
+    }
+    _unstage_roots_safely(worktree, staged_roots)
+    raise GitError("REQ-REPO-005 secondary repository mutation rejected")
 
 
 def commit_all(worktree: Path, message: str) -> str | None:
@@ -683,26 +778,19 @@ def commit_all(worktree: Path, message: str) -> str | None:
     touches a staged gitlink or a path under a detected secondary repository root is rejected
     before staging so neither the primary nor the nested repository is committed implicitly.
     Defense in depth also scans the staged index after ``git add -A`` and resets any
-    escaped gitlink before raising the same GitError.
+    escaped gitlink that is newly staged relative to HEAD before raising the same
+    GitError.  A tracked submodule with a dirty worktree is rejected too, because its
+    root path is reported as a candidate mutation.
+
+    All inventory and reset commands used by the REQ-REPO-005 guard remain local-only:
+    no network, model, provider, or fetch operations.
     """
     _remove_untracked_cache_artifacts(worktree)
     _reject_secondary_repository_mutations(worktree)
     _git(worktree, "add", "-A")
-    staged_gitlinks: list[str] = []
-    raw_fields = _git_nul_fields(
-        worktree, "diff", "--cached", "--raw", "-z", "--no-renames", "HEAD"
-    )
-    for i in range(0, len(raw_fields), 2):
-        meta = raw_fields[i].decode("utf-8", errors="replace")
-        if i + 1 >= len(raw_fields):
-            break
-        path = os.fsdecode(raw_fields[i + 1]).replace("\\", "/")
-        parts = meta.lstrip(":").split()
-        if len(parts) >= 2 and "160000" in (parts[0], parts[1]):
-            staged_gitlinks.append(path)
+    staged_gitlinks = set(_staged_gitlink_paths(worktree)) & _staged_path_set(worktree)
     if staged_gitlinks:
-        for path in staged_gitlinks:
-            _git(worktree, "reset", "--", path)
+        _unstage_roots_safely(worktree, staged_gitlinks)
         raise GitError("REQ-REPO-005 secondary repository mutation rejected")
     staged = _git_lines(worktree, "diff", "--cached", "--name-only", "HEAD")
     if not staged:
