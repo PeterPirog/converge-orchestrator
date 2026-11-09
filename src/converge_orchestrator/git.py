@@ -780,7 +780,8 @@ def commit_all(worktree: Path, message: str) -> str | None:
     Defense in depth also scans the staged index after ``git add -A`` and resets any
     escaped gitlink that is newly staged relative to HEAD before raising the same
     GitError.  A tracked submodule with a dirty worktree is rejected too, because its
-    root path is reported as a candidate mutation.
+    root path is reported as a candidate mutation.  This is the acknowledged fail-closed
+    policy; narrowing the scope is reserved for a follow-up increment.
 
     All inventory and reset commands used by the REQ-REPO-005 guard remain local-only:
     no network, model, provider, or fetch operations.
