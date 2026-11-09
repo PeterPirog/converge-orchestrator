@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from .shell import run
@@ -28,6 +29,36 @@ def _git_common_dir(repo: Path) -> Path:
     if not path.is_absolute():
         path = repo / path
     return path.expanduser().resolve()
+
+
+def _git_worktree_root(repo: Path) -> Path:
+    result = run(["git", "rev-parse", "--show-toplevel"], cwd=repo, timeout=30)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise WorkspaceAffinityError(f"Unable to resolve Git worktree root for {repo}")
+    return Path(result.stdout.strip()).expanduser().resolve()
+
+
+def _find_governing_git_root(path: Path) -> Path | None:
+    """Return the innermost Git worktree root that governs ``path``."""
+    current = path.resolve()
+    if not current.is_dir():
+        current = current.parent
+    while True:
+        marker = current / ".git"
+        if marker.exists():
+            root = _git_worktree_root(current)
+            if root != current:
+                raise WorkspaceAffinityError(f"Ambiguous .git marker at {current}")
+            return root
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
+def _workspace_identity(common_dir: Path, worktree_root: Path) -> str:
+    key = f"converge:workspace:{common_dir.as_posix()}:{worktree_root.as_posix()}"
+    return f"wsid-{hashlib.sha256(key.encode()).hexdigest()}"
 
 
 def _validate_id(raw: str, marker: Path, label: str) -> str:
@@ -154,3 +185,32 @@ def assert_state_store_affinity(project: dict, state_dir: Path) -> str:
             "that owns its state directory or mount the same durable state directory."
         )
     return actual
+
+
+def resolve_workspace_identity(repo: Path, target: Path) -> dict[str, Any]:
+    """Offline, fail-closed workspace identity primitive for REQ-REPO-005."""
+    repo_root = repo.expanduser().resolve()
+    target_path = target.expanduser().resolve()
+    primary_worktree = _git_worktree_root(repo_root)
+    primary_common = _git_common_dir(primary_worktree)
+    primary_identity = _workspace_identity(primary_common, primary_worktree)
+    governing = _find_governing_git_root(target_path)
+    if governing is None:
+        raise WorkspaceAffinityError(f"Target {target_path} is not inside any Git repository")
+    target_common = _git_common_dir(governing)
+    target_identity = _workspace_identity(target_common, governing)
+    if target_identity == primary_identity:
+        return {"identity": primary_identity, "distinct_identity": None}
+    reason = (
+        "linked_worktree"
+        if target_common == primary_common
+        else "submodule"
+        if target_common.is_relative_to(primary_common)
+        else "external_mount"
+        if not governing.is_relative_to(primary_worktree)
+        else "nested_repository"
+    )
+    return {
+        "identity": target_identity,
+        "distinct_identity": {"reason": reason, "identity": target_identity},
+    }
