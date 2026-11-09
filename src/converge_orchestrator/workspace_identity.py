@@ -32,7 +32,12 @@ def _git_common_dir(repo: Path) -> Path:
 
 
 def _git_worktree_root(repo: Path) -> Path:
-    result = run(["git", "rev-parse", "--show-toplevel"], cwd=repo, timeout=30)
+    try:
+        result = run(["git", "rev-parse", "--show-toplevel"], cwd=repo, timeout=30)
+    except OSError as exc:
+        raise WorkspaceAffinityError(
+            f"Unable to resolve Git worktree root for {repo}: {exc}"
+        ) from exc
     if result.returncode != 0 or not result.stdout.strip():
         raise WorkspaceAffinityError(f"Unable to resolve Git worktree root for {repo}")
     return Path(result.stdout.strip()).expanduser().resolve()
@@ -188,29 +193,26 @@ def assert_state_store_affinity(project: dict, state_dir: Path) -> str:
 
 
 def resolve_workspace_identity(repo: Path, target: Path) -> dict[str, Any]:
-    """Offline, fail-closed workspace identity primitive for REQ-REPO-005."""
-    repo_root = repo.expanduser().resolve()
-    target_path = target.expanduser().resolve()
-    primary_worktree = _git_worktree_root(repo_root)
-    primary_common = _git_common_dir(primary_worktree)
-    primary_identity = _workspace_identity(primary_common, primary_worktree)
-    governing = _find_governing_git_root(target_path)
-    if governing is None:
-        raise WorkspaceAffinityError(f"Target {target_path} is not inside any Git repository")
-    target_common = _git_common_dir(governing)
-    target_identity = _workspace_identity(target_common, governing)
+    try:
+        primary_worktree = _git_worktree_root(repo.expanduser().resolve())
+        primary_common = _git_common_dir(primary_worktree)
+        primary_identity = _workspace_identity(primary_common, primary_worktree)
+        governing = _find_governing_git_root(target.expanduser().resolve())
+        if governing is None:
+            raise WorkspaceAffinityError(
+                f"Target {target.expanduser().resolve()} is not inside any Git repository"
+            )
+        target_common = _git_common_dir(governing)
+        target_identity = _workspace_identity(target_common, governing)
+    except OSError as exc:
+        raise WorkspaceAffinityError(f"Workspace identity resolution failed: {exc}") from exc
     if target_identity == primary_identity:
         return {"identity": primary_identity, "distinct_identity": None}
     reason = (
-        "linked_worktree"
-        if target_common == primary_common
-        else "submodule"
-        if target_common.is_relative_to(primary_common)
-        else "external_mount"
-        if not governing.is_relative_to(primary_worktree)
+        "linked_worktree" if target_common == primary_common
+        else "submodule" if target_common.is_relative_to(primary_common)
+        else "external_mount" if not governing.is_relative_to(primary_worktree)
         else "nested_repository"
     )
-    return {
-        "identity": target_identity,
-        "distinct_identity": {"reason": reason, "identity": target_identity},
-    }
+    distinct = {"reason": reason, "identity": target_identity}
+    return {"identity": target_identity, "distinct_identity": distinct}
