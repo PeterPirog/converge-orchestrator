@@ -74,7 +74,12 @@ def evaluate_repository_identity_authority(state: Mapping[str, object]) -> str |
     kind = state.get(_FIELD_KIND)
     if kind == _KIND_PRIMARY:
         return None
-    if kind not in _NESTED_KINDS:
+    try:
+        is_nested = kind in _NESTED_KINDS
+    except TypeError:
+        # Malformed, unhashable kind value; fail closed rather than letting a set lookup raise.
+        is_nested = False
+    if not is_nested:
         return REPOSITORY_IDENTITY_REJECTED
     identity_id = state.get(_FIELD_ID)
     if identity_id is None:
