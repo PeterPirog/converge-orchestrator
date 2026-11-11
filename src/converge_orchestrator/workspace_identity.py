@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ from .shell import run
 
 _WORKSPACE_MARKER_NAME = "converge-workspace-id"
 _STATE_MARKER_NAME = ".converge-state-id"
+_NESTED_REPO_MARKER = "REQ-REPO-005 nested repository authority denied"
 
 
 class WorkspaceAffinityError(RuntimeError):
@@ -154,3 +156,43 @@ def assert_state_store_affinity(project: dict, state_dir: Path) -> str:
             "that owns its state directory or mount the same durable state directory."
         )
     return actual
+
+
+def _nested_repository_root(target: Path, root: Path) -> Path | None:
+    """Return the nearest ancestor between *target* and *root* that marks a Git boundary."""
+    current = target
+    while current != root and root in current.parents:
+        git_entry = current / ".git"
+        if git_entry.is_dir():
+            return current
+        if git_entry.is_file():
+            try:
+                text = git_entry.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return current
+            if text.splitlines() and text.splitlines()[0].strip().startswith("gitdir:"):
+                return current
+        current = current.parent
+    return None
+
+
+def assert_nested_repository_authority(project: dict, repo: Path, target: Path) -> str:
+    """Fail closed on nested Git boundary edits without explicit project authority."""
+    assert_workspace_affinity(project, repo)
+    root = repo.expanduser().resolve()
+    resolved = target.expanduser().resolve()
+    if resolved != root and root not in resolved.parents:
+        raise WorkspaceAffinityError(
+            _NESTED_REPO_MARKER + ": target outside authorized repository root"
+        )
+    nested_root = _nested_repository_root(resolved, root)
+    if nested_root is None:
+        return mutation_domain_id(root)
+    try:
+        nested_id = mutation_domain_id(nested_root)
+    except Exception as exc:
+        raise WorkspaceAffinityError(_NESTED_REPO_MARKER) from exc
+    authority = project.get("nested_repository_authority")
+    if isinstance(authority, Mapping) and authority.get(nested_id) is True:
+        return nested_id
+    raise WorkspaceAffinityError(_NESTED_REPO_MARKER)
