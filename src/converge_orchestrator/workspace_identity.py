@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -118,6 +120,91 @@ def mutation_domain_id(repo: Path) -> str:
     normalized = _canonical_identity_source(source)
     digest = hashlib.sha256(f"converge:mutation-domain:{normalized}".encode()).hexdigest()
     return f"mutdom-{digest}"
+
+
+_NESTED_REPOSITORY_BOUNDARY_VIOLATED = "nested_repository_boundary_violated"
+
+
+def _nearest_existing_directory(path: Path) -> Path | None:
+    """Return the deepest ancestor of ``path`` that exists as a directory."""
+    candidate = path if path.is_dir() else path.parent
+    while candidate and not candidate.is_dir():
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
+    return candidate if candidate.is_dir() else None
+
+
+def evaluate_nested_repository_boundary(
+    repo: Path,
+    changes: Iterable[Path],
+    declared: set[str] | None = None,
+) -> tuple[str, ...]:
+    """Return violated REQ-REPO-005 clauses for change paths inside separate Git identities.
+
+    Each change path is mapped to the Git repository that owns it. When the owning
+    repository has a different mutation domain than the primary repository, the path
+    lies inside a separate repository identity (nested repository, submodule, linked
+    worktree, or external mount). Such a path requires explicit declared authority;
+    otherwise it is reported as a boundary violation. Paths owned by the primary
+    repository, including linked worktrees of the same repository, report no clauses.
+
+    Change paths may be absolute or relative; relative paths are resolved against the
+    primary repository root so attribution is independent of the controller process
+    current working directory. Any change path whose owning Git identity cannot be
+    established (no nearest existing directory, ``git rev-parse`` failure or timeout,
+    or empty top-level output) is treated as a separate identity and reported as a
+    violation. This keeps the guard fail-closed.
+    """
+    primary_root = repo.expanduser().resolve()
+    try:
+        primary_domain = mutation_domain_id(primary_root)
+    except WorkspaceAffinityError:
+        return (_NESTED_REPOSITORY_BOUNDARY_VIOLATED,)
+
+    allowed = set(declared) if declared else set()
+    seen_violation = False
+
+    for raw in changes:
+        # Resolve relative change paths against the primary repository root rather than
+        # the controller process CWD, keeping attribution deterministic.
+        path = raw.expanduser()
+        if not path.is_absolute():
+            path = primary_root / path
+        path = path.resolve()
+
+        cwd = _nearest_existing_directory(path)
+        if cwd is None:
+            seen_violation = True
+            continue
+
+        try:
+            result = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            seen_violation = True
+            continue
+
+        if result.returncode != 0:
+            seen_violation = True
+            continue
+        root_text = result.stdout.strip()
+        if not root_text:
+            seen_violation = True
+            continue
+        root = Path(root_text).expanduser().resolve()
+        if root == primary_root:
+            continue
+        try:
+            domain = mutation_domain_id(root)
+        except WorkspaceAffinityError:
+            seen_violation = True
+            continue
+        if domain == primary_domain or domain in allowed:
+            continue
+        seen_violation = True
+
+    return (_NESTED_REPOSITORY_BOUNDARY_VIOLATED,) if seen_violation else ()
 
 
 def assert_workspace_affinity(project: dict, repo: Path) -> str:
