@@ -159,19 +159,16 @@ def assert_state_store_affinity(project: dict, state_dir: Path) -> str:
 
 
 def _nested_repository_root(target: Path, root: Path) -> Path | None:
-    """Return the nearest ancestor between *target* and *root* that marks a Git boundary."""
+    """Return the nearest ancestor between *target* and *root* that marks a Git boundary.
+
+    Any present ``.git`` entry (directory or file) is treated as a boundary and
+    fails closed: malformed or unreadable gitfile pointers are not admitted.
+    """
     current = target
     while current != root and root in current.parents:
         git_entry = current / ".git"
-        if git_entry.is_dir():
+        if git_entry.is_dir() or git_entry.is_file():
             return current
-        if git_entry.is_file():
-            try:
-                text = git_entry.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                return current
-            if text.splitlines() and text.splitlines()[0].strip().startswith("gitdir:"):
-                return current
         current = current.parent
     return None
 
