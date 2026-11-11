@@ -17,8 +17,14 @@ class WorkspaceAffinityError(RuntimeError):
     pass
 
 
-def _git_common_dir(repo: Path) -> Path:
-    result = run(["git", "rev-parse", "--git-common-dir"], cwd=repo, timeout=30)
+def _git_common_dir(repo: Path, *, env: dict[str, str] | None = None) -> Path:
+    result = run(
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=repo,
+        timeout=30,
+        env=env,
+        inherit_env=(env is None),
+    )
     if result.returncode != 0:
         raise WorkspaceAffinityError(
             f"Unable to resolve Git common directory for {repo}: {result.stdout.strip()}"
@@ -30,6 +36,18 @@ def _git_common_dir(repo: Path) -> Path:
     if not path.is_absolute():
         path = repo / path
     return path.expanduser().resolve()
+
+
+def _scrubbed_git_env() -> dict[str, str]:
+    """Return the current process environment with repository-selecting Git variables removed.
+
+    Ambient ``GIT_DIR``, ``GIT_WORK_TREE``, ``GIT_INDEX_FILE``, ``GIT_COMMON_DIR``,
+    ``GIT_OBJECT_DIRECTORY``, and ``GIT_CEILING_DIRECTORIES`` can force ``git`` to attribute
+    any working-directory path to an injected repository.  Removing every ``GIT_*`` variable
+    keeps nested-repository attribution dependent only on the cwd-relative repository
+    discovered by Git itself.
+    """
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
 
 
 def _validate_id(raw: str, marker: Path, label: str) -> str:
@@ -102,6 +120,23 @@ def _canonical_identity_source(value: str) -> str:
     return path.rstrip("/")
 
 
+def _mutation_domain_id_with_env(repo: Path, env: dict[str, str] | None) -> str:
+    """Internal identity derivation shared by the public primitive and scrubbed guard paths."""
+    root = repo.expanduser().resolve()
+    result = run(
+        ["git", "config", "--get", "remote.origin.url"],
+        cwd=root,
+        timeout=30,
+        env=env,
+        inherit_env=(env is None),
+    )
+    origin = result.stdout.strip() if result.returncode == 0 else ""
+    source = origin if origin else _git_common_dir(root, env=env).as_posix()
+    normalized = _canonical_identity_source(source)
+    digest = hashlib.sha256(f"converge:mutation-domain:{normalized}".encode()).hexdigest()
+    return f"mutdom-{digest}"
+
+
 def mutation_domain_id(repo: Path) -> str:
     """Return one canonical repository mutation domain identity (INV-MUTATION-001).
 
@@ -113,13 +148,12 @@ def mutation_domain_id(repo: Path) -> str:
     when present, otherwise the resolved Git common directory — and never performs
     network, model, provider, or fetch operations.
     """
-    root = repo.expanduser().resolve()
-    result = run(["git", "config", "--get", "remote.origin.url"], cwd=root, timeout=30)
-    origin = result.stdout.strip() if result.returncode == 0 else ""
-    source = origin if origin else _git_common_dir(root).as_posix()
-    normalized = _canonical_identity_source(source)
-    digest = hashlib.sha256(f"converge:mutation-domain:{normalized}".encode()).hexdigest()
-    return f"mutdom-{digest}"
+    return _mutation_domain_id_with_env(repo, None)
+
+
+def _scrubbed_mutation_domain_id(repo: Path) -> str:
+    """Return the mutation-domain identity with repository-selecting env variables scrubbed."""
+    return _mutation_domain_id_with_env(repo, _scrubbed_git_env())
 
 
 _NESTED_REPOSITORY_BOUNDARY_VIOLATED = "nested_repository_boundary_violated"
@@ -134,6 +168,23 @@ def _nearest_existing_directory(path: Path) -> Path | None:
             break
         candidate = parent
     return candidate if candidate.is_dir() else None
+
+
+def _find_git_boundary(path: Path, primary_root: Path) -> Path | None:
+    """Return the first nested-repository boundary between ``path`` and ``primary_root``.
+
+    Scans the ancestor chain from ``path`` (or its parent if ``path`` is a file) down
+    to, but not including, ``primary_root``. A boundary is a ``.git`` directory, a
+    gitlink file, or a symlink pointing at either. The primary repository's own gitdir
+    is never treated as a boundary.
+    """
+    candidate = path if path.is_dir() else path.parent
+    while candidate != primary_root and primary_root in candidate.parents:
+        marker = candidate / ".git"
+        if marker.exists() or marker.is_symlink():
+            return candidate
+        candidate = candidate.parent
+    return None
 
 
 def evaluate_nested_repository_boundary(
@@ -153,14 +204,19 @@ def evaluate_nested_repository_boundary(
     Change paths may be absolute or relative; relative paths are resolved against the
     primary repository root so attribution is independent of the controller process
     current working directory. Any change path whose owning Git identity cannot be
-    established (no nearest existing directory, ``git rev-parse`` failure or timeout,
-    or empty top-level output) is treated as a separate identity and reported as a
-    violation. This keeps the guard fail-closed.
+    established is treated as a separate identity and reported as a violation. This keeps
+    the guard fail-closed.
+
+    Same-identity approval is decided by strict filesystem containment within the primary
+    tree (with an ancestor scan for ``.git`` boundaries) and, for out-of-tree paths, by
+    equality of the Git common directory. It does **not** rely on untrusted config such as
+    ``remote.origin.url`` or ``core.worktree`` of the owning repository.
     """
     primary_root = repo.expanduser().resolve()
+    git_env = _scrubbed_git_env()
     try:
-        primary_domain = mutation_domain_id(primary_root)
-    except WorkspaceAffinityError:
+        primary_common_dir = _git_common_dir(primary_root, env=git_env)
+    except (WorkspaceAffinityError, subprocess.TimeoutExpired, OSError):
         return (_NESTED_REPOSITORY_BOUNDARY_VIOLATED,)
 
     allowed = set(declared) if declared else set()
@@ -174,33 +230,62 @@ def evaluate_nested_repository_boundary(
             path = primary_root / path
         path = path.resolve()
 
+        # Strict filesystem containment within the primary tree. Symlinks are followed by
+        # resolve(), so an external mount through a junction/symlink resolves outside
+        # primary_root and is treated as out-of-tree.
+        try:
+            path.relative_to(primary_root)
+            in_primary = True
+        except ValueError:
+            in_primary = False
+
+        if in_primary:
+            boundary = _find_git_boundary(path, primary_root)
+            if boundary is None:
+                # Ordinary primary-repository path.
+                continue
+            # Nested repository or submodule living inside the primary tree.
+            if not allowed:
+                seen_violation = True
+                continue
+            try:
+                nested_domain = _scrubbed_mutation_domain_id(boundary)
+            except (WorkspaceAffinityError, subprocess.TimeoutExpired, OSError):
+                seen_violation = True
+                continue
+            if nested_domain in allowed:
+                continue
+            seen_violation = True
+            continue
+
+        # Out-of-tree path: either a linked worktree of the primary repository or a
+        # separate mounted identity. Use git common dir equality (not untrusted config)
+        # to detect same-repository worktrees.
         cwd = _nearest_existing_directory(path)
         if cwd is None:
             seen_violation = True
             continue
 
         try:
-            result = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, timeout=30)
-        except (subprocess.TimeoutExpired, OSError):
+            owning_common_dir = _git_common_dir(cwd, env=git_env)
+        except (WorkspaceAffinityError, subprocess.TimeoutExpired, OSError):
             seen_violation = True
             continue
 
-        if result.returncode != 0:
-            seen_violation = True
+        if owning_common_dir == primary_common_dir:
+            # Linked worktree of the primary repository (same identity).
             continue
-        root_text = result.stdout.strip()
-        if not root_text:
+
+        # Separate identity: explicit declared authority is required.
+        if not allowed:
             seen_violation = True
-            continue
-        root = Path(root_text).expanduser().resolve()
-        if root == primary_root:
             continue
         try:
-            domain = mutation_domain_id(root)
-        except WorkspaceAffinityError:
+            owning_domain = _scrubbed_mutation_domain_id(cwd)
+        except (WorkspaceAffinityError, subprocess.TimeoutExpired, OSError):
             seen_violation = True
             continue
-        if domain == primary_domain or domain in allowed:
+        if owning_domain in allowed:
             continue
         seen_violation = True
 
