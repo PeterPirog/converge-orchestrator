@@ -154,3 +154,54 @@ def assert_state_store_affinity(project: dict, state_dir: Path) -> str:
             "that owns its state directory or mount the same durable state directory."
         )
     return actual
+
+
+def repository_identity_root(edit_path: Path) -> Path:
+    """Return the Git repository toplevel enclosing ``edit_path`` (REQ-REPO-005).
+
+    Nested Git repositories, submodules, linked worktrees, and external repository
+    mounts each resolve to their own distinct identity root. The result is fully
+    resolved so that junctions/symlinks collapse to the repository they point at.
+    """
+    path = edit_path.expanduser().resolve()
+    cwd = path if path.is_dir() else path.parent
+    if not cwd.is_dir():
+        raise WorkspaceAffinityError(
+            f"Edit path {edit_path} is not inside a reachable directory"
+        )
+    result = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, timeout=30)
+    if result.returncode != 0:
+        raise WorkspaceAffinityError(
+            f"Unable to resolve repository identity root for {edit_path}: {result.stdout.strip()}"
+        )
+    raw = result.stdout.strip().splitlines()[0]
+    if not raw:
+        raise WorkspaceAffinityError(
+            f"Git returned an empty repository toplevel for {edit_path}"
+        )
+    return Path(raw).resolve()
+
+
+def assert_edit_repository_authority(
+    project: dict, edit_path: Path, primary_repo: Path
+) -> Path:
+    """Fail closed unless ``project`` explicitly authorizes editing ``edit_path``'s repo.
+
+    Ordinary content inside ``primary_repo`` is admitted implicitly. Separate-identity
+    repositories (nested repos, submodules, linked worktrees, external mounts) are
+    rejected unless their resolved root appears in ``project["authorized_repository_roots"]``.
+    """
+    identity_root = repository_identity_root(edit_path)
+    primary = primary_repo.expanduser().resolve()
+    if identity_root == primary:
+        return identity_root
+
+    authorized = project.get("authorized_repository_roots") or {}
+    if authorized.get(str(identity_root)):
+        return identity_root
+
+    raise WorkspaceAffinityError(
+        f"Project {project.get('id', '<unknown>')} is not authorized to edit repository "
+        f"{identity_root}. Add {identity_root} to authorized_repository_roots or route the "
+        "edit to its own project."
+    )
