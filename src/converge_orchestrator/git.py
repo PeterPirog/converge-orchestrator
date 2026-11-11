@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import shutil
 import subprocess
@@ -493,6 +494,47 @@ def diff_line_count(worktree: Path, base_branch: str) -> int:
     return total
 
 
+def _nested_identity_roots(worktree: Path) -> list[Path]:
+    """Return roots of nested Git identities under *worktree* (excluding *worktree* itself).
+
+    Detects nested ``.git`` directories, submodule ``.git`` pointers, linked worktrees,
+    and external repository mounts.  Descent is pruned at regenerable cache directories so
+    gate artifacts (``__pycache__``, ``.pytest_cache``, etc.) are never misread as nested
+    repository identities.
+    """
+
+    root = worktree.resolve()
+    nested: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        current = Path(dirpath)
+        if current == root:
+            if ".git" in dirnames:
+                dirnames.remove(".git")
+            if ".git" in filenames:
+                filenames.remove(".git")
+        dirnames[:] = [d for d in dirnames if d not in _CACHE_DIRECTORY_NAMES]
+        if ".git" in dirnames or ".git" in filenames:
+            nested.append(current)
+            if ".git" in dirnames:
+                dirnames.remove(".git")
+    return nested
+
+
+def _reject_nested_repository_edits(worktree: Path) -> None:
+    """Fail-closed guard: reject candidate worktrees with edited nested Git identities.
+
+    Nested identities remain separate repository authorities per REQ-REPO-005.  Any internal
+    edit inside a nested identity (detected via its own ``git status --porcelain``) must be
+    rejected before the primary worktree is staged.
+    """
+
+    for nested in _nested_identity_roots(worktree):
+        if _git_lines(nested, "status", "--porcelain"):
+            raise GitError(
+                f"REQ-REPO-005 nested repository edit rejected: {nested}"
+            )
+
+
 def paths_within_allowlist(paths: list[str], patterns: list[str]) -> bool:
     if not patterns:
         return True
@@ -563,6 +605,7 @@ def commit_all(worktree: Path, message: str) -> str | None:
     closed via GitError.
     """
     _remove_untracked_cache_artifacts(worktree)
+    _reject_nested_repository_edits(worktree)
     _git(worktree, "add", "-A")
     staged = _git_lines(worktree, "diff", "--cached", "--name-only", "HEAD")
     if not staged:
