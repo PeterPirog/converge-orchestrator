@@ -166,18 +166,71 @@ def _is_inside_or_equal(child: Path, parent: Path) -> bool:
         return False
 
 
+def _lexical_relative_inside(path: Path, root: Path) -> tuple[str, str]:
+    """Return the raw and lexically-normalized repository-relative form of ``path``.
+
+    The normalization collapses ``.`` and ``..`` without resolving symlinks or
+    junctions. If the normalized path escapes ``root`` or the raw and normalized
+    forms differ, a ``ValueError`` is raised so callers can fail closed.
+    """
+    root_abs = root.expanduser().resolve()
+    target_abs = path.expanduser()
+    if not target_abs.is_absolute():
+        target_abs = Path.cwd() / target_abs
+    if target_abs.drive != root_abs.drive:
+        raise ValueError("path is on a different drive than the repository root")
+    root_parts = root_abs.parts
+    if target_abs.parts[: len(root_parts)] != root_parts:
+        raise ValueError("path is outside the repository root")
+    rel_parts = target_abs.parts[len(root_parts) :]
+    raw_rel = "/".join(rel_parts) if rel_parts else "."
+    normalized: list[str] = []
+    for part in rel_parts:
+        if part == ".":
+            continue
+        if part == "..":
+            if not normalized:
+                raise ValueError("path escapes the repository root")
+            normalized.pop()
+            continue
+        normalized.append(part)
+    norm_rel = "/".join(normalized) if normalized else "."
+    if norm_rel != raw_rel:
+        raise ValueError("path contains parent-directory or dot references")
+    return raw_rel, norm_rel
+
+
 def resolve_repository_identity(path: Path) -> str:
     """Return the deterministic Git repository identity that owns ``path``.
 
-    The identity is equal for every independent clone and linked worktree of the
-    same repository and distinct across unrelated repositories, submodules,
-    foreign worktrees, or external repository mounts. It is derived only from
-    local Git metadata (the resolved Git common directory) and never performs
-    network, model, provider, or fetch operations.
+    The identity is equal for the primary working tree and all linked worktrees
+    that share the same Git common directory; independent clones of the same
+    repository resolve distinct identities (cross-clone equivalence is provided by
+    ``mutation_domain_id``). It is distinct across unrelated repositories,
+    submodules, foreign worktrees, or external repository mounts, and is derived
+    only from local Git metadata (the resolved Git common directory). It never
+    performs network, model, provider, or fetch operations.
     """
     target = path.expanduser().resolve()
     cwd = target.parent if target.is_file() else target
-    return _git_common_dir(cwd).as_posix()
+
+    # Nonexistent planned paths are resolved by walking up to the nearest existing
+    # directory so the predicate stays fail-closed instead of leaking raw OSError.
+    ancestor = cwd
+    while ancestor is not None and not ancestor.exists():
+        parent = ancestor.parent
+        ancestor = None if parent == ancestor else parent
+    if ancestor is None or not ancestor.is_dir():
+        raise WorkspaceAffinityError(
+            f"Unable to resolve Git repository identity for {path}: "
+            "no existing directory ancestor"
+        )
+    try:
+        return _git_common_dir(ancestor).as_posix()
+    except (OSError, WorkspaceAffinityError) as exc:
+        raise WorkspaceAffinityError(
+            f"Unable to resolve Git repository identity for {path}"
+        ) from exc
 
 
 def _find_nested_root(
@@ -187,7 +240,9 @@ def _find_nested_root(
 
     The returned path is still expressed inside ``primary_root`` (e.g. the mount
     point of an external repository), so it can be matched against project
-    ``allowed_paths``.
+    ``allowed_paths``. For a repository nested inside another nested repository,
+    this returns the outermost enclosing separate root; explicit authority for
+    that root is required.
     """
     current = path_logical
     if current.is_file():
@@ -217,6 +272,10 @@ def assert_nested_repository_authority(
     name the nested root rather than being implied by authority over the primary
     target repository.
 
+    ``allowed_paths`` are interpreted using the same fnmatch semantics as the
+    existing scope allowlist, so a broad glob such as ``vendor/**`` authorizes
+    editing any nested identity underneath it.
+
     This predicate fails closed: a missing ``allowed_paths`` or a path whose
     repository identity differs from ``repo_root`` and is not covered by the
     project's ``allowed_paths`` raises ``WorkspaceAffinityError``.
@@ -235,12 +294,15 @@ def assert_nested_repository_authority(
     if primary_identity == target_identity:
         return
 
+    # Paths inside a separate repository identity must be represented by a
+    # traversal-safe repository-relative form. Lexical normalization catches
+    # parent-directory tricks that would otherwise match a broad allowlist.
     try:
-        rel_path = target_logical.relative_to(primary_root).as_posix()
+        rel_path, _ = _lexical_relative_inside(target_logical, primary_root)
     except ValueError as exc:
         raise WorkspaceAffinityError(
             f"Project {project.get('id', '<unknown>')} may not edit {path}: "
-            f"separate repository identity outside {repo_root} is not named in allowed_paths."
+            f"separate repository identity outside {repo_root} is rejected."
         ) from exc
 
     allowed_paths = project.get("allowed_paths", [])
