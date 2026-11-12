@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -153,6 +154,34 @@ def _postgres_stage_dir(root: Path, confirmation_token: str) -> Path:
     )
 
 
+_TRANSACTION_TIMEOUT_GUARD_PATTERN = re.compile(
+    rb"^SET[ \t]+transaction_timeout[ \t]*=[ \t]*0[ \t]*;(?:[ \t]*\r?\n|[ \t]*$)",
+    re.MULTILINE,
+)
+
+
+def _strip_unsupported_transaction_timeout_guard(script: Path) -> int:
+    """Remove the PostgreSQL-17-only session guard from a materialized restore script.
+
+    pg_dump/pg_restore clients of major version >=17 emit the fixed session
+    directive ``SET transaction_timeout = 0;`` at the top of generated restore
+    SQL. The pinned supported restore target (PostgreSQL 16) does not implement
+    the parameter, so the fail-closed restore (``--set=ON_ERROR_STOP=1``) aborts
+    before any schema or data statement is applied. Removing only this complete
+    line is semantically neutral on every supported server: PostgreSQL 16 has no
+    such parameter and PostgreSQL >=17 defaults ``transaction_timeout`` to zero.
+    The removal is byte-exact (only whole matching lines disappear), idempotent,
+    and returns the number of removed lines.
+    """
+
+    data = script.read_bytes()
+    stripped, removed = _TRANSACTION_TIMEOUT_GUARD_PATTERN.subn(b"", data)
+    if removed == 0:
+        return 0
+    script.write_bytes(stripped)
+    return removed
+
+
 def _materialize_restore_script(
     *,
     root: Path,
@@ -189,6 +218,13 @@ def _materialize_restore_script(
     if _link_like(script) or not script.is_file():
         _remove_stage(stage)
         raise RestoreApplyError("pg_restore did not produce a safe restore script")
+    try:
+        _strip_unsupported_transaction_timeout_guard(script)
+    except OSError as exc:
+        _remove_stage(stage)
+        raise RestoreApplyError(
+            "restore script version-guard normalization could not be staged"
+        ) from exc
     try:
         with script.open("ab") as handle:
             handle.write(
