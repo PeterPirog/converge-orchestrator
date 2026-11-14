@@ -100,13 +100,17 @@ def _origin_remote_exists(repo: Path) -> bool:
     """Return True when an ``origin`` remote is configured in ``repo``.
 
     This is a non-network probe: it only reads local Git configuration.
+    Returns False if the repository path doesn't exist or git is unavailable.
     """
-    result = run(
-        ["git", "remote", "get-url", "origin"],
-        cwd=repo,
-        timeout=60,
-    )
-    return result.returncode == 0
+    try:
+        result = run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo,
+            timeout=60,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def resolve_base_ref(repo: Path, base_branch: str) -> str:
