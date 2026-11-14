@@ -205,6 +205,7 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
 
     # Create a separate submodule repository
     submodule_repo = tmp_path / "submodule-repo"
+    submodule_repo.mkdir(parents=True, exist_ok=True)
     _run_git(submodule_repo, "init", "--bare", "--initial-branch=main")
     _run_git(submodule_repo, "config", "user.email", "sub@example.invalid")
     _run_git(submodule_repo, "config", "user.name", "Submodule")
