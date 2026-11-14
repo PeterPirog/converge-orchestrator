@@ -209,8 +209,9 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     _run_git(submodule_bare, "init", "--bare", "--initial-branch=main")
 
     # Clone the bare repo to create the submodule working repository
+    # Clone must be run from parent directory (tmp_path), not from submodule_repo
     submodule_repo = tmp_path / "submodule-repo"
-    _run_git(submodule_repo, "clone", str(submodule_bare), "submodule-repo")
+    _run_git(tmp_path, "clone", str(submodule_bare), "submodule-repo")
     _run_git(submodule_repo, "config", "user.email", "sub@example.invalid")
     _run_git(submodule_repo, "config", "user.name", "Submodule")
     (submodule_repo / "lib_file.txt").write_text("lib content\n", encoding="utf-8")
