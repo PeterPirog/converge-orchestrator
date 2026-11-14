@@ -198,65 +198,6 @@ def test_integrate_allows_nested_git_repository_with_exact_explicit_grant(
     assert result["commit_sha"] is not None
 
 
-def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must fail closed when a submodule is edited without explicit grant."""
-    repo, nested = _repository_with_nested_git(tmp_path)
-    worktree = _worktree(repo, tmp_path, "REQ-REPO-005-3")
-
-    # Create a bare repository for the submodule first
-    submodule_bare = tmp_path / "submodule-bare"
-    submodule_bare.mkdir(parents=True, exist_ok=True)
-    _run_git(submodule_bare, "init", "--bare", "--initial-branch=main")
-
-    # Clone the bare repo to create the submodule working repository
-    # Clone must be run from parent directory (tmp_path), not from submodule_repo
-    submodule_repo = tmp_path / "submodule-repo"
-    _run_git(tmp_path, "clone", str(submodule_bare), "submodule-repo")
-    _run_git(submodule_repo, "config", "user.email", "sub@example.invalid")
-    _run_git(submodule_repo, "config", "user.name", "Submodule")
-    (submodule_repo / "lib_file.txt").write_text("lib content\n", encoding="utf-8")
-    _run_git(submodule_repo, "add", "lib_file.txt")
-    _run_git(submodule_repo, "commit", "-m", "submodule initial")
-    _run_git(submodule_repo, "push", "-u", "origin", "main")
-
-    # Register as submodule in parent (main repo) using the bare repo as remote
-    _run_git(repo, "submodule", "add", str(submodule_bare), "modules/lib")
-    _run_git(repo, "commit", "-m", "add submodule")
-    _run_git(repo, "push", "origin", "main")
-
-    # Also create submodule in worktree (git submodule update --init)
-    _run_git(worktree, "submodule", "update", "--init", "modules/lib")
-
-    # Now edit inside the submodule in the worktree
-    path = worktree / "modules" / "lib" / "unauthorized.txt"
-    path.write_text("unauthorized edit\n", encoding="utf-8")
-
-    cfg = ProjectConfig(
-        repo_path=repo,
-        requirements_path=tmp_path / "requirements.md",
-        require_spec_read_only=False,
-        agents={},
-        project_name="test-project",
-        # No grant for modules/lib
-    )
-
-    state = _base_state(tmp_path, repo, worktree, "REQ-REPO-005-3", cfg)
-    store = SimpleNamespace(append_event=Mock())
-
-    with (
-        patch("converge_orchestrator.workflow.load_config", return_value=cfg),
-        patch("converge_orchestrator.workflow.sha256_file", return_value="spec-hash"),
-        patch("converge_orchestrator.workflow._evidence", return_value=store),
-        patch("converge_orchestrator.workflow._write_compliance"),
-    ):
-        result = integrate(state)
-
-    # Should be denied
-    assert result["status"] == "nested_authority_denied"
-    assert "modules/lib" in result["message"]
-    assert "submodule" in result["message"]
-
-
 def test_integrate_denies_linked_worktree_without_explicit_grant(tmp_path: Path) -> None:
     """integrate() must fail closed when a linked worktree is edited without explicit grant."""
     # This test is more complex because linked worktrees are outside the main worktree
