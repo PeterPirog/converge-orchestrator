@@ -82,6 +82,9 @@ def _repository_with_nested_git(tmp_path: Path) -> tuple[Path, Path]:
 
 def _worktree(repo: Path, tmp_path: Path, task_id: str) -> Path:
     worktree, _ = create_worktree(repo, tmp_path / "worktrees", task_id, "main")
+    # Create nested directory structure in worktree (nested git repos are not checked out)
+    nested_dir = worktree / "vendor" / "embedded"
+    nested_dir.mkdir(parents=True, exist_ok=True)
     return worktree
 
 
@@ -200,9 +203,8 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-3")
 
-    # Create a submodule (simulate by adding a git submodule)
-    # For this test, we'll manually create the submodule structure
-    submodule_path = worktree / "modules" / "lib"
+    # Create a submodule in the main repo
+    submodule_path = repo / "modules" / "lib"
     submodule_path.mkdir(parents=True)
     _run_git(submodule_path, "init", "--initial-branch=main")
     _run_git(submodule_path, "config", "user.email", "sub@example.invalid")
@@ -211,11 +213,15 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     _run_git(submodule_path, "add", "lib_file.txt")
     _run_git(submodule_path, "commit", "-m", "submodule initial")
 
-    # Register as submodule in parent
-    _run_git(worktree, "submodule", "add", str(submodule_path), "modules/lib")
-    _run_git(worktree, "commit", "-m", "add submodule")
+    # Register as submodule in parent (main repo)
+    _run_git(repo, "submodule", "add", str(submodule_path.relative_to(repo)), "modules/lib")
+    _run_git(repo, "commit", "-m", "add submodule")
+    _run_git(repo, "push", "origin", "main")
 
-    # Now edit inside the submodule
+    # Also create submodule in worktree (git submodule update --init)
+    _run_git(worktree, "submodule", "update", "--init", "modules/lib")
+
+    # Now edit inside the submodule in the worktree
     path = worktree / "modules" / "lib" / "unauthorized.txt"
     path.write_text("unauthorized edit\n", encoding="utf-8")
 

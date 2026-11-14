@@ -218,6 +218,56 @@ def _submodule_paths(repo: Path) -> dict[str, str]:
     return result
 
 
+def _nested_git_repositories_in_worktree(worktree: Path, repo: Path) -> dict[str, str]:
+    """Return nested Git repository paths mapped to their identity class.
+
+    A nested Git repository is a directory containing a .git directory (or .git file
+    pointing to a git dir) that is not the main repository's .git directory and not
+    a registered linked worktree.
+
+    Returns a mapping from repository-relative path to the identity class string
+    "nested_git_repository".
+
+    Detection checks both the main repository's working directory and the worktree,
+    since nested repositories may be present in either location.
+    """
+    repo_root = repo.resolve()
+    worktree_root = worktree.resolve()
+    result: dict[str, str] = {}
+
+    # Check main repo
+    for git_dir in repo_root.rglob(".git"):
+        if not git_dir.exists():
+            continue
+        nested_root = git_dir.parent
+        if nested_root == repo_root:
+            continue
+        if repo_root in nested_root.parents:
+            try:
+                rel_path = nested_root.relative_to(repo_root).as_posix()
+            except ValueError:
+                continue
+            if rel_path and not rel_path.startswith("."):
+                result[rel_path] = "nested_git_repository"
+
+    # Check worktree (in case nested repo was checked out there)
+    for git_dir in worktree_root.rglob(".git"):
+        if not git_dir.exists():
+            continue
+        nested_root = git_dir.parent
+        if nested_root == worktree_root:
+            continue
+        if repo_root in nested_root.parents:
+            try:
+                rel_path = nested_root.relative_to(repo_root).as_posix()
+            except ValueError:
+                continue
+            if rel_path and not rel_path.startswith("."):
+                result[rel_path] = "nested_git_repository"
+
+    return result
+
+
 def _nested_git_repositories(repo: Path) -> dict[str, str]:
     """Return nested Git repository paths mapped to their identity class.
 
@@ -259,7 +309,10 @@ def _linked_worktree_boundaries(worktree: Path, repo: Path) -> dict[str, str]:
     """
     repo_root = repo.resolve()
     worktree_root = worktree.resolve()
-    entries = _worktree_entries(repo)
+    try:
+        entries = _worktree_entries(repo)
+    except GitError:
+        return {}
     result: dict[str, str] = {}
     for wt_path in entries:
         wt_resolved = wt_path.resolve()
@@ -288,12 +341,11 @@ def detect_nested_repository_boundaries(
 
     The detection is conservative: it only identifies boundaries that can be
     deterministically discovered from Git metadata. Nested git repositories
-    are detected in the main repository's working directory since they are
-    part of the main repo's structure.
+    are detected in both the main repository's working directory and the worktree.
     """
     boundaries: dict[str, str] = {}
     boundaries.update(_submodule_paths(repo))
-    boundaries.update(_nested_git_repositories(repo))
+    boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
     boundaries.update(_linked_worktree_boundaries(worktree, repo))
     return boundaries
 
