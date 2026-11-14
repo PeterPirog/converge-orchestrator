@@ -155,7 +155,7 @@ def test_integrate_denies_nested_git_repository_without_explicit_grant(
     # Should be denied with nested_authority_denied status
     assert result["status"] == "nested_authority_denied"
     assert result["commit_sha"] is None
-    assert "nested_repository_authority_denied" in result["message"]
+    assert "Nested repository identity authority denied" in result["message"]
     assert "vendor/embedded" in result["message"]
     assert "primary_target_authority_not_transitive_to_nested_identity" in result["message"]
     assert "nested_identity_explicit_grant_missing_or_mismatched" in result["message"]
@@ -203,18 +203,17 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-3")
 
-    # Create a submodule in the main repo
-    submodule_path = repo / "modules" / "lib"
-    submodule_path.mkdir(parents=True)
-    _run_git(submodule_path, "init", "--initial-branch=main")
-    _run_git(submodule_path, "config", "user.email", "sub@example.invalid")
-    _run_git(submodule_path, "config", "user.name", "Submodule")
-    (submodule_path / "lib_file.txt").write_text("lib content\n", encoding="utf-8")
-    _run_git(submodule_path, "add", "lib_file.txt")
-    _run_git(submodule_path, "commit", "-m", "submodule initial")
+    # Create a separate submodule repository
+    submodule_repo = tmp_path / "submodule-repo"
+    _run_git(submodule_repo, "init", "--bare", "--initial-branch=main")
+    _run_git(submodule_repo, "config", "user.email", "sub@example.invalid")
+    _run_git(submodule_repo, "config", "user.name", "Submodule")
+    (submodule_repo / "lib_file.txt").write_text("lib content\n", encoding="utf-8")
+    _run_git(submodule_repo, "add", "lib_file.txt")
+    _run_git(submodule_repo, "commit", "-m", "submodule initial")
 
     # Register as submodule in parent (main repo)
-    _run_git(repo, "submodule", "add", str(submodule_path.relative_to(repo)), "modules/lib")
+    _run_git(repo, "submodule", "add", str(submodule_repo), "modules/lib")
     _run_git(repo, "commit", "-m", "add submodule")
     _run_git(repo, "push", "origin", "main")
 
