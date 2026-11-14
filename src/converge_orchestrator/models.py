@@ -425,6 +425,8 @@ class ProjectConfig(BaseModel):
     auto_merge: bool = False
     merge_method: Literal["merge", "squash", "rebase"] = "squash"
     require_spec_read_only: bool = True
+    nested_repository_boundaries: dict[str, str] = Field(default_factory=dict)
+    project_authority_grants: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
