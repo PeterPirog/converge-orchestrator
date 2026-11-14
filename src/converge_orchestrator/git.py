@@ -627,7 +627,7 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     """
     try:
         base_ref = resolve_base_ref(worktree, base_branch)
-    except GitError:
+    except (GitError, OSError):
         return []
     names: set[str] = set()
     for args in (
@@ -636,11 +636,11 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     ):
         try:
             names.update(_git_lines(worktree, *args))
-        except GitError:
+        except (GitError, OSError):
             pass
     try:
         names.update(_git_lines(worktree, "ls-files", "--others", "--exclude-standard"))
-    except GitError:
+    except (GitError, OSError):
         pass
     return sorted(
         name for name in names if not is_deterministic_cache_artifact(name)
