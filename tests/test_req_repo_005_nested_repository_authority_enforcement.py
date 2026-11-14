@@ -215,6 +215,7 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
 
     # Create a bare clone for the submodule remote
     submodule_bare = tmp_path / "submodule-bare"
+    submodule_bare.mkdir(parents=True, exist_ok=True)
     _run_git(submodule_bare, "init", "--bare", "--initial-branch=main")
     _run_git(submodule_repo, "remote", "add", "origin", str(submodule_bare))
     _run_git(submodule_repo, "push", "-u", "origin", "main")
