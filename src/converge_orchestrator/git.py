@@ -618,16 +618,26 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     count as candidate changes. Untracked files are enumerated individually with
     `ls-files --others --exclude-standard` -- the same per-file guarantee as
     `status --porcelain -uall`, so per-file cache-artifact filtering stays exact.
-    """
 
-    base_ref = resolve_base_ref(worktree, base_branch)
+    If the worktree is not a valid git repository, returns an empty list (no changes).
+    """
+    try:
+        base_ref = resolve_base_ref(worktree, base_branch)
+    except GitError:
+        return []
     names: set[str] = set()
     for args in (
         ("diff", "--name-only", f"{base_ref}...HEAD"),
         ("diff", "--name-only", "HEAD"),
     ):
-        names.update(_git_lines(worktree, *args))
-    names.update(_git_lines(worktree, "ls-files", "--others", "--exclude-standard"))
+        try:
+            names.update(_git_lines(worktree, *args))
+        except GitError:
+            pass
+    try:
+        names.update(_git_lines(worktree, "ls-files", "--others", "--exclude-standard"))
+    except GitError:
+        pass
     return sorted(
         name for name in names if not is_deterministic_cache_artifact(name)
     )
