@@ -29,7 +29,6 @@ from .git import (
     resolve_canonical_base_revision,
     update_base,
 )
-from .repository_identity_authority import evaluate_nested_repository_identity_authority
 from .github import GitHubAdapter
 from .models import (
     ComplianceSnapshot,
@@ -44,6 +43,7 @@ from .opencode import OpenCodeAdapter
 from .policy import BLOCKING_RISK_FLAGS, DecisionKind, can_integrate
 from .prompts import builder_prompt, planner_prompt, repair_prompt, reviewer_prompt
 from .quality import required_gates_pass, run_quality_gates, run_scope_gate
+from .repository_identity_authority import evaluate_nested_repository_identity_authority
 from .review_scope import scope_review
 from .risk import classify_repository_risk
 from .spec import compile_contract, is_read_only, sha256_file, write_contract
@@ -1335,13 +1335,15 @@ def integrate(state: WorkflowState) -> WorkflowState:
                         "denied_boundaries": denied,
                     },
                 )
+                denied_msg = ", ".join(
+                    f"{path} ({', '.join(clauses)})" for path, clauses in denied.items()
+                )
                 next_state: WorkflowState = {
                     **state,
                     "commit_sha": None,
                     "status": "nested_authority_denied",
                     "message": (
-                        "Nested repository identity authority denied: "
-                        + ", ".join(f"{path} ({', '.join(clauses)})" for path, clauses in denied.items())
+                        "Nested repository identity authority denied: " + denied_msg
                     ),
                 }
                 return next_state

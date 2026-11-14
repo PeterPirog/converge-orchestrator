@@ -85,7 +85,9 @@ def _worktree(repo: Path, tmp_path: Path, task_id: str) -> Path:
     return worktree
 
 
-def _base_state(tmp_path: Path, repo: Path, worktree: Path, task_id: str, cfg: ProjectConfig) -> dict:
+def _base_state(
+    tmp_path: Path, repo: Path, worktree: Path, task_id: str, cfg: ProjectConfig
+) -> dict:
     """Create a base workflow state for integrate()."""
     requirements = tmp_path / "requirements.md"
     requirements.write_text("immutable\n", encoding="utf-8")
@@ -116,13 +118,16 @@ def _base_state(tmp_path: Path, repo: Path, worktree: Path, task_id: str, cfg: P
     }
 
 
-def test_integrate_denies_nested_git_repository_without_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must fail closed when a nested Git repository is edited without explicit grant."""
+def test_integrate_denies_nested_git_repository_without_explicit_grant(
+    tmp_path: Path,
+) -> None:
+    """integrate() must fail closed when a nested Git repo is edited without grant."""
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-1")
 
     # Edit a file inside the nested Git repository (simulating unauthorized edit)
-    (worktree / "vendor" / "embedded" / "unauthorized.txt").write_text("unauthorized edit\n", encoding="utf-8")
+    path = worktree / "vendor" / "embedded" / "unauthorized.txt"
+    path.write_text("unauthorized edit\n", encoding="utf-8")
 
     cfg = ProjectConfig(
         repo_path=repo,
@@ -153,13 +158,16 @@ def test_integrate_denies_nested_git_repository_without_explicit_grant(tmp_path:
     assert "nested_identity_explicit_grant_missing_or_mismatched" in result["message"]
 
 
-def test_integrate_allows_nested_git_repository_with_exact_explicit_grant(tmp_path: Path) -> None:
+def test_integrate_allows_nested_git_repository_with_exact_explicit_grant(
+    tmp_path: Path,
+) -> None:
     """integrate() must allow edits when explicit project authority grant matches exactly."""
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-2")
 
     # Edit a file inside the nested Git repository
-    (worktree / "vendor" / "embedded" / "authorized.txt").write_text("authorized edit\n", encoding="utf-8")
+    path = worktree / "vendor" / "embedded" / "authorized.txt"
+    path.write_text("authorized edit\n", encoding="utf-8")
 
     cfg = ProjectConfig(
         repo_path=repo,
@@ -208,7 +216,8 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     _run_git(worktree, "commit", "-m", "add submodule")
 
     # Now edit inside the submodule
-    (worktree / "modules" / "lib" / "unauthorized.txt").write_text("unauthorized edit\n", encoding="utf-8")
+    path = worktree / "modules" / "lib" / "unauthorized.txt"
+    path.write_text("unauthorized edit\n", encoding="utf-8")
 
     cfg = ProjectConfig(
         repo_path=repo,
@@ -292,7 +301,8 @@ def test_integrate_denies_mismatched_grant(tmp_path: Path) -> None:
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-6")
 
-    (worktree / "vendor" / "embedded" / "unauthorized.txt").write_text("unauthorized edit\n", encoding="utf-8")
+    path = worktree / "vendor" / "embedded" / "unauthorized.txt"
+    path.write_text("unauthorized edit\n", encoding="utf-8")
 
     cfg = ProjectConfig(
         repo_path=repo,
@@ -326,7 +336,8 @@ def test_integrate_denies_empty_grant(tmp_path: Path) -> None:
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-7")
 
-    (worktree / "vendor" / "embedded" / "unauthorized.txt").write_text("unauthorized edit\n", encoding="utf-8")
+    path = worktree / "vendor" / "embedded" / "unauthorized.txt"
+    path.write_text("unauthorized edit\n", encoding="utf-8")
 
     cfg = ProjectConfig(
         repo_path=repo,
