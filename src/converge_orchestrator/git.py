@@ -329,6 +329,7 @@ def _linked_worktree_boundaries(worktree: Path, repo: Path) -> dict[str, str]:
 def detect_nested_repository_boundaries(
     worktree: Path,
     repo: Path,
+    configured_boundaries: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Detect all nested repository boundaries in a worktree.
 
@@ -342,11 +343,25 @@ def detect_nested_repository_boundaries(
     The detection is conservative: it only identifies boundaries that can be
     deterministically discovered from Git metadata. Nested git repositories
     are detected in both the main repository's working directory and the worktree.
+
+    Configured boundaries (from project_authority_grants) are merged with
+    auto-detected boundaries. If a configured boundary conflicts with an
+    auto-detected one (different identity class), the function raises an error.
     """
     boundaries: dict[str, str] = {}
     boundaries.update(_submodule_paths(repo))
     boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
     boundaries.update(_linked_worktree_boundaries(worktree, repo))
+
+    if configured_boundaries:
+        for path, identity in configured_boundaries.items():
+            if path in boundaries and boundaries[path] != identity:
+                raise ValueError(
+                    f"Configured boundary '{path}' has identity '{identity}' "
+                    f"but auto-detected identity is '{boundaries[path]}'"
+                )
+            boundaries[path] = identity
+
     return boundaries
 
 
