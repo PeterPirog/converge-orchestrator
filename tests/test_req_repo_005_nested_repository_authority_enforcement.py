@@ -203,7 +203,7 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-3")
 
-    # Create a separate submodule repository (regular, not bare)
+    # Create a separate submodule repository
     submodule_repo = tmp_path / "submodule-repo"
     submodule_repo.mkdir(parents=True, exist_ok=True)
     _run_git(submodule_repo, "init", "--initial-branch=main")
@@ -213,15 +213,8 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
     _run_git(submodule_repo, "add", "lib_file.txt")
     _run_git(submodule_repo, "commit", "-m", "submodule initial")
 
-    # Create a bare clone for the submodule remote
-    submodule_bare = tmp_path / "submodule-bare"
-    submodule_bare.mkdir(parents=True, exist_ok=True)
-    _run_git(submodule_bare, "init", "--bare", "--initial-branch=main")
-    _run_git(submodule_repo, "remote", "add", "origin", str(submodule_bare))
-    _run_git(submodule_repo, "push", "-u", "origin", "main")
-
-    # Register as submodule in parent (main repo) using the bare repo as remote
-    _run_git(repo, "submodule", "add", str(submodule_bare), "modules/lib")
+    # Register as submodule in parent (main repo) using the local path
+    _run_git(repo, "submodule", "add", str(submodule_repo), "modules/lib")
     _run_git(repo, "commit", "-m", "add submodule")
     _run_git(repo, "push", "origin", "main")
 
