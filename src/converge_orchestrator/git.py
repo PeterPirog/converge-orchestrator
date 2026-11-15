@@ -351,11 +351,17 @@ def detect_nested_repository_boundaries(
     Configured boundaries (from project_authority_grants) are merged with
     auto-detected boundaries. If a configured boundary conflicts with an
     auto-detected one (different identity class), the function raises an error.
+
+    If the repository path does not exist, returns only configured boundaries
+    (since no auto-detection is possible).
     """
     boundaries: dict[str, str] = {}
-    boundaries.update(_submodule_paths(repo))
-    boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
-    boundaries.update(_linked_worktree_boundaries(worktree, repo))
+
+    # Only attempt auto-detection if the repository exists
+    if repo.exists():
+        boundaries.update(_submodule_paths(repo))
+        boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
+        boundaries.update(_linked_worktree_boundaries(worktree, repo))
 
     if configured_boundaries:
         for path, identity in configured_boundaries.items():
