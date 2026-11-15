@@ -32,7 +32,7 @@ def _config(tmp_path: Path, repo: Path) -> ProjectConfig:
     )
 
 
-def _state(tmp_path: Path, worktree: Path) -> dict:
+def _state(tmp_path: Path, worktree: Path, base_sha: str) -> dict:
     task = TaskEnvelope(
         id="ARCH-001-1",
         requirement_ids=["ARCH-001"],
@@ -56,7 +56,7 @@ def _state(tmp_path: Path, worktree: Path) -> dict:
         "branch": "converge/arch-001-1",
         "quality_results": [gate.model_dump(mode="json")],
         "compliance": ComplianceSnapshot().model_dump(mode="json"),
-        "recorded_canonical_base_revision": "base-sha",
+        "recorded_canonical_base_revision": base_sha,
     }
 
 
@@ -86,6 +86,7 @@ def test_integrate_recovers_commit_created_before_langgraph_checkpoint(
     (repo / "README.md").write_text("initial\n", encoding="utf-8")
     _run_git(repo, "add", "README.md")
     _run_git(repo, "commit", "-m", "initial")
+    base_sha = _run_git(repo, "rev-parse", "HEAD")
     _run_git(repo, "push", "-u", "origin", "main")
 
     # Create a candidate commit ahead of base
@@ -99,7 +100,7 @@ def test_integrate_recovers_commit_created_before_langgraph_checkpoint(
     _run_git(repo, "worktree", "add", str(worktree), candidate_sha)
 
     cfg = _config(tmp_path, repo)
-    state = _state(tmp_path, worktree)
+    state = _state(tmp_path, worktree, base_sha)
     # Simulate checkpoint loss: no commit_sha in state
     state.pop("commit_sha", None)
 
@@ -151,6 +152,7 @@ def test_integrate_recovers_commit_preserves_compliance(
     (repo / "README.md").write_text("initial\n", encoding="utf-8")
     _run_git(repo, "add", "README.md")
     _run_git(repo, "commit", "-m", "initial")
+    base_sha = _run_git(repo, "rev-parse", "HEAD")
     _run_git(repo, "push", "-u", "origin", "main")
 
     (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
@@ -162,7 +164,7 @@ def test_integrate_recovers_commit_preserves_compliance(
     _run_git(repo, "worktree", "add", str(worktree), candidate_sha)
 
     cfg = _config(tmp_path, repo)
-    state = _state(tmp_path, worktree)
+    state = _state(tmp_path, worktree, base_sha)
     state.pop("commit_sha", None)
 
     store = SimpleNamespace(append_event=Mock())
@@ -208,6 +210,7 @@ def test_integrate_recovers_commit_with_base_moved_denied(
     (repo / "README.md").write_text("initial\n", encoding="utf-8")
     _run_git(repo, "add", "README.md")
     _run_git(repo, "commit", "-m", "initial")
+    base_sha = _run_git(repo, "rev-parse", "HEAD")
     _run_git(repo, "push", "-u", "origin", "main")
 
     (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
@@ -219,7 +222,7 @@ def test_integrate_recovers_commit_with_base_moved_denied(
     _run_git(repo, "worktree", "add", str(worktree), candidate_sha)
 
     cfg = _config(tmp_path, repo)
-    state = _state(tmp_path, worktree)
+    state = _state(tmp_path, worktree, base_sha)
     state.pop("commit_sha", None)
     # Simulate base movement by recording a different base
     state["recorded_canonical_base_revision"] = "different-base-sha"
