@@ -48,6 +48,22 @@ class Contract(BaseModel):
     requirements: list[Requirement]
 
 
+class GitHubRepoIdentity(BaseModel):
+    """Provider-native GitHub repository identity binding.
+
+    Established at preflight and used for all subsequent GitHub mutations.
+    The textual owner/name may be used as an initial locator but must not
+    remain the sole mutation authority.
+    """
+
+    provider: Literal["GitHub"] = "GitHub"
+    host: str
+    provider_native_id: str
+    canonical_owner: str
+    canonical_name: str
+    canonical_owner_name: str
+
+
 class ModelGatewayConfig(BaseModel):
     """Model transport used by generated stable OpenCode configuration."""
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from .models import CIResult, ProjectConfig, PullRequestInfo
+from .models import CIResult, GitHubRepoIdentity, ProjectConfig, PullRequestInfo
 from .remote import RemoteValidationError, validate_origin_repository
 from .shell import run
 
@@ -72,6 +72,7 @@ def _required_checks(payload: dict[str, Any]) -> tuple[RequiredCheck, ...]:
         check = RequiredCheck(context=context)
         if check not in checks:
             checks.append(check)
+        covered_contexts.add(context)
     return tuple(checks)
 
 
@@ -147,22 +148,72 @@ def _commit_status_state(status: dict[str, Any]) -> str:
 
 
 class GitHubAdapter:
-    """GitHub API adapter using authenticated `gh api` transport."""
+    """GitHub API adapter using authenticated `gh api` transport.
 
-    def __init__(self, config: ProjectConfig):
-        if not config.github_repo:
-            raise GitHubError("github_repo is required for GitHub integration")
+    Uses provider-native repository identity binding established at preflight.
+    The textual github_repo may be used as an initial locator but must not
+    remain the sole mutation authority.
+    """
+
+    def __init__(
+        self,
+        config: ProjectConfig,
+        github_identity: GitHubRepoIdentity | None = None,
+    ):
+        if not config.github_repo and not github_identity:
+            raise GitHubError("github_repo or github_identity is required for GitHub integration")
         self.config = config
-        self.repo = config.github_repo
+        self._github_identity = github_identity
         self._origin_validated = False
+
+        # Determine the repository identifier to use for API calls
+        if github_identity:
+            # Use canonical owner/name for API calls (GitHub REST API uses owner/repo format)
+            # Provider-native ID is used for identity binding and drift detection
+            self.repo = github_identity.canonical_owner_name
+            self._bound_identity = github_identity
+            self._provider_native_id = github_identity.provider_native_id
+        else:
+            # Fallback to textual locator (legacy mode, not recommended)
+            if not config.github_repo:
+                raise GitHubError("github_repo is required for GitHub integration")
+            self.repo = config.github_repo
+            self._bound_identity = None
+            self._provider_native_id = None
+
+    @property
+    def bound_identity(self) -> GitHubRepoIdentity | None:
+        """Return the bound GitHub repository identity, if available."""
+        return self._bound_identity
+
+    @property
+    def provider_native_id(self) -> str | None:
+        """Return the provider-native repository ID, if available."""
+        return self._provider_native_id
 
     def _validate_origin(self) -> None:
         if self._origin_validated:
             return
-        try:
-            validate_origin_repository(self.config.repo_path, self.repo)
-        except RemoteValidationError as exc:
-            raise GitHubError(str(exc)) from exc
+        # Validate against the bound identity if available, otherwise use textual repo
+        if self._bound_identity:
+            # Validate that the local origin matches the bound identity
+            try:
+                # We can't directly validate against provider-native ID via git remote,
+                # but we can validate the textual owner/name matches
+                owner = self._bound_identity.canonical_owner
+                name = self._bound_identity.canonical_name
+                expected_slug = f"{owner}/{name}"
+                validate_origin_repository(self.config.repo_path, expected_slug)
+            except RemoteValidationError as exc:
+                raise GitHubError(
+                    f"Origin validation failed against bound identity: {exc}"
+                ) from exc
+        else:
+            # Legacy validation using textual github_repo
+            try:
+                validate_origin_repository(self.config.repo_path, self.repo)
+            except RemoteValidationError as exc:
+                raise GitHubError(str(exc)) from exc
         self._origin_validated = True
 
     def _gh(self, args: list[str], cwd: Path | None = None, timeout: int = 300) -> str:

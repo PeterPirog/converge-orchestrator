@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from .models import GitHubRepoIdentity
 
 
 class PreflightError(RuntimeError):
@@ -17,6 +20,7 @@ class PreflightResult:
     remote_configured: bool
     remote_url: str | None
     clean: bool
+    github_identity: GitHubRepoIdentity | None = None
 
 
 _OVERLAP_PAIRS = [
@@ -113,6 +117,79 @@ def _validate_authority_paths(paths: dict[str, Path]) -> None:
             raise PreflightError(f"{b}_overlaps_{a}")
 
 
+def _fetch_github_repo_identity(repo: Path, remote_url: str) -> GitHubRepoIdentity | None:
+    """Fetch provider-native GitHub repository identity from GitHub API.
+
+    Uses the gh CLI to fetch repository metadata including the provider-native ID.
+    Fails closed if the repository cannot be resolved or metadata is malformed.
+    """
+    try:
+        # Extract owner/repo from remote URL
+        from .remote import repository_slug_from_remote
+        repo_slug = repository_slug_from_remote(remote_url)
+    except Exception as exc:
+        raise PreflightError(f"Failed to extract repository slug from remote: {exc}") from exc
+
+    # Use gh CLI to fetch repository metadata
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo_slug}", "--jq", "{id,owner.login,name,full_name}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise PreflightError(
+            f"Failed to fetch GitHub repository metadata for {repo_slug}: {exc.stderr.strip()}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise PreflightError(f"GitHub API request timed out for {repo_slug}") from exc
+    except FileNotFoundError as exc:
+        raise PreflightError("gh CLI not found; required for GitHub identity binding") from exc
+
+    try:
+        metadata = json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise PreflightError(f"GitHub API returned invalid JSON for {repo_slug}") from exc
+
+    # Validate required fields
+    provider_native_id = metadata.get("id")
+    owner_login = metadata.get("owner", {}).get("login")
+    repo_name = metadata.get("name")
+    full_name = metadata.get("full_name")
+
+    if not provider_native_id:
+        raise PreflightError(f"GitHub API response missing provider-native ID for {repo_slug}")
+    if not owner_login:
+        raise PreflightError(f"GitHub API response missing owner for {repo_slug}")
+    if not repo_name:
+        raise PreflightError(f"GitHub API response missing repository name for {repo_slug}")
+    if not full_name:
+        raise PreflightError(f"GitHub API response missing full_name for {repo_slug}")
+
+    # Validate that the fetched identity matches the expected owner/repo
+    expected_owner, expected_repo = repo_slug.split("/", 1)
+    if owner_login.casefold() != expected_owner.casefold():
+        raise PreflightError(
+            f"GitHub API returned owner {owner_login} but remote indicates {expected_owner}"
+        )
+    if repo_name.casefold() != expected_repo.casefold():
+        raise PreflightError(
+            f"GitHub API returned repo name {repo_name} but remote indicates {expected_repo}"
+        )
+
+    return GitHubRepoIdentity(
+        provider="GitHub",
+        host="github.com",
+        provider_native_id=str(provider_native_id),
+        canonical_owner=owner_login,
+        canonical_name=repo_name,
+        canonical_owner_name=full_name,
+    )
+
+
 def repository_preflight(
     repository_path: Path,
     *,
@@ -145,10 +222,23 @@ def repository_preflight(
     )
     remote_url = _remote_url(repo)
 
+    # Fetch and bind provider-native GitHub repository identity
+    github_identity: GitHubRepoIdentity | None = None
+    if remote_url:
+        try:
+            github_identity = _fetch_github_repo_identity(repo, remote_url)
+        except PreflightError:
+            # Re-raise preflight errors (fail closed)
+            raise
+        except Exception as exc:
+            # Any other error is a fail-closed condition
+            raise PreflightError(f"Failed to bind GitHub repository identity: {exc}") from exc
+
     return PreflightResult(
         identity=identity,
         base_branch_exists=_local_branch_exists(repo, base_branch),
         remote_configured=remote_url is not None,
         remote_url=remote_url,
         clean=_is_clean(repo),
+        github_identity=github_identity,
     )
