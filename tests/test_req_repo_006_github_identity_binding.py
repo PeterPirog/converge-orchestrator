@@ -10,14 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
 import pytest
-
-from converge_orchestrator.github import GitHubAdapter
-from converge_orchestrator.models import ProjectConfig
-from converge_orchestrator.preflight import PreflightError, PreflightResult, repository_preflight
 
 
 @dataclass(frozen=True)
@@ -78,7 +72,9 @@ class TestReqRepo006MutationUsesBoundIdentity:
     def test_create_pr_uses_bound_identity(self, tmp_path: Path) -> None:
         """create_pull_request must target bound repository identity."""
         with pytest.raises(NotImplementedError):
-            raise NotImplementedError("create_pull_request using bound identity not yet implemented")
+            raise NotImplementedError(
+                "create_pull_request using bound identity not yet implemented"
+            )
 
     def test_close_pr_uses_bound_identity(self, tmp_path: Path) -> None:
         """close_pull_request must target bound repository identity."""
