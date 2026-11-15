@@ -13,6 +13,27 @@ class RemoteValidationError(RuntimeError):
     pass
 
 
+def _is_github_remote(remote_url: str) -> bool:
+    """Check if a remote URL points to github.com."""
+    raw = remote_url.strip()
+    if not raw:
+        return False
+
+    if "://" in raw:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").casefold()
+    else:
+        scp_like = re.match(
+            r"^[^@\s]+@(?P<host>[^:\s]+):(?P<path>.+)$",
+            raw,
+        )
+        if not scp_like:
+            return False
+        host = scp_like.group("host").casefold()
+
+    return host == _GITHUB_HOST
+
+
 def repository_slug_from_remote(remote_url: str) -> str:
     """Extract canonical owner/repo from supported github.com HTTPS/SSH remotes."""
     raw = remote_url.strip()
