@@ -229,17 +229,18 @@ def _nested_git_repositories_in_worktree(worktree: Path, repo: Path) -> dict[str
     pointing to a git dir) that is not the main repository's .git directory and not
     a registered linked worktree.
 
-    Returns a mapping from repository-relative path to the identity class string
+    Returns a mapping from worktree-relative path to the identity class string
     "nested_git_repository".
 
     Detection checks both the main repository's working directory and the worktree,
-    since nested repositories may be present in either location.
+    since nested repositories may be present in either location. Paths are returned
+    relative to the worktree root for consistent matching with changed_files() output.
     """
     repo_root = repo.resolve()
     worktree_root = worktree.resolve()
     result: dict[str, str] = {}
 
-    # Check main repo
+    # Check main repo (nested repos that are part of the main repo structure)
     for git_dir in repo_root.rglob(".git"):
         if not git_dir.exists():
             continue
@@ -248,26 +249,27 @@ def _nested_git_repositories_in_worktree(worktree: Path, repo: Path) -> dict[str
             continue
         if repo_root in nested_root.parents:
             try:
+                # Path relative to repo root (same as worktree-relative for checked-out content)
                 rel_path = nested_root.relative_to(repo_root).as_posix()
             except ValueError:
                 continue
             if rel_path and not rel_path.startswith("."):
                 result[rel_path] = "nested_git_repository"
 
-    # Check worktree (in case nested repo was checked out there)
+    # Check worktree (nested repos that exist only in the worktree, not in main repo)
     for git_dir in worktree_root.rglob(".git"):
         if not git_dir.exists():
             continue
         nested_root = git_dir.parent
         if nested_root == worktree_root:
             continue
-        if repo_root in nested_root.parents:
-            try:
-                rel_path = nested_root.relative_to(repo_root).as_posix()
-            except ValueError:
-                continue
-            if rel_path and not rel_path.startswith("."):
-                result[rel_path] = "nested_git_repository"
+        # For worktree-only nested repos, path must be relative to worktree root
+        try:
+            rel_path = nested_root.relative_to(worktree_root).as_posix()
+        except ValueError:
+            continue
+        if rel_path and not rel_path.startswith("."):
+            result[rel_path] = "nested_git_repository"
 
     return result
 
@@ -316,20 +318,19 @@ def detect_nested_repository_boundaries(
     deterministically discovered from Git metadata. Nested git repositories
     are detected in both the main repository's working directory and the worktree.
 
-    Configured boundaries (from project_authority_grants) are merged with
+    Configured boundaries (from nested_repository_boundaries config) are merged with
     auto-detected boundaries. If a configured boundary conflicts with an
     auto-detected one (different identity class), the function raises an error.
 
-    If the repository path does not exist, returns only configured boundaries
-    (since no auto-detection is possible).
+    If the repository path does not exist, raises GitError (fail closed).
     """
-    boundaries: dict[str, str] = {}
+    if not repo.exists():
+        raise GitError(f"Repository path does not exist: {repo}")
 
-    # Only attempt auto-detection if the repository exists
-    if repo.exists():
-        boundaries.update(_submodule_paths(repo))
-        boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
-        boundaries.update(_linked_worktree_boundaries(worktree, repo))
+    boundaries: dict[str, str] = {}
+    boundaries.update(_submodule_paths(repo))
+    boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
+    boundaries.update(_linked_worktree_boundaries(worktree, repo))
 
     if configured_boundaries:
         for path, identity in configured_boundaries.items():
@@ -597,25 +598,40 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     `ls-files --others --exclude-standard` -- the same per-file guarantee as
     `status --porcelain -uall`, so per-file cache-artifact filtering stays exact.
 
-    If the worktree is not a valid git repository, returns an empty list (no changes).
+    If the worktree is not a valid git repository or Git operations fail,
+    raises GitError (fail closed).
     """
-    try:
-        base_ref = resolve_base_ref(worktree, base_branch)
-    except (GitError, OSError):
-        return []
+    base_ref = resolve_base_ref(worktree, base_branch)
     names: set[str] = set()
     for args in (
         ("diff", "--name-only", f"{base_ref}...HEAD"),
         ("diff", "--name-only", "HEAD"),
     ):
-        try:
-            names.update(_git_lines(worktree, *args))
-        except (GitError, OSError):
-            pass
-    try:
-        names.update(_git_lines(worktree, "ls-files", "--others", "--exclude-standard"))
-    except (GitError, OSError):
-        pass
+        names.update(_git_lines(worktree, *args))
+    names.update(_git_lines(worktree, "ls-files", "--others", "--exclude-standard"))
+    return sorted(
+        name for name in names if not is_deterministic_cache_artifact(name)
+    )
+
+
+def changed_files_from_commit(worktree: Path, base_rev: str, commit_sha: str) -> list[str]:
+    """List candidate-changed files from a specific commit against a base revision.
+
+    This is used for recovery scenarios where a candidate commit was already created
+    but the process crashed before the commit SHA was persisted. The diff is computed
+    between the base revision and the specific commit SHA.
+
+    If the worktree is not a valid git repository or the commit/base is invalid,
+    raises GitError (fail closed).
+    """
+    names: set[str] = set()
+    # Get tracked changes from the commit against the base
+    for line in _git_lines(worktree, "diff", "--name-only", f"{base_rev}...{commit_sha}"):
+        names.add(line)
+    # Get tracked changes from the commit itself (in case base is not ancestor)
+    for line in _git_lines(worktree, "diff", "--name-only", f"{commit_sha}^...{commit_sha}"):
+        names.add(line)
+    # Note: No untracked files for a committed commit
     return sorted(
         name for name in names if not is_deterministic_cache_artifact(name)
     )

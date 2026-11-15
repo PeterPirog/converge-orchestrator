@@ -17,6 +17,7 @@ from .control import ControlSignals
 from .evidence import EvidenceStore
 from .git import (
     changed_files,
+    changed_files_from_commit,
     cleanup_worktree,
     commit_all,
     create_worktree,
@@ -33,6 +34,7 @@ from .github import GitHubAdapter
 from .models import (
     ComplianceSnapshot,
     GateResult,
+    ProjectConfig,
     Requirement,
     RequirementStatus,
     ReviewResult,
@@ -1280,6 +1282,64 @@ def route_after_human(state: WorkflowState) -> str:
     return "end"
 
 
+def _evaluate_nested_repository_authority(
+    cfg: ProjectConfig,
+    worktree: Path,
+    changed: list[str],
+    task_id: str,
+    run_id: str,
+    state: WorkflowState,
+) -> WorkflowState | None:
+    """Evaluate nested repository authority for changed paths.
+
+    Returns a denial state if authority is insufficient, None if allowed.
+    """
+    nested_boundaries = detect_nested_repository_boundaries(
+        worktree, cfg.repo_path, cfg.nested_repository_boundaries
+    )
+    if not nested_boundaries:
+        return None
+
+    relevant_boundaries = {
+        path: identity
+        for path, identity in nested_boundaries.items()
+        if any(change == path or change.startswith(path + "/") for change in changed)
+    }
+    if not relevant_boundaries:
+        return None
+
+    authority_state = {
+        "primary_target_authority": cfg.project_name or "primary",
+        "nested_boundaries": relevant_boundaries,
+        "project_authority_grants": cfg.project_authority_grants,
+    }
+    result = evaluate_nested_repository_identity_authority(authority_state)
+    denied = {path: clauses for path, clauses in result.items() if clauses}
+    if not denied:
+        return None
+
+    store = _evidence(state)
+    store.append_event(
+        state["run_id"],
+        "nested_repository_authority_denied",
+        {
+            "task_id": task_id,
+            "denied_boundaries": denied,
+        },
+    )
+    denied_msg = ", ".join(
+        f"{path} ({', '.join(clauses)})" for path, clauses in denied.items()
+    )
+    return {
+        **state,
+        "commit_sha": None,
+        "status": "nested_authority_denied",
+        "message": (
+            "Nested repository identity authority denied: " + denied_msg
+        ),
+    }
+
+
 def integrate(state: WorkflowState) -> WorkflowState:
     cfg = load_config(state["config_path"])
     if sha256_file(cfg.requirements_path) != state["requirements_hash"]:
@@ -1309,49 +1369,66 @@ def integrate(state: WorkflowState) -> WorkflowState:
             }
             return next_state
 
+    # Check for existing candidate commit first (recovery case)
+    existing_commit = existing_candidate_commit(worktree, cfg.base_branch)
+    if existing_commit:
+        # Recovery case: candidate commit already exists, verify authority against its diff
+        # Use the recorded canonical base revision for comparison
+        base_rev = recorded_base or resolve_canonical_base_revision(worktree, cfg.base_branch)
+        changed = changed_files_from_commit(worktree, base_rev, existing_commit)
+        if not changed:
+            # Zero diff from commit - treat as no_changes
+            pass
+        else:
+            denied_state = _evaluate_nested_repository_authority(
+                cfg, worktree, changed, task.id, state["run_id"], state
+            )
+            if denied_state:
+                return denied_state
+
+        # Recovery valid - push the existing commit
+        push(worktree, state["branch"])
+        store = _evidence(state)
+        store.append_event(
+            state["run_id"],
+            "pushed",
+            {
+                "task_id": task.id,
+                "branch": state["branch"],
+                "commit_sha": existing_commit,
+                "recovered_existing_commit": True,
+            },
+        )
+        compliance = ComplianceSnapshot.model_validate(state["compliance"])
+        gates = [GateResult.model_validate(item) for item in state["quality_results"]]
+        if required_gates_pass(gates):
+            compliance = ComplianceEngine.mark_local_pass(
+                compliance,
+                task.requirement_ids,
+                [f"local-gates:{state['run_id']}:{task.id}", "independent-review:pass"],
+            )
+        else:
+            compliance = ComplianceSnapshot.model_validate(state["compliance"])
+        next_state: WorkflowState = {
+            **state,
+            "commit_sha": existing_commit,
+            "status": "pushed",
+            "message": "Recovered existing candidate commit and pushed.",
+            "compliance": compliance.model_dump(mode="json"),
+        }
+        _write_compliance(next_state, compliance)
+        return next_state
+
+    # Normal case: no existing candidate commit
     changed = changed_files(worktree, cfg.base_branch)
     if not changed:
         pass
     else:
-        nested_boundaries = detect_nested_repository_boundaries(
-            worktree, cfg.repo_path, cfg.nested_repository_boundaries
+        denied_state = _evaluate_nested_repository_authority(
+            cfg, worktree, changed, task.id, state["run_id"], state
         )
-        if nested_boundaries:
-            relevant_boundaries = {
-                path: identity
-                for path, identity in nested_boundaries.items()
-                if any(change == path or change.startswith(path + "/") for change in changed)
-            }
-            if relevant_boundaries:
-                authority_state = {
-                    "primary_target_authority": cfg.project_name or "primary",
-                    "nested_boundaries": relevant_boundaries,
-                    "project_authority_grants": cfg.project_authority_grants,
-                }
-                result = evaluate_nested_repository_identity_authority(authority_state)
-                denied = {path: clauses for path, clauses in result.items() if clauses}
-                if denied:
-                    store = _evidence(state)
-                    store.append_event(
-                        state["run_id"],
-                        "nested_repository_authority_denied",
-                        {
-                            "task_id": task.id,
-                            "denied_boundaries": denied,
-                        },
-                    )
-                    denied_msg = ", ".join(
-                        f"{path} ({', '.join(clauses)})" for path, clauses in denied.items()
-                    )
-                    next_state: WorkflowState = {
-                        **state,
-                        "commit_sha": None,
-                        "status": "nested_authority_denied",
-                        "message": (
-                            "Nested repository identity authority denied: " + denied_msg
-                        ),
-                    }
-                    return next_state
+        if denied_state:
+            return denied_state
 
     created_commit = commit_all(worktree, f"feat: {task.title}")
     commit = created_commit or existing_candidate_commit(worktree, cfg.base_branch)

@@ -88,6 +88,21 @@ def _worktree(repo: Path, tmp_path: Path, task_id: str) -> Path:
     return worktree
 
 
+def _worktree_with_nested_in_worktree(tmp_path: Path, repo: Path, task_id: str) -> Path:
+    """Create a worktree and add a nested git repo inside it (simulating worktree outside repo)."""
+    worktree, _ = create_worktree(repo, tmp_path / "worktrees", task_id, "main")
+    # Create a nested git repo inside the worktree (not in the main repo)
+    nested = worktree / "nested_in_wt"
+    nested.mkdir(parents=True)
+    _run_git(nested, "init", "--initial-branch=main")
+    _run_git(nested, "config", "user.email", "nested_wt@example.invalid")
+    _run_git(nested, "config", "user.name", "Nested in Worktree")
+    (nested / "nested_file.txt").write_text("nested in wt\n", encoding="utf-8")
+    _run_git(nested, "add", "nested_file.txt")
+    _run_git(nested, "commit", "-m", "nested in wt initial")
+    return worktree
+
+
 def _base_state(
     tmp_path: Path, repo: Path, worktree: Path, task_id: str, cfg: ProjectConfig
 ) -> dict:
@@ -164,7 +179,8 @@ def test_integrate_denies_nested_git_repository_without_explicit_grant(
 def test_integrate_allows_nested_git_repository_with_exact_explicit_grant(
     tmp_path: Path,
 ) -> None:
-    """integrate() must allow edits when explicit project authority grant matches exactly."""
+    """integrate() must allow edits when explicit project authority grant
+    matches exactly."""
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-2")
 
@@ -196,23 +212,6 @@ def test_integrate_allows_nested_git_repository_with_exact_explicit_grant(
     # Should succeed (pushed status) because grant matches exactly
     assert result["status"] == "pushed"
     assert result["commit_sha"] is not None
-
-
-def test_integrate_denies_linked_worktree_without_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must fail closed when a linked worktree is edited without explicit grant."""
-    # This test is more complex because linked worktrees are outside the main worktree
-    # We'll test the detection logic directly instead
-    from converge_orchestrator.git import detect_nested_repository_boundaries
-
-    repo, nested = _repository_with_nested_git(tmp_path)
-    worktree = _worktree(repo, tmp_path, "REQ-REPO-005-4")
-
-    # The linked worktree detection should find worktrees inside the repo
-    # For this test, we verify the detection works
-    boundaries = detect_nested_repository_boundaries(worktree, repo)
-    # The nested git repo should be detected
-    assert "vendor/embedded" in boundaries
-    assert boundaries["vendor/embedded"] == "nested_git_repository"
 
 
 def test_integrate_allows_ordinary_edits_in_primary_repository(tmp_path: Path) -> None:
@@ -316,6 +315,81 @@ def test_integrate_denies_empty_grant(tmp_path: Path) -> None:
     assert result["status"] == "nested_authority_denied"
     assert "vendor/embedded" in result["message"]
     assert "nested_identity_explicit_grant_missing_or_mismatched" in result["message"]
+
+
+def test_integrate_denies_nested_in_worktree_outside_repo(tmp_path: Path) -> None:
+    """integrate() must deny nested repo inside candidate worktree
+    when worktree is outside canonical repo."""
+    repo, nested = _repository_with_nested_git(tmp_path)
+    worktree = _worktree_with_nested_in_worktree(tmp_path, repo, "REQ-REPO-005-WT-1")
+
+    # Edit a file inside the nested Git repository inside the worktree
+    path = worktree / "nested_in_wt" / "unauthorized.txt"
+    path.write_text("unauthorized edit\n", encoding="utf-8")
+
+    cfg = ProjectConfig(
+        repo_path=repo,
+        requirements_path=tmp_path / "requirements.md",
+        require_spec_read_only=False,
+        agents={},
+        project_name="test-project",
+        # No grant for nested_in_wt
+    )
+
+    state = _base_state(tmp_path, repo, worktree, "REQ-REPO-005-WT-1", cfg)
+    store = SimpleNamespace(append_event=Mock())
+
+    with (
+        patch("converge_orchestrator.workflow.load_config", return_value=cfg),
+        patch("converge_orchestrator.workflow.sha256_file", return_value="spec-hash"),
+        patch("converge_orchestrator.workflow._evidence", return_value=store),
+        patch("converge_orchestrator.workflow._write_compliance"),
+    ):
+        result = integrate(state)
+
+    # Should be denied with nested_authority_denied status
+    assert result["status"] == "nested_authority_denied"
+    assert result["commit_sha"] is None
+    assert "Nested repository identity authority denied" in result["message"]
+    assert "nested_in_wt" in result["message"]
+    assert "primary_target_authority_not_transitive_to_nested_identity" in result["message"]
+    assert "nested_identity_explicit_grant_missing_or_mismatched" in result["message"]
+
+
+def test_integrate_allows_nested_in_worktree_with_grant(tmp_path: Path) -> None:
+    """integrate() must allow nested repo inside candidate worktree
+    when exact grant is given."""
+    repo, nested = _repository_with_nested_git(tmp_path)
+    worktree = _worktree_with_nested_in_worktree(tmp_path, repo, "REQ-REPO-005-WT-2")
+
+    # Edit a file inside the nested Git repository inside the worktree
+    path = worktree / "nested_in_wt" / "authorized.txt"
+    path.write_text("authorized edit\n", encoding="utf-8")
+
+    cfg = ProjectConfig(
+        repo_path=repo,
+        requirements_path=tmp_path / "requirements.md",
+        require_spec_read_only=False,
+        agents={},
+        project_name="test-project",
+        project_authority_grants={"nested_in_wt": "nested_git_repository"},
+    )
+
+    state = _base_state(tmp_path, repo, worktree, "REQ-REPO-005-WT-2", cfg)
+    store = SimpleNamespace(append_event=Mock())
+
+    with (
+        patch("converge_orchestrator.workflow.load_config", return_value=cfg),
+        patch("converge_orchestrator.workflow.sha256_file", return_value="spec-hash"),
+        patch("converge_orchestrator.workflow._evidence", return_value=store),
+        patch("converge_orchestrator.workflow._write_compliance"),
+        patch("converge_orchestrator.workflow.push"),
+    ):
+        result = integrate(state)
+
+    # Should succeed (pushed status) because grant matches exactly
+    assert result["status"] == "pushed"
+    assert result["commit_sha"] is not None
 
 
 if __name__ == "__main__":
