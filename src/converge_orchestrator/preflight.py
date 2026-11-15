@@ -235,6 +235,7 @@ def repository_preflight(
     secret_path: Path | None = None,
     controller_authority_path: Path | None = None,
     base_branch: str = "main",
+    previously_bound_identity: GitHubRepoIdentity | None = None,
 ) -> PreflightResult:
     repo = Path(repository_path).expanduser().resolve()
     if not repo.exists() or not _is_git_repository(repo):
@@ -264,7 +265,9 @@ def repository_preflight(
     github_identity_drift: bool = False
     if remote_url and _is_github_remote(remote_url):
         try:
-            github_identity, drift_detected = _fetch_github_repo_identity(repo, remote_url)
+            github_identity, drift_detected = _fetch_github_repo_identity(
+                repo, remote_url, previously_bound_identity
+            )
             github_identity_drift = drift_detected
         except PreflightError:
             # Re-raise preflight errors (fail closed)
