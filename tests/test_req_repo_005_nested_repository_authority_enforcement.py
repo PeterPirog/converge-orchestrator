@@ -198,23 +198,6 @@ def test_integrate_allows_nested_git_repository_with_exact_explicit_grant(
     assert result["commit_sha"] is not None
 
 
-def test_integrate_denies_linked_worktree_without_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must fail closed when a linked worktree is edited without explicit grant."""
-    # This test is more complex because linked worktrees are outside the main worktree
-    # We'll test the detection logic directly instead
-    from converge_orchestrator.git import detect_nested_repository_boundaries
-
-    repo, nested = _repository_with_nested_git(tmp_path)
-    worktree = _worktree(repo, tmp_path, "REQ-REPO-005-4")
-
-    # The linked worktree detection should find worktrees inside the repo
-    # For this test, we verify the detection works
-    boundaries = detect_nested_repository_boundaries(worktree, repo)
-    # The nested git repo should be detected
-    assert "vendor/embedded" in boundaries
-    assert boundaries["vendor/embedded"] == "nested_git_repository"
-
-
 def test_integrate_allows_ordinary_edits_in_primary_repository(tmp_path: Path) -> None:
     """Ordinary authorized edits in the primary target repository must continue to work."""
     repo, nested = _repository_with_nested_git(tmp_path)
@@ -507,7 +490,8 @@ def test_integrate_denies_submodule_without_explicit_grant(tmp_path: Path) -> No
 
 
 def test_integrate_allows_submodule_with_exact_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must allow edits when explicit project authority grant matches exactly for submodule."""
+    """integrate() must allow edits when explicit project authority grant
+    matches exactly for submodule."""
     repo, submodule = _repository_with_submodule(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-SUB-2")
 
@@ -583,7 +567,8 @@ def test_integrate_denies_linked_worktree_without_explicit_grant(tmp_path: Path)
 
 
 def test_integrate_allows_linked_worktree_with_exact_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must allow edits when explicit project authority grant matches exactly for linked worktree."""
+    """integrate() must allow edits when explicit project authority grant
+    matches exactly for linked worktree."""
     repo, linked_wt = _repository_with_linked_worktree(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-LWT-2")
 
@@ -618,7 +603,8 @@ def test_integrate_allows_linked_worktree_with_exact_explicit_grant(tmp_path: Pa
 
 
 def test_integrate_denies_external_mount_without_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must fail closed when an external repository mount is edited without explicit grant."""
+    """integrate() must fail closed when an external repository mount
+    is edited without explicit grant."""
     repo, external = _repository_with_external_mount(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-EXT-1")
 
@@ -660,7 +646,8 @@ def test_integrate_denies_external_mount_without_explicit_grant(tmp_path: Path) 
 
 
 def test_integrate_allows_external_mount_with_exact_explicit_grant(tmp_path: Path) -> None:
-    """integrate() must allow edits when explicit project authority grant matches exactly for external mount."""
+    """integrate() must allow edits when explicit project authority grant
+    matches exactly for external mount."""
     repo, external = _repository_with_external_mount(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-EXT-2")
 
@@ -698,7 +685,8 @@ def test_integrate_allows_external_mount_with_exact_explicit_grant(tmp_path: Pat
 
 
 def test_integrate_denies_mixed_primary_and_unauthorized_nested(tmp_path: Path) -> None:
-    """integrate() must deny entire candidate when it contains both ordinary and unauthorized nested edits."""
+    """integrate() must deny entire candidate when it contains both
+    ordinary and unauthorized nested edits."""
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree(repo, tmp_path, "REQ-REPO-005-MIXED-1")
 
@@ -737,7 +725,8 @@ def test_integrate_denies_mixed_primary_and_unauthorized_nested(tmp_path: Path) 
 
 
 def test_integrate_denies_nested_in_worktree_outside_repo(tmp_path: Path) -> None:
-    """integrate() must deny nested repo inside candidate worktree when worktree is outside canonical repo."""
+    """integrate() must deny nested repo inside candidate worktree
+    when worktree is outside canonical repo."""
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree_with_nested_in_worktree(tmp_path, repo, "REQ-REPO-005-WT-1")
 
@@ -775,7 +764,8 @@ def test_integrate_denies_nested_in_worktree_outside_repo(tmp_path: Path) -> Non
 
 
 def test_integrate_allows_nested_in_worktree_with_grant(tmp_path: Path) -> None:
-    """integrate() must allow nested repo inside candidate worktree when exact grant is given."""
+    """integrate() must allow nested repo inside candidate worktree
+    when exact grant is given."""
     repo, nested = _repository_with_nested_git(tmp_path)
     worktree = _worktree_with_nested_in_worktree(tmp_path, repo, "REQ-REPO-005-WT-2")
 

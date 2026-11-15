@@ -427,15 +427,21 @@ class ProjectConfig(BaseModel):
     require_spec_read_only: bool = True
     nested_repository_boundaries: dict[str, str] = Field(
         default_factory=dict,
-        description="Explicitly configured nested repository boundaries (path -> identity class). "
-                    "Used for boundaries that cannot be auto-detected (e.g., external_repository_mount). "
-                    "Distinct from project_authority_grants which controls authorization.",
+        description=(
+            "Explicitly configured nested repository boundaries (path -> identity class). "
+            "Used for boundaries that cannot be auto-detected "
+            "(e.g., external_repository_mount). "
+            "Distinct from project_authority_grants which controls authorization."
+        ),
     )
     project_authority_grants: dict[str, str] = Field(
         default_factory=dict,
-        description="Explicit project authority grants for nested repository identities (path -> identity class). "
-                    "Grants authorization to edit within a nested repository identity. "
-                    "Distinct from nested_repository_boundaries which defines the boundaries themselves.",
+        description=(
+            "Explicit project authority grants for nested repository identities "
+            "(path -> identity class). "
+            "Grants authorization to edit within a nested repository identity. "
+            "Distinct from nested_repository_boundaries which defines the boundaries themselves."
+        ),
     )
 
     @model_validator(mode="before")
