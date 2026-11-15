@@ -204,10 +204,12 @@ def _fetch_github_repo_identity(
                 # Allow drift but require credential refresh (handled by caller)
         else:
             # Provider-native ID or host changed - different repository, fail closed
+            prev = previously_bound_identity
+            curr = fetched_identity
             raise PreflightError(
-                f"GitHub repository identity changed: provider-native ID or host mismatch. "
-                f"Previously bound: {previously_bound_identity.provider_native_id}@{previously_bound_identity.host}, "
-                f"now: {fetched_identity.provider_native_id}@{fetched_identity.host}"
+                "GitHub repository identity changed: provider-native ID or host mismatch. "
+                f"Previously bound: {prev.provider_native_id}@{prev.host}, "
+                f"now: {curr.provider_native_id}@{curr.host}"
             )
 
     # Validate that the fetched identity matches the expected owner/repo from remote
