@@ -34,6 +34,7 @@ from .github import GitHubAdapter
 from .models import (
     ComplianceSnapshot,
     GateResult,
+    ProjectConfig,
     Requirement,
     RequirementStatus,
     ReviewResult,

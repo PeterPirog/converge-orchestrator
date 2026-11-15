@@ -166,7 +166,8 @@ def test_integrate_recovers_commit_with_nested_repo_denied(
 
     # Create a candidate commit that modifies the nested repo
     # First, create the nested directory in the main repo worktree
-    (repo / "vendor" / "embedded" / "unauthorized.txt").write_text("unauthorized\n", encoding="utf-8")
+    path = repo / "vendor" / "embedded" / "unauthorized.txt"
+    path.write_text("unauthorized\n", encoding="utf-8")
     _run_git(repo, "add", "vendor/embedded/unauthorized.txt")
     _run_git(repo, "commit", "-m", "modify nested")
     candidate_sha = _run_git(repo, "rev-parse", "HEAD")
@@ -237,7 +238,8 @@ def test_integrate_recovers_commit_with_nested_repo_allowed(
     _run_git(repo, "push", "-u", "origin", "main")
 
     # Create a candidate commit that modifies the nested repo
-    (repo / "vendor" / "embedded" / "authorized.txt").write_text("authorized\n", encoding="utf-8")
+    path = repo / "vendor" / "embedded" / "authorized.txt"
+    path.write_text("authorized\n", encoding="utf-8")
     _run_git(repo, "add", "vendor/embedded/authorized.txt")
     _run_git(repo, "commit", "-m", "modify nested")
     candidate_sha = _run_git(repo, "rev-parse", "HEAD")
