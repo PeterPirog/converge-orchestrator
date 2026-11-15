@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import GitHubRepoIdentity
+from .remote import _is_github_remote
 
 
 class PreflightError(RuntimeError):
@@ -222,9 +223,9 @@ def repository_preflight(
     )
     remote_url = _remote_url(repo)
 
-    # Fetch and bind provider-native GitHub repository identity
+    # Fetch and bind provider-native GitHub repository identity (only for GitHub remotes)
     github_identity: GitHubRepoIdentity | None = None
-    if remote_url:
+    if remote_url and _is_github_remote(remote_url):
         try:
             github_identity = _fetch_github_repo_identity(repo, remote_url)
         except PreflightError:
