@@ -614,6 +614,29 @@ def changed_files(worktree: Path, base_branch: str) -> list[str]:
     )
 
 
+def changed_files_from_commit(worktree: Path, base_rev: str, commit_sha: str) -> list[str]:
+    """List candidate-changed files from a specific commit against a base revision.
+
+    This is used for recovery scenarios where a candidate commit was already created
+    but the process crashed before the commit SHA was persisted. The diff is computed
+    between the base revision and the specific commit SHA.
+
+    If the worktree is not a valid git repository or the commit/base is invalid,
+    raises GitError (fail closed).
+    """
+    names: set[str] = set()
+    # Get tracked changes from the commit against the base
+    for line in _git_lines(worktree, "diff", "--name-only", f"{base_rev}...{commit_sha}"):
+        names.add(line)
+    # Get tracked changes from the commit itself (in case base is not ancestor)
+    for line in _git_lines(worktree, "diff", "--name-only", f"{commit_sha}^...{commit_sha}"):
+        names.add(line)
+    # Note: No untracked files for a committed commit
+    return sorted(
+        name for name in names if not is_deterministic_cache_artifact(name)
+    )
+
+
 def diff_line_count(worktree: Path, base_branch: str) -> int:
     total = 0
     tracked: set[str] = set()
