@@ -22,6 +22,7 @@ class PreflightResult:
     remote_url: str | None
     clean: bool
     github_identity: GitHubRepoIdentity | None = None
+    github_identity_drift: bool = False
 
 
 _OVERLAP_PAIRS = [
@@ -118,11 +119,21 @@ def _validate_authority_paths(paths: dict[str, Path]) -> None:
             raise PreflightError(f"{b}_overlaps_{a}")
 
 
-def _fetch_github_repo_identity(repo: Path, remote_url: str) -> GitHubRepoIdentity | None:
+def _fetch_github_repo_identity(
+    repo: Path,
+    remote_url: str,
+    previously_bound_identity: GitHubRepoIdentity | None = None,
+) -> tuple[GitHubRepoIdentity, bool]:
     """Fetch provider-native GitHub repository identity from GitHub API.
 
     Uses the gh CLI to fetch repository metadata including the provider-native ID.
     Fails closed if the repository cannot be resolved or metadata is malformed.
+
+    If a previously bound identity is provided, detects rename/owner-transfer drift
+    per REQ-REPO-007: allows drift only when provider-native ID and host remain the same,
+    and requires credential refresh.
+
+    Returns a tuple of (GitHubRepoIdentity, drift_detected).
     """
     try:
         # Extract owner/repo from remote URL
@@ -170,7 +181,37 @@ def _fetch_github_repo_identity(repo: Path, remote_url: str) -> GitHubRepoIdenti
     if not full_name:
         raise PreflightError(f"GitHub API response missing full_name for {repo_slug}")
 
-    # Validate that the fetched identity matches the expected owner/repo
+    fetched_identity = GitHubRepoIdentity(
+        provider="GitHub",
+        host="github.com",
+        provider_native_id=str(provider_native_id),
+        canonical_owner=owner_login,
+        canonical_name=repo_name,
+        canonical_owner_name=full_name,
+    )
+
+    # Check for rename/owner-transfer drift (REQ-REPO-007)
+    drift_detected = False
+    if previously_bound_identity is not None:
+        # Check if provider-native ID and host match (same repository)
+        if (previously_bound_identity.provider_native_id == fetched_identity.provider_native_id and
+                previously_bound_identity.host == fetched_identity.host):
+            # Provider-native ID and host match - this is a rename/transfer
+            # Check if owner or name changed
+            if (previously_bound_identity.canonical_owner != fetched_identity.canonical_owner or
+                    previously_bound_identity.canonical_name != fetched_identity.canonical_name):
+                drift_detected = True
+                # Allow drift but require credential refresh (handled by caller)
+        else:
+            # Provider-native ID or host changed - different repository, fail closed
+            raise PreflightError(
+                f"GitHub repository identity changed: provider-native ID or host mismatch. "
+                f"Previously bound: {previously_bound_identity.provider_native_id}@{previously_bound_identity.host}, "
+                f"now: {fetched_identity.provider_native_id}@{fetched_identity.host}"
+            )
+
+    # Validate that the fetched identity matches the expected owner/repo from remote
+    # (only if no drift detected, or if drift is allowed)
     expected_owner, expected_repo = repo_slug.split("/", 1)
     if owner_login.casefold() != expected_owner.casefold():
         raise PreflightError(
@@ -181,14 +222,7 @@ def _fetch_github_repo_identity(repo: Path, remote_url: str) -> GitHubRepoIdenti
             f"GitHub API returned repo name {repo_name} but remote indicates {expected_repo}"
         )
 
-    return GitHubRepoIdentity(
-        provider="GitHub",
-        host="github.com",
-        provider_native_id=str(provider_native_id),
-        canonical_owner=owner_login,
-        canonical_name=repo_name,
-        canonical_owner_name=full_name,
-    )
+    return fetched_identity, drift_detected
 
 
 def repository_preflight(
@@ -225,9 +259,11 @@ def repository_preflight(
 
     # Fetch and bind provider-native GitHub repository identity (only for GitHub remotes)
     github_identity: GitHubRepoIdentity | None = None
+    github_identity_drift: bool = False
     if remote_url and _is_github_remote(remote_url):
         try:
-            github_identity = _fetch_github_repo_identity(repo, remote_url)
+            github_identity, drift_detected = _fetch_github_repo_identity(repo, remote_url)
+            github_identity_drift = drift_detected
         except PreflightError:
             # Re-raise preflight errors (fail closed)
             raise
@@ -242,4 +278,5 @@ def repository_preflight(
         remote_url=remote_url,
         clean=_is_clean(repo),
         github_identity=github_identity,
+        github_identity_drift=github_identity_drift,
     )
