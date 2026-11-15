@@ -5,7 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from converge_orchestrator.models import ComplianceSnapshot, GateResult, ProjectConfig, TaskEnvelope
+from converge_orchestrator.models import (
+    ComplianceEntry,
+    ComplianceSnapshot,
+    GateResult,
+    ProjectConfig,
+    RequirementStatus,
+    TaskEnvelope,
+)
 from converge_orchestrator.workflow import integrate
 
 
@@ -47,6 +54,14 @@ def _state(tmp_path: Path, worktree: Path, base_sha: str) -> dict:
         returncode=0,
         output="pass",
     )
+    compliance = ComplianceSnapshot(
+        entries={
+            "ARCH-001": ComplianceEntry(
+                requirement_id="ARCH-001",
+                status=RequirementStatus.UNVERIFIED,
+            )
+        }
+    )
     return {
         "config_path": str(tmp_path / "converge.yaml"),
         "run_id": "run-1",
@@ -55,7 +70,7 @@ def _state(tmp_path: Path, worktree: Path, base_sha: str) -> dict:
         "worktree": str(worktree),
         "branch": "converge/arch-001-1",
         "quality_results": [gate.model_dump(mode="json")],
-        "compliance": ComplianceSnapshot().model_dump(mode="json"),
+        "compliance": compliance.model_dump(mode="json"),
         "recorded_canonical_base_revision": base_sha,
     }
 
