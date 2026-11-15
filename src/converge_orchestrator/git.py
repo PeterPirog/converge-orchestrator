@@ -272,38 +272,6 @@ def _nested_git_repositories_in_worktree(worktree: Path, repo: Path) -> dict[str
     return result
 
 
-def _nested_git_repositories(repo: Path) -> dict[str, str]:
-    """Return nested Git repository paths mapped to their identity class.
-
-    A nested Git repository is a directory containing a .git directory (or .git file
-    pointing to a git dir) that is not the main repository's .git directory and not
-    a registered linked worktree.
-
-    Returns a mapping from repository-relative path to the identity class string
-    "nested_git_repository".
-
-    Detection is based on the main repository's working directory, not the worktree,
-    because nested repositories are part of the main repo's structure.
-    """
-    repo_root = repo.resolve()
-    result: dict[str, str] = {}
-
-    for git_dir in repo_root.rglob(".git"):
-        if not git_dir.exists():
-            continue
-        nested_root = git_dir.parent
-        if nested_root == repo_root:
-            continue
-        if repo_root in nested_root.parents:
-            try:
-                rel_path = nested_root.relative_to(repo_root).as_posix()
-            except ValueError:
-                continue
-            if rel_path and not rel_path.startswith("."):
-                result[rel_path] = "nested_git_repository"
-    return result
-
-
 def _linked_worktree_boundaries(worktree: Path, repo: Path) -> dict[str, str]:
     """Return linked worktree paths mapped to their identity class.
 
@@ -351,11 +319,17 @@ def detect_nested_repository_boundaries(
     Configured boundaries (from project_authority_grants) are merged with
     auto-detected boundaries. If a configured boundary conflicts with an
     auto-detected one (different identity class), the function raises an error.
+
+    If the repository path does not exist, returns only configured boundaries
+    (since no auto-detection is possible).
     """
     boundaries: dict[str, str] = {}
-    boundaries.update(_submodule_paths(repo))
-    boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
-    boundaries.update(_linked_worktree_boundaries(worktree, repo))
+
+    # Only attempt auto-detection if the repository exists
+    if repo.exists():
+        boundaries.update(_submodule_paths(repo))
+        boundaries.update(_nested_git_repositories_in_worktree(worktree, repo))
+        boundaries.update(_linked_worktree_boundaries(worktree, repo))
 
     if configured_boundaries:
         for path, identity in configured_boundaries.items():
