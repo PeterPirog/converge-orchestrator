@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import GitHubRepoIdentity
+from .models import GitHubRepoIdentity, MutationDomainIdentity
 from .remote import _is_github_remote
 
 
@@ -23,6 +23,7 @@ class PreflightResult:
     clean: bool
     github_identity: GitHubRepoIdentity | None = None
     github_identity_drift: bool = False
+    mutation_domain_identity: MutationDomainIdentity | None = None
 
 
 _OVERLAP_PAIRS = [
@@ -227,6 +228,43 @@ def _fetch_github_repo_identity(
     return fetched_identity, drift_detected
 
 
+def _derive_mutation_domain_identity(
+    repo: Path,
+    remote_url: str | None,
+    base_branch: str,
+    github_identity: GitHubRepoIdentity | None,
+) -> MutationDomainIdentity:
+    """Derive the mutation domain identity per REQ-REPO-009, REQ-REPO-010, REQ-REPO-011.
+
+    For GitHub-connected repositories (REQ-REPO-010):
+    - Uses provider-native repository identity and configured base ref
+    - Fails closed if provider-native identity cannot be established
+
+    For local-only repositories (REQ-REPO-011):
+    - Uses authoritative local Git repository identity and configured base ref
+    - Supports provisional identity for not-yet-created local repositories
+    """
+    if github_identity is not None:
+        # GitHub-connected repository (REQ-REPO-010)
+        return MutationDomainIdentity(
+            domain_type="github",
+            github_identity=github_identity,
+            base_ref=github_identity.canonical_owner_name,  # owner/name as base ref
+            provisional=False,
+        )
+    else:
+        # Local-only repository (REQ-REPO-011)
+        # Check if this is a not-yet-created local repository (provisional)
+        is_provisional = not repo.exists() or not _is_git_repository(repo)
+        return MutationDomainIdentity(
+            domain_type="local",
+            local_repo_path=repo if repo.exists() else None,
+            local_base_ref="main",  # Default base ref for local repos
+            base_ref="main",
+            provisional=is_provisional,
+        )
+
+
 def repository_preflight(
     repository_path: Path,
     *,
@@ -276,6 +314,11 @@ def repository_preflight(
             # Any other error is a fail-closed condition
             raise PreflightError(f"Failed to bind GitHub repository identity: {exc}") from exc
 
+    # Derive and bind mutation domain identity (REQ-REPO-009)
+    mutation_domain_identity = _derive_mutation_domain_identity(
+        repo, remote_url, base_branch, github_identity
+    )
+
     return PreflightResult(
         identity=identity,
         base_branch_exists=_local_branch_exists(repo, base_branch),
@@ -284,4 +327,5 @@ def repository_preflight(
         clean=_is_clean(repo),
         github_identity=github_identity,
         github_identity_drift=github_identity_drift,
+        mutation_domain_identity=mutation_domain_identity,
     )
