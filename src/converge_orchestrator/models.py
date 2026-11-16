@@ -64,6 +64,27 @@ class GitHubRepoIdentity(BaseModel):
     canonical_owner_name: str
 
 
+class MutationDomainIdentity(BaseModel):
+    """Unified mutation domain identity for both GitHub-connected and local-only repositories.
+
+    Established at preflight and durably bound before mutation-capable execution begins.
+    REQ-REPO-009: Preflight SHALL derive and durably bind a repository mutation domain
+    identity before mutation-capable execution begins.
+    REQ-REPO-010: GitHub-connected mutation domain uses provider-native identity + base ref.
+    REQ-REPO-011: Local-only mutation domain uses local Git identity + base ref.
+    """
+
+    domain_type: Literal["github", "local"]
+    # GitHub-connected fields (populated when domain_type == "github")
+    github_identity: GitHubRepoIdentity | None = None
+    # Local-only fields (populated when domain_type == "local")
+    local_repo_path: Path | None = None
+    local_base_ref: str | None = None
+    # Common fields
+    base_ref: str
+    provisional: bool = False  # True for not-yet-created local repos (REQ-REPO-011)
+
+
 class ModelGatewayConfig(BaseModel):
     """Model transport used by generated stable OpenCode configuration."""
 
